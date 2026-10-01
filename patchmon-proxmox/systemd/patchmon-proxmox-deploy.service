@@ -1,0 +1,8 @@
+[Unit]
+Description=PatchMon Auto-Deployment für Proxmox LXC und VMs
+After=network-online.target pve-cluster.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/patchmon-proxmox-deploy

@@ -1,3 +1,287 @@
+# Zabbix aktualisieren – Docker + PostgreSQL
+
+Diese Anleitung ist für eine Zabbix-Installation mit **Docker Compose und PostgreSQL** gedacht.
+
+Die offiziellen Zabbix-Container für PostgreSQL verwenden unter anderem:
+
+- `zabbix/zabbix-server-pgsql`
+- `zabbix/zabbix-web-nginx-pgsql`
+- `postgres`
+
+Zabbix beschreibt für Container-Upgrades ausdrücklich das Aktualisieren der Container-Images bzw. der Docker-Compose-Dateien. Vor einem Upgrade soll die Zabbix-Datenbank gesichert werden. Bei einem Major-Upgrade kann die Datenbankmigration längere Zeit dauern.
+
+## 1. In das Zabbix-Docker-Verzeichnis wechseln
+
+Beispiel:
+
+```bash
+cd /opt/zabbix-docker
+```
+
+Falls dein Compose-Verzeichnis anders heißt, entsprechend dorthin wechseln.
+
+## 2. Aktuelle Container prüfen
+
+```bash
+docker compose ps
+docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+```
+
+Versionen der laufenden Zabbix-Container:
+
+```bash
+docker inspect -f '{{.Name}} -> {{.Config.Image}}' $(docker ps -q --filter 'name=zabbix')
+```
+
+## 3. PostgreSQL-Backup erstellen
+
+**Vor jedem Major-Upgrade zuerst die Datenbank sichern.**
+
+PostgreSQL-Container ermitteln:
+
+```bash
+docker ps --format '{{.Names}}' | grep -E 'postgres|postgresql'
+```
+
+Angenommen der Container heißt `postgres-server`:
+
+```bash
+mkdir -p /opt/zabbix-backup
+```
+
+Datenbank sichern:
+
+```bash
+docker exec -t postgres-server pg_dump -U zabbix -d zabbix > /opt/zabbix-backup/zabbix-$(date +%F-%H%M).sql
+```
+
+Prüfen:
+
+```ls -lh /opt/zabbix-backup/
+```
+
+Das Passwort wird bei einer normalen PostgreSQL-Containerinstallation über die Container-Umgebung bzw. das Compose-Setup verwaltet. Nicht in diese öffentliche Dokumentation eintragen.
+
+## 4. Compose-Dateien und lokale Änderungen sichern
+
+Vor einem `git pull`:
+
+```bash
+cp -a compose_pgsql.yaml /opt/zabbix-backup/ 2>/dev/null || true
+cp -a .env /opt/zabbix-backup/ 2>/dev/null || true
+```
+
+Wenn das Zabbix-Docker-Repository per Git verwaltet wird:
+
+```bash
+git status
+git diff
+```
+
+Lokale Änderungen müssen vor einem Wechsel des Branches bzw. einem Pull gesichert werden.
+
+## 5. Minor-Update innerhalb derselben Hauptversion
+
+Wenn beispielsweise innerhalb von Zabbix 8.0 auf die aktuelle 8.0-Minor-Version aktualisiert werden soll:
+
+```bash
+docker compose -f compose_pgsql.yaml pull
+docker compose -f compose_pgsql.yaml up -d
+```
+
+Damit werden die neuen Zabbix-Images geladen und die Container mit den vorhandenen Volumes neu erstellt.
+
+**PostgreSQL nicht löschen.**
+
+Nicht ausführen:
+
+```bash
+docker compose down -v
+```
+
+wenn die Daten-Volumes erhalten bleiben sollen.
+
+## 6. Major-Upgrade, z. B. 7.4 → 8.0
+
+Bei einem Major-Upgrade zuerst die offizielle Upgrade-Dokumentation und die Upgrade Notes der Zielversion prüfen.
+
+Wenn das Zabbix-Docker-Repository verwendet wird:
+
+```bash
+cd /opt/zabbix-docker
+
+git status
+git pull
+git checkout 8.0
+```
+
+Danach PostgreSQL-Compose verwenden:
+
+```bash
+docker compose -f compose_pgsql.yaml pull
+docker compose -f compose_pgsql.yaml up -d
+```
+
+Zabbix führt beim Start die erforderlichen Datenbankänderungen durch.
+
+## 7. Wichtig: PostgreSQL während des Upgrades nicht löschen
+
+Der PostgreSQL-Container und insbesondere dessen Daten-Volume müssen erhalten bleiben.
+
+Prüfen:
+
+```bash
+docker volume ls
+```
+
+und:
+
+```bash
+docker inspect postgres-server --format '{{json .Mounts}}'
+```
+
+Den tatsächlichen PostgreSQL-Containernamen aus `docker compose ps` bzw. `docker ps` verwenden.
+
+## 8. Logs während des Upgrades beobachten
+
+Zabbix Server:
+
+```bash
+docker compose logs -f zabbix-server-pgsql
+```
+
+Falls der Compose-Service anders heißt:
+
+```bash
+docker compose ps
+```
+
+und den dort angezeigten Servicenamen verwenden.
+
+PostgreSQL:
+
+```bash
+docker compose logs -f postgres-server
+```
+
+Weboberfläche:
+
+```bash
+docker compose logs -f zabbix-web-nginx-pgsql
+```
+
+## 9. Status nach dem Update
+
+```bash
+docker compose ps
+```
+
+Die Zabbix-Container sollten `Up` sein.
+
+Falls ein Container `Exited` ist:
+
+```bash
+docker compose logs --tail=200 <service>
+```
+
+## 10. Zabbix-Version prüfen
+
+Server:
+
+```bash
+docker exec <zabbix-server-container> zabbix_server --version
+```
+
+Alternativ:
+
+```bash
+docker images | grep zabbix
+```
+
+Auch im Zabbix-Webfrontend kann die installierte Version kontrolliert werden.
+
+## 11. PostgreSQL prüfen
+
+```bash
+docker exec -it postgres-server psql -U zabbix -d zabbix -c 'SELECT version();'
+```
+
+Danach Zabbix Server erneut prüfen:
+
+```bash
+docker compose ps
+docker compose logs --tail=100 zabbix-server-pgsql
+```
+
+## 12. Zabbix Proxy prüfen
+
+Wenn die Proxys nach dem Server-Upgrade weiterarbeiten sollen:
+
+```bash
+docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' | grep zabbix
+```
+
+Bei Docker-Proxys ebenfalls das Image auf die passende Zabbix-Hauptversion aktualisieren.
+
+Zabbix unterstützt Proxys derselben Hauptversion wie der Server vollständig. Ältere unterstützte Proxy-Versionen haben Einschränkungen.
+
+## 13. Bei Problemen
+
+Zuerst:
+
+```bash
+docker compose ps
+docker compose logs --tail=200 zabbix-server-pgsql
+docker compose logs --tail=200 postgres-server
+```
+
+Datenbankverbindung prüfen:
+
+```bash
+docker exec -it postgres-server pg_isready -U zabbix -d zabbix
+```
+
+Volumes prüfen:
+
+```bash
+docker volume ls
+```
+
+**Nicht vorschnell Container oder Volumes löschen.**
+
+## 14. Kurzversion für normales Update
+
+Für ein normales Minor-Update innerhalb derselben Zabbix-Hauptversion:
+
+```bash
+cd /opt/zabbix-docker
+
+docker compose -f compose_pgsql.yaml pull
+docker compose -f compose_pgsql.yaml up -d
+
+docker compose ps
+docker compose logs --tail=100 zabbix-server-pgsql
+```
+
+Vor einem Major-Upgrade zusätzlich:
+
+```bash
+mkdir -p /opt/zabbix-backup
+docker exec -t postgres-server pg_dump -U zabbix -d zabbix > /opt/zabbix-backup/zabbix-$(date +%F-%H%M).sql
+```
+
+Danach erst auf die neue Zabbix-Hauptversion wechseln.
+
+## Offizielle Dokumentation
+
+- https://www.zabbix.com/documentation/8.0/de/manual/installation/upgrade/containers
+- https://www.zabbix.com/documentation/8.0/de/manual/installation/install/containers
+
+Stand: Oktober 2026.
+
+
+---
+
 # Zabbix aktualisieren
 
 Diese Anleitung beschreibt das Update von Zabbix auf Debian 13 für die OpenMain-IT Router und Zabbix-Systeme.

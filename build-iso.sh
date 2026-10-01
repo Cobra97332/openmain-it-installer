@@ -10,7 +10,7 @@ set -Eeuo pipefail
 REPO="Cobra97332/openmain-it-installer"
 REF="main"
 API="https://api.github.com/repos/$REPO/contents"
-CD_BASE="${DEBIAN_CD_BASE:-https://deb.debian.org/debian-cd/current/amd64/iso-cd}"
+CD_BASE="${DEBIAN_CD_BASE:-https://cdimage.debian.org/debian-cd/current/amd64/iso-cd}"
 ARCH="${ARCH:-amd64}"
 WORKDIR="${WORKDIR:-$PWD/debian-netinst-build-$ARCH}"
 TMP="$WORKDIR/tmp"

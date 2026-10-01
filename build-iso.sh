@@ -77,64 +77,6 @@ chmod 0644 "$ISO_DIR/openmain-router-firstboot.service"
 
 log "Patche BIOS-Bootmenü ..."
 
-python3 - <<'PY'
-from pathlib import Path
-
-boot_args = (
-    "auto=true "
-    "priority=high "
-    "file=/cdrom/preseed.cfg "
-    "apt-setup/cdrom/set-first=false "
-    "apt-setup/cdrom/set-next=false "
-    "apt-setup/cdrom/set-failed=false "
-    "apt-setup/disable-cdrom-entries=true "
-    "apt-setup/use_mirror=true "
-    "debian-installer/language=de "
-    "debian-installer/country=DE "
-    "debian-installer/locale=de_DE.UTF-8 "
-    "locale=de_DE.UTF-8 "
-    "keyboard-configuration/xkb-keymap=de "
-    "netcfg/get_domain=local "
-)
-
-remove_items = [
-    "auto=true",
-    "priority=critical",
-    "priority=high",
-    "file=/cdrom/preseed.cfg",
-    "apt-setup/cdrom/set-first=false",
-    "apt-setup/cdrom/set-next=false",
-    "apt-setup/cdrom/set-failed=false",
-    "apt-setup/disable-cdrom-entries=true",
-    "apt-setup/use_mirror=true",
-    "debian-installer/language=de",
-    "debian-installer/country=DE",
-    "debian-installer/locale=de_DE.UTF-8",
-    "locale=de_DE.UTF-8",
-    "keyboard-configuration/xkb-keymap=de",
-    "netcfg/get_hostname=debian-wg",
-    "netcfg/get_domain=local",
-]
-
-for cfg in Path("build-netbird-router/build/iso/isolinux").glob("*.cfg"):
-    txt = cfg.read_text(errors="ignore")
-    lines = []
-    for line in txt.splitlines():
-        if line.strip().startswith("append ") and "initrd=" in line:
-            for item in remove_items:
-                line = line.replace(item, "")
-            line = " ".join(line.split())
-            if " --- " in line:
-                before, after = line.split(" --- ", 1)
-                line = f"{before} {boot_args}--- {after}"
-            else:
-                line = f"{line} {boot_args}"
-        lines.append(line)
-    cfg.write_text("\n".join(lines) + "\n")
-PY
-
-# Die obige Python-Routine verwendet den aktuellen Buildpfad.
-# Sicherheitshalber zusätzlich direkt auf den tatsächlichen Pfad anwenden.
 python3 - "$ISO_DIR/isolinux" <<'PY'
 import sys
 from pathlib import Path
@@ -163,11 +105,14 @@ for p in root.glob("*.cfg"):
     lines=[]
     for line in t.splitlines():
         if line.strip().startswith("append ") and "initrd=" in line:
-            for x in remove: line=line.replace(x,"")
+            for x in remove:
+                line=line.replace(x,"")
             line=" ".join(line.split())
             if " --- " in line:
-                a,b=line.split(" --- ",1); line=f"{a} {boot_args}--- {b}"
-            else: line=f"{line} {boot_args}"
+                a,b=line.split(" --- ",1)
+                line=f"{a} {boot_args}--- {b}"
+            else:
+                line=f"{line} {boot_args}"
         lines.append(line)
     p.write_text("\n".join(lines)+"\n")
 PY

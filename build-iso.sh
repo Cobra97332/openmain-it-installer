@@ -9,7 +9,7 @@ set -Eeuo pipefail
 
 REPO="Cobra97332/openmain-it-installer"
 REF="main"
-BASE="https://raw.githubusercontent.com/$REPO/$REF"
+API="https://api.github.com/repos/$REPO/contents"
 CD_BASE="${DEBIAN_CD_BASE:-https://deb.debian.org/debian-cd/current/amd64/iso-cd}"
 ARCH="${ARCH:-amd64}"
 WORKDIR="${WORKDIR:-$PWD/debian-netinst-build-$ARCH}"
@@ -24,8 +24,18 @@ die(){ printf '\033[1;31m[FEHLER]\033[0m %s\n' "$*" >&2; exit 1; }
 [[ "$ARCH" == amd64 ]] || die "Aktuell unterstützt: ARCH=amd64."
 command -v curl >/dev/null 2>&1 || die "curl fehlt."
 
+github_download(){
+  local file="$1" out="$2"
+  curl -fsSL -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+    "$API/$file?ref=$REF" |
+    jq -er '.content' |
+    tr -d '\n\r' |
+    base64 -d > "$out"
+}
+
+
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates xorriso
+DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates xorriso jq
 
 rm -rf "$WORKDIR"
 mkdir -p "$TMP" "$TREE"
@@ -61,7 +71,7 @@ xorriso -osirrox on -indev "$ISO" -extract / "$TREE" >/dev/null
 
 for f in preseed.cfg firstboot-router.sh openmain-router-firstboot.service; do
   log "Lade $f von GitHub ..."
-  curl -fsSL "$BASE/$f" -o "$TMP/$f"
+  github_download "$f" "$TMP/$f"
 done
 
 mkdir -p "$TREE/openmain-installer"

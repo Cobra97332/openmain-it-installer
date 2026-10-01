@@ -18,6 +18,16 @@ die() {
 [[ $EUID -eq 0 ]] || die "Als root auf dem Proxmox-Host ausführen."
 [[ -r "$CONFIG_FILE" ]] || die "Konfiguration fehlt: $CONFIG_FILE"
 
+# Werte aus der Kommandozeilen-Umgebung merken, damit z. B.
+# DRY_RUN=true /usr/local/sbin/patchmon-proxmox-deploy
+# die Werte aus der Konfigurationsdatei überschreibt.
+ENV_DRY_RUN="${DRY_RUN-}"
+ENV_FORCE_INSTALL="${FORCE_INSTALL-}"
+ENV_ENABLE_LXC="${ENABLE_LXC-}"
+ENV_ENABLE_LINUX_VMS="${ENABLE_LINUX_VMS-}"
+ENV_ENABLE_WINDOWS_VMS="${ENABLE_WINDOWS_VMS-}"
+ENV_ENABLE_FREEBSD_VMS="${ENABLE_FREEBSD_VMS-}"
+
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
 
@@ -30,8 +40,12 @@ ENABLE_LXC="${ENABLE_LXC:-true}"
 ENABLE_LINUX_VMS="${ENABLE_LINUX_VMS:-true}"
 ENABLE_WINDOWS_VMS="${ENABLE_WINDOWS_VMS:-true}"
 ENABLE_FREEBSD_VMS="${ENABLE_FREEBSD_VMS:-true}"
-FORCE_INSTALL="${FORCE_INSTALL:-false}"
-DRY_RUN="${DRY_RUN:-false}"
+FORCE_INSTALL="${ENV_FORCE_INSTALL:-${FORCE_INSTALL:-false}}"
+DRY_RUN="${ENV_DRY_RUN:-${DRY_RUN:-false}}"
+ENABLE_LXC="${ENV_ENABLE_LXC:-$ENABLE_LXC}"
+ENABLE_LINUX_VMS="${ENV_ENABLE_LINUX_VMS:-$ENABLE_LINUX_VMS}"
+ENABLE_WINDOWS_VMS="${ENV_ENABLE_WINDOWS_VMS:-$ENABLE_WINDOWS_VMS}"
+ENABLE_FREEBSD_VMS="${ENV_ENABLE_FREEBSD_VMS:-$ENABLE_FREEBSD_VMS}"
 
 mkdir -p "$STATE_DIR"
 touch "$LOG_FILE"
@@ -142,23 +156,35 @@ curl -fsSL '$PATCHMON_URL/api/v1/hosts/install$([[ "$FORCE_INSTALL" == "true" ]]
 }
 
 detect_vm_os() {
-  local id="$1" ostype out
-  ostype="$(qm config "$id" 2>/dev/null | awk -F': ' '/^ostype:/ {print $2; exit}')"
+  local id="$1" name="${2:-}" ostype out
 
+  # Zuerst das echte Gast-OS über den QEMU Guest Agent ermitteln.
+  # OPNsense wird in Proxmox häufig als "l26" geführt, läuft aber auf FreeBSD.
+  out="$(qm guest exec "$id" -- /bin/sh -c 'uname -s 2>/dev/null || true' 2>/dev/null || true)"
+  if grep -qi 'FreeBSD' <<<"$out"; then
+    echo freebsd
+    return
+  fi
+  if grep -qi 'Linux' <<<"$out"; then
+    echo linux
+    return
+  fi
+
+  # Zusätzliche sichere Erkennung für bekannte FreeBSD-Firewall-VMs.
+  if grep -qiE 'opnsense|pfsense' <<<"$name"; then
+    echo freebsd
+    return
+  fi
+
+  # Fallback auf die Proxmox-Konfiguration.
+  ostype="$(qm config "$id" 2>/dev/null | awk -F': ' '/^ostype:/ {print $2; exit}')"
   case "$ostype" in
     win*) echo windows; return ;;
     l26)  echo linux; return ;;
   esac
 
-  out="$(qm guest exec "$id" -- /bin/sh -c 'uname -s 2>/dev/null || true' 2>/dev/null || true)"
-  if grep -qi 'FreeBSD' <<<"$out"; then
-    echo freebsd
-  elif grep -qi 'Linux' <<<"$out"; then
-    echo linux
-  else
-    out="$(qm guest exec "$id" -- powershell.exe -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()' 2>/dev/null || true)"
-    grep -q 'exitcode' <<<"$out" && echo windows || echo unknown
-  fi
+  out="$(qm guest exec "$id" -- powershell.exe -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()' 2>/dev/null || true)"
+  grep -q 'exitcode' <<<"$out" && echo windows || echo unknown
 }
 
 install_unix_vm() {
@@ -227,7 +253,7 @@ install_windows_vm() {
   api_id="$(jq -r '.api_id' "$state")"
   api_key="$(jq -r '.api_key' "$state")"
 
-  ps="$ErrorActionPreference='Stop'; $h=@{'X-API-ID'='$api_id';'X-API-KEY'='$api_key'}; $f=Join-Path $env:TEMP 'patchmon-install.ps1'; Invoke-WebRequest -Uri '$PATCHMON_URL/api/v1/hosts/install?os=windows' -Headers $h -UseBasicParsing -OutFile $f; & $f"
+  ps="\$ErrorActionPreference='Stop'; \$h=@{'X-API-ID'='$api_id';'X-API-KEY'='$api_key'}; \$f=Join-Path \$env:TEMP 'patchmon-install.ps1'; Invoke-WebRequest -Uri '$PATCHMON_URL/api/v1/hosts/install?os=windows' -Headers \$h -UseBasicParsing -OutFile \$f; & \$f"
 
   if qm guest exec "$id" -- powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$ps" >>"$LOG_FILE" 2>&1; then
     rm -f "$state"
@@ -259,7 +285,7 @@ process_vms() {
       continue
     fi
 
-    os="$(detect_vm_os "$id")"
+    os="$(detect_vm_os "$id" "$name")"
     case "$os" in
       linux)
         [[ "$ENABLE_LINUX_VMS" == "true" ]] && install_unix_vm "$id" "$name" linux || true

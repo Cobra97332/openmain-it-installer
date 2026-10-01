@@ -1,92 +1,98 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# OpenMain-IT NetBird Router
+# Basis: offizielles Debian-13-Netinst-ISO.
+# Es wird kein eigenes Debian-Live-System gebaut.
+# Wir remastern nur die Debian-Installer-Bootparameter und legen
+# OpenMain-IT First-Boot-Dateien auf die ISO.
+
 REPO="Cobra97332/openmain-it-installer"
 REF="main"
 BASE="https://raw.githubusercontent.com/$REPO/$REF"
-TMP="/tmp/openmain-it-installer"
+CD_BASE="${DEBIAN_CD_BASE:-https://deb.debian.org/debian-cd/current/amd64/iso-cd}"
 ARCH="${ARCH:-amd64}"
+WORKDIR="${WORKDIR:-$PWD/debian-netinst-build-$ARCH}"
+TMP="$WORKDIR/tmp"
+TREE="$WORKDIR/iso-tree"
+OUT="${OUT:-$PWD/netbird-router-debian13-$ARCH.iso}"
 
-log(){ printf '[+] %s\n' "$*"; }
-die(){ printf '[FEHLER] %s\n' "$*" >&2; exit 1; }
+log(){ printf '\033[1;32m[+]\033[0m %s\n' "$*"; }
+die(){ printf '\033[1;31m[FEHLER]\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "Bitte als root ausführen."
-command -v curl >/dev/null || die "curl fehlt."
+[[ "$ARCH" == amd64 ]] || die "Aktuell unterstützt: ARCH=amd64."
+command -v curl >/dev/null 2>&1 || die "curl fehlt."
 
-rm -rf "$TMP"
-mkdir -p "$TMP"
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates xorriso
 
-for f in router-install.sh zabbix-proxy-install.sh zabbix-api-register.sh; do
-  log "Lade $f von GitHub"
+rm -rf "$WORKDIR"
+mkdir -p "$TMP" "$TREE"
+
+log "Ermittle aktuelles offizielles Debian-13-Netinst-ISO ..."
+ISO_NAME="${DEBIAN_ISO_NAME:-}"
+if [[ -z "$ISO_NAME" ]]; then
+  ISO_NAME="$(curl -fsSL "$CD_BASE/" |
+    grep -oE 'debian-13\.[0-9]+\.[0-9]+-amd64-netinst\.iso' |
+    sort -V | tail -n1)"
+fi
+[[ -n "$ISO_NAME" ]] || die "Kein Debian-13-Netinst-ISO gefunden."
+
+ISO_URL="$CD_BASE/$ISO_NAME"
+ISO="$TMP/$ISO_NAME"
+
+log "Lade: $ISO_URL"
+curl -fL --retry 3 --retry-delay 2 "$ISO_URL" -o "$ISO"
+
+log "Prüfe Debian SHA512SUMS ..."
+curl -fsSL "$CD_BASE/SHA512SUMS" -o "$TMP/SHA512SUMS"
+grep -E "  $ISO_NAME$" "$TMP/SHA512SUMS" > "$TMP/SHA512SUMS.one"
+(
+  cd "$TMP"
+  sha512sum -c SHA512SUMS.one
+)
+
+log "Extrahiere die Debian-Netinst-Dateien ..."
+xorriso -osirrox on -indev "$ISO" -extract / "$TREE" >/dev/null
+
+[[ -f "$TREE/isolinux/txt.cfg" ]] || die "Debian isolinux/txt.cfg nicht gefunden."
+[[ -f "$TREE/boot/grub/grub.cfg" ]] || die "Debian boot/grub/grub.cfg nicht gefunden."
+
+for f in preseed.cfg firstboot-router.sh openmain-router-firstboot.service; do
+  log "Lade $f von GitHub ..."
   curl -fsSL "$BASE/$f" -o "$TMP/$f"
-  chmod 0755 "$TMP/$f"
 done
 
-export OPENMAIN_INSTALLER_DIR="$TMP"
+mkdir -p "$TREE/openmain-installer"
+cp "$TMP/preseed.cfg" "$TREE/preseed.cfg"
+cp "$TMP/firstboot-router.sh" "$TREE/openmain-installer/firstboot-router.sh"
+cp "$TMP/openmain-router-firstboot.service" "$TREE/openmain-installer/openmain-router-firstboot.service"
 
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y live-build curl ca-certificates gnupg xorriso isolinux syslinux-common
+chmod 0644 "$TREE/preseed.cfg"
+chmod 0755 "$TREE/openmain-installer/firstboot-router.sh"
+chmod 0644 "$TREE/openmain-installer/openmain-router-firstboot.service"
 
-WORKDIR="${WORKDIR:-$PWD/build-$ARCH}"
-rm -rf "$WORKDIR"
-mkdir -p "$WORKDIR"
-cd "$WORKDIR"
+# Debian Installer mit lokalem Preseed starten.
+# Debian dokumentiert preseed/file=/cdrom/preseed.cfg für remasterte Installationsmedien.
+sed -i 's#---#auto=true priority=critical preseed/file=/cdrom/preseed.cfg ---#g' "$TREE/isolinux/txt.cfg"
+sed -i 's#---#auto=true priority=critical preseed/file=/cdrom/preseed.cfg ---#g' "$TREE/boot/grub/grub.cfg"
 
-lb config --mode debian --distribution trixie --architectures "$ARCH" --binary-images iso-hybrid --debian-installer live --archive-areas "main contrib non-free-firmware" --bootappend-live "boot=live components hostname=netbird-router username=admin" --iso-application "OpenMain-IT NetBird Router" --iso-publisher "OpenMain-IT" --iso-volume "NETBIRD_ROUTER"
+# Nur geänderte/zusätzliche Dateien in die bestehende ISO schreiben.
+# -boot_image any replay erhält die vorhandene BIOS/UEFI-Bootausstattung.
+rm -f "$OUT"
 
-mkdir -p config/package-lists config/includes.chroot/usr/local/sbin config/includes.chroot/etc/systemd/system config/includes.chroot/etc/sysctl.d config/includes.chroot/etc/nftables.d config/hooks/live
-cat > config/package-lists/netbird-router.list.chroot <<'EOF'
-openssh-server
-nftables
-curl
-ca-certificates
-gnupg
-jq
-python3
-iproute2
-sudo
-vim-tiny
-less
-systemd
-network-manager
-EOF
+xorriso   -indev "$ISO"   -outdev "$OUT"   -overwrite on   -map "$TREE/isolinux/txt.cfg" /isolinux/txt.cfg   -map "$TREE/boot/grub/grub.cfg" /boot/grub/grub.cfg   -map "$TREE/preseed.cfg" /preseed.cfg   -map "$TREE/openmain-installer" /openmain-installer   -boot_image any replay   -commit >/dev/null
 
-cp "$TMP/router-install.sh" config/includes.chroot/usr/local/sbin/netbird-router-install
-cp "$TMP/zabbix-proxy-install.sh" config/includes.chroot/usr/local/sbin/zabbix-proxy-install
-cp "$TMP/zabbix-api-register.sh" config/includes.chroot/usr/local/sbin/zabbix-api-register
-chmod 0755 config/includes.chroot/usr/local/sbin/*
+[[ -s "$OUT" ]] || die "ISO wurde nicht erzeugt."
 
-cat > config/includes.chroot/etc/sysctl.d/99-netbird-router.conf <<'EOF'
-net.ipv4.ip_forward=1
-EOF
+log "Prüfe erzeugte ISO ..."
+xorriso -indev "$OUT" -find /preseed.cfg -print >/dev/null
+xorriso -indev "$OUT" -find /openmain-installer -print >/dev/null
+xorriso -indev "$OUT" -boot_image any show_status 2>&1 | head -n 40 || true
 
-cat > config/includes.chroot/etc/nftables.conf <<'EOF'
-#!/usr/sbin/nft -f
-flush ruleset
-include "/etc/nftables.d/*.nft"
-EOF
-
-cat > config/hooks/live/010-netbird.hook.chroot <<'EOF'
-#!/bin/sh
-set -eu
-install -d -m 0755 /usr/share/keyrings
-curl -fsSL https://pkgs.netbird.io/debian/public.key | gpg --dearmor --yes -o /usr/share/keyrings/netbird-archive-keyring.gpg
-echo 'deb [signed-by=/usr/share/keyrings/netbird-archive-keyring.gpg] https://pkgs.netbird.io/debian stable main' > /etc/apt/sources.list.d/netbird.list
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y netbird
-systemctl enable netbird.service || true
-systemctl enable nftables.service || true
-systemctl enable ssh.service || true
-EOF
-chmod 0755 config/hooks/live/010-netbird.hook.chroot
-
-log "Baue ISO ..."
-lb build
-
-ISO=$(find . -maxdepth 1 -type f \( -name '*.hybrid.iso' -o -name '*.iso' \) | head -n1)
-[[ -n "$ISO" ]] || die "ISO wurde nicht erzeugt."
-
-OUT="$PWD/../netbird-router-debian13-$ARCH.iso"
-cp "$ISO" "$OUT"
 sha256sum "$OUT" | tee "$OUT.sha256"
-log "Fertig: $OUT"
+
+log "Fertig."
+log "Basis: offizielles Debian 13 Netinst"
+log "ISO: $OUT"

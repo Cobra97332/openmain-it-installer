@@ -43,3 +43,12 @@ Die vollständige Anleitung für Zabbix Server, Proxy und Agent auf Debian 13:
 
 - [docs/ZABBIX-UPGRADE.md](docs/ZABBIX-UPGRADE.md)
 
+
+
+## PatchMon Proxmox Auto-Deployment
+
+Öffentliche Dateien für die automatische PatchMon-Installation auf Proxmox-LXC und VMs:
+
+- [patchmon-proxmox/README.md](patchmon-proxmox/README.md)
+
+Unterstützt Linux-LXC, Linux-VMs, Windows-VMs und FreeBSD/OPNsense-VMs.

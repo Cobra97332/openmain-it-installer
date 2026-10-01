@@ -37,3 +37,9 @@ netbird-router-debian13-amd64.iso.sha256
 ```
 
 Die Buildmaschine benötigt keine Anmeldung bei GitHub und kein SCP.
+## Zabbix aktualisieren
+
+Die vollständige Anleitung für Zabbix Server, Proxy und Agent auf Debian 13:
+
+- [docs/ZABBIX-UPGRADE.md](docs/ZABBIX-UPGRADE.md)
+

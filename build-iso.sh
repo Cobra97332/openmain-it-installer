@@ -97,8 +97,8 @@ xorriso   -indev "$ISO"   -outdev "$OUT"   -overwrite on   -map "$TREE/isolinux/
 [[ -s "$OUT" ]] || die "ISO wurde nicht erzeugt."
 
 log "Prüfe erzeugte ISO ..."
-xorriso -indev "$OUT" -find /preseed.cfg -print >/dev/null
-xorriso -indev "$OUT" -find /openmain-installer -print >/dev/null
+xorriso -indev "$OUT" -ls /preseed.cfg >/dev/null
+xorriso -indev "$OUT" -ls /openmain-installer >/dev/null
 xorriso -indev "$OUT" -boot_image any show_status 2>&1 | head -n 40 || true
 
 sha256sum "$OUT" | tee "$OUT.sha256"

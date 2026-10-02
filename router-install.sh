@@ -150,8 +150,18 @@ ensure_group(){
 ensure_peer_in_group(){
   local gid="$1" g payload
   g=$(api GET "/groups/$gid")
-  if jq -e --arg p "$PEER_ID" '(.peers // []) | index($p) != null' <<<"$g" >/dev/null; then return 0; fi
-  payload=$(jq -c --arg p "$PEER_ID" '.peers=((.peers // []) + [$p] | unique) | {name,peers}' <<<"$g")
+
+  # GET /groups/{id} liefert peers als Objekte. PUT /groups/{id}
+  # erwartet dagegen eine Liste von Peer-IDs (Strings).
+  if jq -e --arg p "$PEER_ID" '[(.peers // [])[]? | if type=="object" then .id else . end] | index($p) != null' <<<"$g" >/dev/null; then
+    return 0
+  fi
+
+  payload=$(jq -c --arg p "$PEER_ID" '{
+    name: .name,
+    peers: ([(.peers // [])[]? | if type=="object" then .id else . end] + [$p] | map(select(. != null and . != "")) | unique)
+  }' <<<"$g")
+
   api PUT "/groups/$gid" "$payload" >/dev/null
 }
 

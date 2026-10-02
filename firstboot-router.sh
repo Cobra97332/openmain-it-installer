@@ -26,7 +26,7 @@ done
 install -m 0755 /tmp/zabbix-proxy-install.sh /usr/local/sbin/zabbix-proxy-install
 install -m 0755 /tmp/zabbix-api-register.sh /usr/local/sbin/zabbix-api-register
 
-export NB_MANAGEMENT_URL="https://netbird.taxi-volkach.de"
+export NB_MANAGEMENT_URL="https://netbird.openmain-it.de"
 export NB_ZABBIX_SERVER="100.67.255.142"
 export NB_ZABBIX_API_URL="https://zabbix.openmain-it.de/api_jsonrpc.php"
 export NB_ZABBIX_API_TOKEN

@@ -22,7 +22,7 @@ BACKUP_METRIC="200"
 COMMON_URL="${NETBIRD_ROUTER_COMMON_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/router-install.sh}"
 ZABBIX_URL="${NETBIRD_ROUTER_ZABBIX_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/zabbix-proxy-install.sh}"
 ZABBIX_API_HELPER_URL="${NETBIRD_ROUTER_ZABBIX_API_HELPER_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/zabbix-api-register.sh}"
-ZABBIX_SERVER="${NB_ZABBIX_SERVER:-100.67.255.142}"
+ZABBIX_SERVER="${NB_ZABBIX_SERVER:-100.107.91.6}"
 ZABBIX_API_TOKEN="${NB_ZABBIX_API_TOKEN:-}"
 
 log(){ printf '\033[1;32m[+]\033[0m %s\n' "$*"; }

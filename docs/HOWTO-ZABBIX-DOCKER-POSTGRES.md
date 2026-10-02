@@ -207,7 +207,7 @@ journalctl -u zabbix-proxy -n 100 --no-pager
 NetBird-Verbindung zum Zabbix Server:
 
 ~~~
-nc -vz 100.67.255.142 10051
+nc -vz 100.107.91.6 10051
 ~~~
 
 Falls nc fehlt:

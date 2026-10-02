@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 VERSION="2.0"
-MGMT_URL="${NB_MANAGEMENT_URL:-https://netbird.taxi-volkach.de}"
+MGMT_URL="${NB_MANAGEMENT_URL:-https://netbird.openmain-it.de}"
 API_TOKEN="${NB_API_TOKEN:-}"
 SETUP_KEY="${NB_SETUP_KEY:-}"
 CUSTOMER="${NB_CUSTOMER_NAME:-}"

@@ -527,14 +527,14 @@ Die PSK-Datei sollte nach dem Update weiterhin vorhanden sein.
 Von einem Proxy:
 
 ```bash
-nc -vz 100.67.255.142 10051
+nc -vz 100.107.91.6 10051
 ```
 
 Falls `nc` nicht installiert ist:
 
 ```bash
 sudo apt install -y netcat-openbsd
-nc -vz 100.67.255.142 10051
+nc -vz 100.107.91.6 10051
 ```
 
 Danach im Zabbix-Frontend prüfen, ob der Proxy wieder Daten liefert.

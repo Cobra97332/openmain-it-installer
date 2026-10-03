@@ -1,7 +1,9 @@
 # HowTo: NetBird Kundenrouter als Proxmox-LXC
 
-Dieses HowTo beschreibt die Verwendung des All-in-One-Skripts
-`pve-netbird-lxc-all-in-one-v1.7.sh` auf einem Proxmox-VE-Host.
+Dieses HowTo beschreibt die beiden aktuellen PVE-Installer aus diesem öffentlichen Repository:
+
+- `install.sh` – NetBird-Router **mit Zabbix Proxy/Agent**
+- `install-no-zabbix.sh` – NetBird-Router **ohne Zabbix**
 
 Das Skript erstellt automatisch einen Debian-13-LXC, installiert und verbindet
 NetBird, richtet IPv4-Forwarding und nftables-BINAT ein und registriert den
@@ -20,6 +22,7 @@ Auf dem Proxmox-Host werden benötigt:
 - `/dev/net/tun` auf dem PVE-Host
 - NetBird Setup-Key
 - NetBird API-Token
+- Zabbix API-Token **nur bei `install.sh` mit Zabbix**; bei `install-no-zabbix.sh` nicht erforderlich
 - NetBird Management URL: `https://netbird.openmain-it.de`
 
 Das Skript erkennt automatisch, ob der PVE-Host `amd64` oder `arm64` verwendet
@@ -57,28 +60,118 @@ vergeben, zum Beispiel:
 Für größere Netze von `/16` bis `/23` wird ein passender Bereich ab `10.40.0.0`
 verwendet.
 
-## 3. Skript auf den PVE-Host kopieren
+## 3. Installation direkt von GitHub (Copy & Paste)
 
-Datei auf den Proxmox-Host kopieren und ausführbar machen:
+Alle folgenden Befehle werden direkt auf dem Proxmox-VE-Host als `root` ausgeführt.
+
+### Variante A: mit Zabbix
+
+**Download-Links:**
+
+- [install.sh direkt herunterladen](https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-router/pve/install.sh)
+- [install.sh auf GitHub öffnen](https://github.com/Cobra97332/openmain-it-installer/blob/main/netbird-router/pve/install.sh)
+
+#### Mit Zabbix herunterladen
+
+Kompletten Block kopieren:
 
 ```bash
-chmod +x pve-netbird-lxc-all-in-one-v1.7.sh
+set -e
+cd /root
+command -v curl >/dev/null || { apt update && apt install -y curl; }
+curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-router/pve/install.sh -o install.sh
+chmod 700 install.sh
 ```
 
-Optional kürzer benennen:
+#### Mit Zabbix: Download + Primary direkt installieren
+
+Nur `nb-kunde-1` und `Kunde GmbH` anpassen:
 
 ```bash
-mv pve-netbird-lxc-all-in-one-v1.7.sh install.sh
-chmod +x install.sh
+set -e
+cd /root
+command -v curl >/dev/null || { apt update && apt install -y curl; }
+curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-router/pve/install.sh -o install.sh
+chmod 700 install.sh
+./install.sh --role primary --hostname nb-kunde-1 --customer "Kunde GmbH"
 ```
 
-Alle folgenden Befehle werden direkt auf dem PVE-Host als `root` ausgeführt.
+Bei dieser Variante werden abgefragt:
+
+```text
+NetBird Setup Key:
+NetBird API Token:
+Zabbix API Token:
+```
+
+---
+
+### Variante B: ohne Zabbix
+
+Diese Variante installiert nur den NetBird-Kundenrouter mit BINAT. Es werden **kein Zabbix Proxy und kein Zabbix Agent** installiert.
+
+**Download-Links:**
+
+- [install-no-zabbix.sh direkt herunterladen](https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-router/pve/install-no-zabbix.sh)
+- [install-no-zabbix.sh auf GitHub öffnen](https://github.com/Cobra97332/openmain-it-installer/blob/main/netbird-router/pve/install-no-zabbix.sh)
+
+#### Ohne Zabbix herunterladen
+
+Kompletten Block kopieren:
+
+```bash
+set -e
+cd /root
+command -v curl >/dev/null || { apt update && apt install -y curl; }
+curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-router/pve/install-no-zabbix.sh -o install-no-zabbix.sh
+chmod 700 install-no-zabbix.sh
+```
+
+#### Ohne Zabbix: Download + Primary direkt installieren
+
+Nur `nb-kunde-1` und `Kunde GmbH` anpassen:
+
+```bash
+set -e
+cd /root
+command -v curl >/dev/null || { apt update && apt install -y curl; }
+curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-router/pve/install-no-zabbix.sh -o install-no-zabbix.sh
+chmod 700 install-no-zabbix.sh
+./install-no-zabbix.sh --role primary --hostname nb-kunde-1 --customer "Kunde GmbH"
+```
+
+Bei dieser Variante werden nur abgefragt:
+
+```text
+NetBird Setup Key:
+NetBird API Token:
+```
+
+Ein Zabbix API-Token wird **nicht** benötigt.
+
+---
+
+### Welche Variante verwenden?
+
+| Variante | NetBird | BINAT | Zabbix Proxy | Zabbix Agent | Zabbix API-Token |
+|---|---:|---:|---:|---:|---:|
+| `install.sh` | Ja | Ja | Ja | Ja | Ja |
+| `install-no-zabbix.sh` | Ja | Ja | Nein | Nein | Nein |
+
+Die Zugangsdaten werden interaktiv und verdeckt abgefragt. Dadurch müssen Setup-Key und API-Tokens nicht direkt in die Shell-History geschrieben werden.
+
+Optional können die heruntergeladenen Skripte vor dem Start geprüft werden:
+
+```bash
+head -n 20 /root/install.sh
+head -n 20 /root/install-no-zabbix.sh
+```
 
 ## 4. Primary-Router installieren
 
 Der Primary muss bei einem neuen Kunden immer zuerst eingerichtet werden.
 
-Beispiel:
+Mit Zabbix:
 
 ```bash
 ./install.sh \
@@ -87,15 +180,19 @@ Beispiel:
   --customer "Taxi Leykamm"
 ```
 
+Ohne Zabbix:
+
+```bash
+./install-no-zabbix.sh \
+  --role primary \
+  --hostname nb-taxi-1 \
+  --customer "Taxi Leykamm"
+```
+
 Wenn keine CT-ID angegeben wird, wählt das Skript automatisch die nächste freie
 Proxmox-CT-ID.
 
-Während der Installation werden abgefragt:
-
-```text
-NetBird Setup Key:
-NetBird API Token:
-```
+Während der Installation mit Zabbix werden NetBird Setup-Key, NetBird API-Token und Zabbix API-Token abgefragt. Bei der No-Zabbix-Variante werden nur NetBird Setup-Key und NetBird API-Token benötigt.
 
 Die Eingabe wird nicht sichtbar angezeigt.
 
@@ -111,10 +208,19 @@ Der Backup-Router wird erst nach dem Primary eingerichtet.
 
 Wichtig: `--customer` muss exakt denselben Wert wie beim Primary haben.
 
-Beispiel:
+Mit Zabbix:
 
 ```bash
 ./install.sh \
+  --role backup \
+  --hostname nb-taxi-2 \
+  --customer "Taxi Leykamm"
+```
+
+Ohne Zabbix:
+
+```bash
+./install-no-zabbix.sh \
   --role backup \
   --hostname nb-taxi-2 \
   --customer "Taxi Leykamm"
@@ -285,18 +391,29 @@ Falls nötig kann eine andere URL angegeben werden:
 
 ## 12. Setup-Key und API-Token ohne interaktive Eingabe
 
-Für automatisierte Installationen können beide Werte über Umgebungsvariablen
-gesetzt werden:
+Für automatisierte Installationen können die Werte über Umgebungsvariablen
+gesetzt werden.
+
+Mit Zabbix:
 
 ```bash
 export NB_SETUP_KEY='DEIN_SETUP_KEY'
 export NB_API_TOKEN='DEIN_API_TOKEN'
+export NB_ZABBIX_API_TOKEN='DEIN_ZABBIX_API_TOKEN'
+
+./install.sh \
+  --role primary \
+  --hostname nb-taxi-1 \
+  --customer "Taxi Leykamm"
 ```
 
-Danach:
+Ohne Zabbix:
 
 ```bash
-./install.sh \
+export NB_SETUP_KEY='DEIN_SETUP_KEY'
+export NB_API_TOKEN='DEIN_API_TOKEN'
+
+./install-no-zabbix.sh \
   --role primary \
   --hostname nb-taxi-1 \
   --customer "Taxi Leykamm"

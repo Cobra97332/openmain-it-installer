@@ -5,6 +5,8 @@ VERSION="2.0"
 MGMT_URL="${NB_MANAGEMENT_URL:-https://netbird.openmain-it.de}"
 API_TOKEN="${NB_API_TOKEN:-}"
 SETUP_KEY="${NB_SETUP_KEY:-}"
+CT_PASSWORD="${NB_CT_PASSWORD:-}"
+ADMIN_USER="${NB_ADMIN_USER:-omadmin}"
 CUSTOMER="${NB_CUSTOMER_NAME:-}"
 HOSTNAME_OVERRIDE="${NB_HOSTNAME:-}"
 ROLE="${NB_ROLE:-primary}"
@@ -80,7 +82,7 @@ api(){
 
 install_packages(){
   apt-get update -y
-  DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg jq nftables python3 iproute2
+  DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg jq nftables python3 iproute2 openssh-server sudo
   if ! command -v netbird >/dev/null 2>&1; then
     install -d -m 0755 /usr/share/keyrings
     curl -fsSL https://pkgs.netbird.io/debian/public.key | gpg --dearmor --yes -o /usr/share/keyrings/netbird-archive-keyring.gpg
@@ -88,6 +90,32 @@ install_packages(){
     apt-get update -y
     DEBIAN_FRONTEND=noninteractive apt-get install -y netbird
   fi
+}
+
+setup_access(){
+  if ! id "$ADMIN_USER" >/dev/null 2>&1; then
+    useradd -m -s /bin/bash "$ADMIN_USER"
+  fi
+  usermod -aG sudo "$ADMIN_USER"
+
+  if [[ -n "$CT_PASSWORD" ]]; then
+    printf '%s:%s\n' "$ADMIN_USER" "$CT_PASSWORD" | chpasswd
+  fi
+
+  install -d -m 0700 -o "$ADMIN_USER" -g "$ADMIN_USER" "/home/$ADMIN_USER/.ssh"
+  if [[ -s /root/.ssh/authorized_keys ]]; then
+    install -m 0600 -o "$ADMIN_USER" -g "$ADMIN_USER" /root/.ssh/authorized_keys "/home/$ADMIN_USER/.ssh/authorized_keys"
+  fi
+
+  install -d -m 0755 /etc/ssh/sshd_config.d
+  cat > /etc/ssh/sshd_config.d/99-openmain-access.conf <<'EOF'
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+PasswordAuthentication yes
+EOF
+  systemctl enable --now ssh >/dev/null 2>&1 || systemctl enable --now sshd >/dev/null 2>&1 || true
+  systemctl restart ssh >/dev/null 2>&1 || systemctl restart sshd >/dev/null 2>&1 || true
+  log "SSH-Zugang: root per Key, $ADMIN_USER per Key/Passwort."
 }
 
 detect_lan(){
@@ -308,6 +336,7 @@ save_state(){
 
 main(){
   install_packages
+  setup_access
   detect_lan
   enable_forwarding
   connect_netbird

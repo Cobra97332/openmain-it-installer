@@ -63,7 +63,7 @@ done
 NODE="$(hostname -s)"
 
 api_reachable() {
-  curl -fsS --connect-timeout 8 "$PATCHMON_URL/" >/dev/null 2>&1
+  curl -fsS --connect-timeout 8 --max-time 15 "$PATCHMON_URL/health" >/dev/null 2>&1
 }
 
 guest_linux_has_agent_lxc() {

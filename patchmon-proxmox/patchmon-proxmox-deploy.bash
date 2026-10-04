@@ -63,19 +63,44 @@ api_reachable() {
 }
 
 guest_linux_has_agent_lxc() {
-  pct exec "$1" -- test -f /etc/patchmon/config.yml >/dev/null 2>&1
+  pct exec "$1" -- /bin/sh -c '
+    test -f /etc/patchmon/config.yml &&
+    test -f /etc/patchmon/credentials.yml &&
+    test -x /usr/local/bin/patchmon-agent &&
+    /usr/local/bin/patchmon-agent ping >/dev/null 2>&1
+  ' >/dev/null 2>&1
+}
+
+guest_linux_has_config_lxc() {
+  pct exec "$1" -- /bin/sh -c '
+    test -f /etc/patchmon/config.yml ||
+    test -f /etc/patchmon/credentials.yml ||
+    test -x /usr/local/bin/patchmon-agent
+  ' >/dev/null 2>&1
 }
 
 guest_unix_has_agent_vm() {
   local out
-  out="$(qm guest exec "$1" -- /bin/sh -c 'test -f /etc/patchmon/config.yml && echo PATCHMON_INSTALLED || true' 2>/dev/null || true)"
-  grep -q 'PATCHMON_INSTALLED' <<<"$out"
+  out="$(qm guest exec "$1" -- /bin/sh -c 'if test -f /etc/patchmon/config.yml && test -f /etc/patchmon/credentials.yml && test -x /usr/local/bin/patchmon-agent && /usr/local/bin/patchmon-agent ping >/dev/null 2>&1; then echo PATCHMON_HEALTHY; fi' 2>/dev/null || true)"
+  grep -q 'PATCHMON_HEALTHY' <<<"$out"
+}
+
+guest_unix_has_config_vm() {
+  local out
+  out="$(qm guest exec "$1" -- /bin/sh -c 'if test -f /etc/patchmon/config.yml || test -f /etc/patchmon/credentials.yml || test -x /usr/local/bin/patchmon-agent; then echo PATCHMON_CONFIG_PRESENT; fi' 2>/dev/null || true)"
+  grep -q 'PATCHMON_CONFIG_PRESENT' <<<"$out"
 }
 
 guest_windows_has_agent_vm() {
   local out
-  out="$(qm guest exec "$1" -- powershell.exe -NoProfile -NonInteractive -Command "if (Test-Path 'C:\\ProgramData\\PatchMon\\config.yml') { Write-Output PATCHMON_INSTALLED }" 2>/dev/null || true)"
-  grep -q 'PATCHMON_INSTALLED' <<<"$out"
+  out="$(qm guest exec "$1" -- powershell.exe -NoProfile -NonInteractive -Command "if ((Test-Path 'C:\\ProgramData\\PatchMon\\config.yml') -and (Test-Path 'C:\\ProgramData\\PatchMon\\credentials.yml') -and (Test-Path 'C:\\Program Files\\PatchMon\\patchmon-agent.exe')) { & 'C:\\Program Files\\PatchMon\\patchmon-agent.exe' ping *> \$null; if (\$LASTEXITCODE -eq 0) { Write-Output PATCHMON_HEALTHY } }" 2>/dev/null || true)"
+  grep -q 'PATCHMON_HEALTHY' <<<"$out"
+}
+
+guest_windows_has_config_vm() {
+  local out
+  out="$(qm guest exec "$1" -- powershell.exe -NoProfile -NonInteractive -Command "if ((Test-Path 'C:\\ProgramData\\PatchMon\\config.yml') -or (Test-Path 'C:\\ProgramData\\PatchMon\\credentials.yml') -or (Test-Path 'C:\\Program Files\\PatchMon\\patchmon-agent.exe')) { Write-Output PATCHMON_CONFIG_PRESENT }" 2>/dev/null || true)"
+  grep -q 'PATCHMON_CONFIG_PRESENT' <<<"$out"
 }
 
 enroll_host() {
@@ -123,8 +148,14 @@ install_lxc() {
 
   if guest_linux_has_agent_lxc "$id"; then
     rm -f "$state"
-    log "LXC $id ($name): PatchMon bereits installiert"
+    log "LXC $id ($name): PatchMon-Agent gesund, übersprungen"
     return
+  fi
+
+  if guest_linux_has_config_lxc "$id" && [[ ! -s "$state" ]]; then
+    log "LXC $id ($name): PatchMon-Konfiguration vorhanden, Agent aber nicht erreichbar. Kein neues Enrollment, damit kein doppelter Host entsteht."
+    pct exec "$id" -- /bin/sh -c 'systemctl restart patchmon-agent >/dev/null 2>&1 || service patchmon-agent restart >/dev/null 2>&1 || true; sleep 2; /usr/local/bin/patchmon-agent report >/dev/null 2>&1 || true' >>"$LOG_FILE" 2>&1 || true
+    return 1
   fi
 
   enroll_host "lxc" "$id" "$name" "linux" "$state" || {
@@ -147,8 +178,13 @@ fi
 curl -fsSL '$PATCHMON_URL/api/v1/hosts/install$([[ "$FORCE_INSTALL" == "true" ]] && printf '?force=true')' -H 'X-API-ID: $api_id' -H 'X-API-KEY: $api_key' | sh"
 
   if pct exec "$id" -- /bin/sh -c "$cmd" >>"$LOG_FILE" 2>&1; then
-    rm -f "$state"
-    log "LXC $id ($name): PatchMon erfolgreich installiert"
+    if pct exec "$id" -- /bin/sh -c 'systemctl restart patchmon-agent >/dev/null 2>&1 || service patchmon-agent restart >/dev/null 2>&1 || true; sleep 2; /usr/local/bin/patchmon-agent ping >/dev/null 2>&1 && /usr/local/bin/patchmon-agent report >/dev/null 2>&1' >>"$LOG_FILE" 2>&1; then
+      rm -f "$state"
+      log "LXC $id ($name): PatchMon erfolgreich installiert und Verbindung geprüft"
+    else
+      log "LXC $id ($name): Installer lief durch, Agent ist aber noch nicht erreichbar – Credentials bleiben für Retry gespeichert"
+      return 1
+    fi
   else
     log "LXC $id ($name): Installation fehlgeschlagen – Credentials bleiben für Retry gespeichert"
     return 1
@@ -193,8 +229,14 @@ install_unix_vm() {
 
   if guest_unix_has_agent_vm "$id"; then
     rm -f "$state"
-    log "VM $id ($name/$os): PatchMon bereits installiert"
+    log "VM $id ($name/$os): PatchMon-Agent gesund, übersprungen"
     return
+  fi
+
+  if guest_unix_has_config_vm "$id" && [[ ! -s "$state" ]]; then
+    log "VM $id ($name/$os): PatchMon-Konfiguration vorhanden, Agent aber nicht erreichbar. Kein neues Enrollment, damit kein doppelter Host entsteht."
+    qm guest exec "$id" -- /bin/sh -c 'systemctl restart patchmon-agent >/dev/null 2>&1 || service patchmon-agent restart >/dev/null 2>&1 || true; sleep 2; /usr/local/bin/patchmon-agent report >/dev/null 2>&1 || true' >>"$LOG_FILE" 2>&1 || true
+    return 1
   fi
 
   enroll_host "vm" "$id" "$name" "$os" "$state" || {
@@ -226,8 +268,13 @@ curl -fsSL '$PATCHMON_URL/api/v1/hosts/install$query' -H 'X-API-ID: $api_id' -H 
   fi
 
   if qm guest exec "$id" -- /bin/sh -c "$cmd" >>"$LOG_FILE" 2>&1; then
-    rm -f "$state"
-    log "VM $id ($name/$os): PatchMon erfolgreich installiert"
+    if qm guest exec "$id" -- /bin/sh -c 'systemctl restart patchmon-agent >/dev/null 2>&1 || service patchmon-agent restart >/dev/null 2>&1 || true; sleep 2; /usr/local/bin/patchmon-agent ping >/dev/null 2>&1 && /usr/local/bin/patchmon-agent report >/dev/null 2>&1' >>"$LOG_FILE" 2>&1; then
+      rm -f "$state"
+      log "VM $id ($name/$os): PatchMon erfolgreich installiert und Verbindung geprüft"
+    else
+      log "VM $id ($name/$os): Installer lief durch, Agent ist aber noch nicht erreichbar – Credentials bleiben für Retry gespeichert"
+      return 1
+    fi
   else
     log "VM $id ($name/$os): Installation fehlgeschlagen – Credentials bleiben für Retry gespeichert"
     return 1
@@ -240,8 +287,14 @@ install_windows_vm() {
 
   if guest_windows_has_agent_vm "$id"; then
     rm -f "$state"
-    log "VM $id ($name/windows): PatchMon bereits installiert"
+    log "VM $id ($name/windows): PatchMon-Agent gesund, übersprungen"
     return
+  fi
+
+  if guest_windows_has_config_vm "$id" && [[ ! -s "$state" ]]; then
+    log "VM $id ($name/windows): PatchMon-Konfiguration vorhanden, Agent aber nicht erreichbar. Kein neues Enrollment, damit kein doppelter Host entsteht."
+    qm guest exec "$id" -- powershell.exe -NoProfile -NonInteractive -Command "Restart-Service -Name PatchMonAgent -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; if (Test-Path 'C:\\Program Files\\PatchMon\\patchmon-agent.exe') { & 'C:\\Program Files\\PatchMon\\patchmon-agent.exe' report *> \$null }" >>"$LOG_FILE" 2>&1 || true
+    return 1
   fi
 
   enroll_host "vm" "$id" "$name" "windows" "$state" || {
@@ -256,8 +309,13 @@ install_windows_vm() {
   ps="\$ErrorActionPreference='Stop'; \$h=@{'X-API-ID'='$api_id';'X-API-KEY'='$api_key'}; \$f=Join-Path \$env:TEMP 'patchmon-install.ps1'; Invoke-WebRequest -Uri '$PATCHMON_URL/api/v1/hosts/install?os=windows' -Headers \$h -UseBasicParsing -OutFile \$f; & \$f"
 
   if qm guest exec "$id" -- powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$ps" >>"$LOG_FILE" 2>&1; then
-    rm -f "$state"
-    log "VM $id ($name/windows): PatchMon erfolgreich installiert"
+    if qm guest exec "$id" -- powershell.exe -NoProfile -NonInteractive -Command "Restart-Service -Name PatchMonAgent -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; & 'C:\\Program Files\\PatchMon\\patchmon-agent.exe' ping *> \$null; if (\$LASTEXITCODE -ne 0) { exit 1 }; & 'C:\\Program Files\\PatchMon\\patchmon-agent.exe' report *> \$null; exit \$LASTEXITCODE" >>"$LOG_FILE" 2>&1; then
+      rm -f "$state"
+      log "VM $id ($name/windows): PatchMon erfolgreich installiert und Verbindung geprüft"
+    else
+      log "VM $id ($name/windows): Installer lief durch, Agent ist aber noch nicht erreichbar – Credentials bleiben für Retry gespeichert"
+      return 1
+    fi
   else
     log "VM $id ($name/windows): Installation fehlgeschlagen – Credentials bleiben für Retry gespeichert"
     return 1

@@ -44,6 +44,7 @@ ENABLE_LXC="${ENABLE_LXC:-true}"
 ENABLE_LINUX_VMS="${ENABLE_LINUX_VMS:-true}"
 ENABLE_WINDOWS_VMS="${ENABLE_WINDOWS_VMS:-true}"
 ENABLE_FREEBSD_VMS="${ENABLE_FREEBSD_VMS:-true}"
+AUTO_REENROLL_INVALID="${AUTO_REENROLL_INVALID:-true}"
 FORCE_INSTALL="${ENV_FORCE_INSTALL:-${FORCE_INSTALL:-false}}"
 DRY_RUN="${ENV_DRY_RUN:-${DRY_RUN:-false}}"
 ENABLE_LXC="${ENV_ENABLE_LXC:-$ENABLE_LXC}"
@@ -83,6 +84,12 @@ guest_linux_has_config_lxc() {
   ' >/dev/null 2>&1
 }
 
+guest_linux_registration_invalid_lxc() {
+  local out
+  out="$(pct exec "$1" -- /bin/sh -c '/usr/local/bin/patchmon-agent ping 2>&1 || true' 2>/dev/null || true)"
+  grep -Eqi 'status[[:space:]]+401|Invalid API credentials' <<<"$out"
+}
+
 guest_unix_has_agent_vm() {
   local out
   out="$(qm guest exec "$1" -- /bin/sh -c 'if test -f /etc/patchmon/config.yml && test -f /etc/patchmon/credentials.yml && test -x /usr/local/bin/patchmon-agent && /usr/local/bin/patchmon-agent ping >/dev/null 2>&1; then echo PATCHMON_HEALTHY; fi' 2>/dev/null || true)"
@@ -95,6 +102,12 @@ guest_unix_has_config_vm() {
   grep -q 'PATCHMON_CONFIG_PRESENT' <<<"$out"
 }
 
+guest_unix_registration_invalid_vm() {
+  local out
+  out="$(qm guest exec "$1" -- /bin/sh -c '/usr/local/bin/patchmon-agent ping 2>&1 || true' 2>/dev/null || true)"
+  grep -Eqi 'status[[:space:]]+401|Invalid API credentials' <<<"$out"
+}
+
 guest_windows_has_agent_vm() {
   local out
   out="$(qm guest exec "$1" -- powershell.exe -NoProfile -NonInteractive -Command "if ((Test-Path 'C:\\ProgramData\\PatchMon\\config.yml') -and (Test-Path 'C:\\ProgramData\\PatchMon\\credentials.yml') -and (Test-Path 'C:\\Program Files\\PatchMon\\patchmon-agent.exe')) { & 'C:\\Program Files\\PatchMon\\patchmon-agent.exe' ping *> \$null; if (\$LASTEXITCODE -eq 0) { Write-Output PATCHMON_HEALTHY } }" 2>/dev/null || true)"
@@ -105,6 +118,12 @@ guest_windows_has_config_vm() {
   local out
   out="$(qm guest exec "$1" -- powershell.exe -NoProfile -NonInteractive -Command "if ((Test-Path 'C:\\ProgramData\\PatchMon\\config.yml') -or (Test-Path 'C:\\ProgramData\\PatchMon\\credentials.yml') -or (Test-Path 'C:\\Program Files\\PatchMon\\patchmon-agent.exe')) { Write-Output PATCHMON_CONFIG_PRESENT }" 2>/dev/null || true)"
   grep -q 'PATCHMON_CONFIG_PRESENT' <<<"$out"
+}
+
+guest_windows_registration_invalid_vm() {
+  local out
+  out="$(qm guest exec "$1" -- powershell.exe -NoProfile -NonInteractive -Command "if (Test-Path 'C:\\Program Files\\PatchMon\\patchmon-agent.exe') { & 'C:\\Program Files\\PatchMon\\patchmon-agent.exe' ping 2>&1 | Out-String }" 2>/dev/null || true)"
+  grep -Eqi 'status[[:space:]]+401|Invalid API credentials' <<<"$out"
 }
 
 enroll_host() {
@@ -168,9 +187,14 @@ install_lxc() {
   fi
 
   if guest_linux_has_config_lxc "$id" && [[ ! -s "$state" ]]; then
-    log "LXC $id ($name): PatchMon-Konfiguration vorhanden, Agent aber nicht erreichbar. Kein neues Enrollment, damit kein doppelter Host entsteht."
-    pct exec "$id" -- /bin/sh -c 'systemctl restart patchmon-agent >/dev/null 2>&1 || service patchmon-agent restart >/dev/null 2>&1 || true; sleep 2; /usr/local/bin/patchmon-agent report >/dev/null 2>&1 || true' >>"$LOG_FILE" 2>&1 || true
-    return 1
+    if [[ "$AUTO_REENROLL_INVALID" == "true" ]] && guest_linux_registration_invalid_lxc "$id"; then
+      log "LXC $id ($name): vorhandene Agent-Credentials werden von PatchMon mit HTTP 401 abgelehnt. Host fehlt oder Registrierung ist ungültig – erneutes Enrollment."
+      rm -f "$state"
+    else
+      log "LXC $id ($name): PatchMon-Konfiguration vorhanden, Agent aber nicht erreichbar. Registrierung nicht eindeutig ungültig – kein neues Enrollment, um Dubletten zu vermeiden."
+      pct exec "$id" -- /bin/sh -c 'systemctl restart patchmon-agent >/dev/null 2>&1 || service patchmon-agent restart >/dev/null 2>&1 || true; sleep 2; /usr/local/bin/patchmon-agent report >/dev/null 2>&1 || true' >>"$LOG_FILE" 2>&1 || true
+      return 1
+    fi
   fi
 
   enroll_host "lxc" "$id" "$name" "linux" "$state" || {
@@ -249,9 +273,14 @@ install_unix_vm() {
   fi
 
   if guest_unix_has_config_vm "$id" && [[ ! -s "$state" ]]; then
-    log "VM $id ($name/$os): PatchMon-Konfiguration vorhanden, Agent aber nicht erreichbar. Kein neues Enrollment, damit kein doppelter Host entsteht."
-    qm guest exec "$id" -- /bin/sh -c 'systemctl restart patchmon-agent >/dev/null 2>&1 || service patchmon-agent restart >/dev/null 2>&1 || true; sleep 2; /usr/local/bin/patchmon-agent report >/dev/null 2>&1 || true' >>"$LOG_FILE" 2>&1 || true
-    return 1
+    if [[ "$AUTO_REENROLL_INVALID" == "true" ]] && guest_unix_registration_invalid_vm "$id"; then
+      log "VM $id ($name/$os): vorhandene Agent-Credentials werden von PatchMon mit HTTP 401 abgelehnt. Host fehlt oder Registrierung ist ungültig – erneutes Enrollment."
+      rm -f "$state"
+    else
+      log "VM $id ($name/$os): PatchMon-Konfiguration vorhanden, Agent aber nicht erreichbar. Registrierung nicht eindeutig ungültig – kein neues Enrollment, um Dubletten zu vermeiden."
+      qm guest exec "$id" -- /bin/sh -c 'systemctl restart patchmon-agent >/dev/null 2>&1 || service patchmon-agent restart >/dev/null 2>&1 || true; sleep 2; /usr/local/bin/patchmon-agent report >/dev/null 2>&1 || true' >>"$LOG_FILE" 2>&1 || true
+      return 1
+    fi
   fi
 
   enroll_host "vm" "$id" "$name" "$os" "$state" || {

@@ -20,13 +20,15 @@ cd openmain-it-installer/patchmon-proxmox
 bash install.bash
 ```
 
-Danach:
+Während der Installation werden jetzt direkt abgefragt:
 
-```bash
-nano /etc/patchmon-proxmox.env
-```
+- PatchMon-URL
+- Auto-Enrollment Token Key
+- Auto-Enrollment Token Secret
 
-Dort PatchMon-URL und Auto-Enrollment-Zugangsdaten eintragen.
+Das Secret wird bei der Eingabe nicht angezeigt. Die Werte werden anschließend mit Modus `0600` in `/etc/patchmon-proxmox.env` gespeichert.
+
+Wichtig: Die gewünschte Standardgruppe wird in PatchMon **am Auto-Enrollment-Token** festgelegt. Dadurch werden neue Hosts beim ersten Enrollment automatisch dieser Gruppe zugeordnet.
 
 ## Erst testen
 

@@ -67,6 +67,20 @@ Für OPNsense das QEMU-Guest-Agent-Plugin installieren und in den VM-Optionen de
 - `systemd/patchmon-proxmox-deploy.service`
 - `systemd/patchmon-proxmox-deploy.timer`
 
-## DNS
+## Öffentliche Erreichbarkeit
 
-PVE und Gäste müssen `https://patchmon.openmain-it.de` erreichen. In der vorhandenen Topologie kann OPNsense/Unbound per Split-DNS auf die interne Nginx-IP zeigen.
+PatchMon muss für dieses Deployment **öffentlich über HTTPS erreichbar** sein:
+
+```text
+https://patchmon.openmain-it.de
+```
+
+Erforderlich:
+
+- öffentliches DNS
+- TCP/443 erreichbar
+- gültiges öffentliches TLS-Zertifikat
+- Reverse Proxy mit funktionierendem WebSocket/WSS-Passthrough
+- keine Abhängigkeit von NetBird oder internem Split-DNS
+
+Bei `WS offline` in PatchMon zuerst den Reverse Proxy und WebSocket-Upgrade-Header prüfen.

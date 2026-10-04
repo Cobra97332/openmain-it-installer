@@ -12,13 +12,15 @@ Die VM-Ausführung verwendet den QEMU Guest Agent. Zugangsdaten werden ausschlie
 
 ## Installation auf dem PVE
 
-Repository laden:
+Direkt als Einzeiler, ohne Git-Clone:
 
 ```bash
-git clone https://github.com/Cobra97332/openmain-it-installer.git
-cd openmain-it-installer/patchmon-proxmox
-bash install.bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/patchmon-proxmox/install.bash)
 ```
+
+Der Installer lädt die benötigten Dateien selbst aus dem öffentlichen Repository nach `/usr/local/sbin` bzw. `/etc/systemd/system`.
+
+Wegen der interaktiven Token-Abfrage bitte `bash <(curl ...)` verwenden und nicht `curl ... | bash`.
 
 Während der Installation werden jetzt direkt abgefragt:
 

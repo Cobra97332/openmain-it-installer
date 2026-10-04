@@ -50,7 +50,7 @@ EOF
 chmod 0600 "$CONFIG_FILE"
 
 systemctl daemon-reload
-systemctl enable patchmon-proxmox-deploy.timer
+systemctl enable --now patchmon-proxmox-deploy.timer
 
 echo
 echo "Installation abgeschlossen."

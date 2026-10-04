@@ -35,6 +35,10 @@ source "$CONFIG_FILE"
 : "${AUTO_ENROLLMENT_KEY:?AUTO_ENROLLMENT_KEY fehlt}"
 : "${AUTO_ENROLLMENT_SECRET:?AUTO_ENROLLMENT_SECRET fehlt}"
 
+if [[ "$AUTO_ENROLLMENT_KEY" == "HIER_EINTRAGEN" || "$AUTO_ENROLLMENT_SECRET" == "HIER_EINTRAGEN" ]]; then
+  die "Auto-Enrollment-Zugangsdaten sind noch nicht gesetzt. /etc/patchmon-proxmox.env bearbeiten."
+fi
+
 PATCHMON_URL="${PATCHMON_URL%/}"
 ENABLE_LXC="${ENABLE_LXC:-true}"
 ENABLE_LINUX_VMS="${ENABLE_LINUX_VMS:-true}"
@@ -124,8 +128,19 @@ enroll_host() {
   http="$(curl -sS --connect-timeout 10 --max-time 30     -o "$tmp" -w '%{http_code}'     -X POST "$PATCHMON_URL/api/v1/auto-enrollment/enroll"     -H "X-Auto-Enrollment-Key: $AUTO_ENROLLMENT_KEY"     -H "X-Auto-Enrollment-Secret: $AUTO_ENROLLMENT_SECRET"     -H 'Content-Type: application/json'     --data "$payload" || true)"
 
   if [[ "$http" != "201" ]]; then
-    log "$kind $id ($name): Enrollment fehlgeschlagen (HTTP $http): $(tr '\n' ' ' < "$tmp")"
+    local body
+    body="$(tr '\n' ' ' < "$tmp")"
     rm -f "$tmp"
+
+    if [[ "$http" == "401" ]]; then
+      die "PatchMon lehnt den Auto-Enrollment-Token ab (HTTP 401): $body. AUTO_ENROLLMENT_KEY/SECRET in /etc/patchmon-proxmox.env prüfen und sicherstellen, dass der Token in PatchMon aktiv ist."
+    fi
+
+    if [[ "$http" == "403" ]]; then
+      die "PatchMon lehnt die Quell-IP für den Auto-Enrollment-Token ab (HTTP 403): $body. Allowed IP Ranges des Tokens prüfen."
+    fi
+
+    log "$kind $id ($name): Enrollment fehlgeschlagen (HTTP $http): $body"
     return 1
   fi
 

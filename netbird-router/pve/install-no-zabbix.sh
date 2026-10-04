@@ -17,6 +17,8 @@ GATEWAY=""
 MGMT_URL="https://netbird.openmain-it.de"
 SETUP_KEY="${NB_SETUP_KEY:-}"
 API_TOKEN="${NB_API_TOKEN:-}"
+CT_PASSWORD="${NB_CT_PASSWORD:-}"
+SSH_KEY_URL="${NB_CT_SSH_KEY_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-router/pve/authorized_keys}"
 PRIMARY_METRIC="100"
 BACKUP_METRIC="200"
 COMMON_URL="${NETBIRD_ROUTER_COMMON_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/router-install.sh}"
@@ -42,6 +44,8 @@ while [[ $# -gt 0 ]]; do
     --management-url) MGMT_URL="$2"; shift 2;;
     --setup-key) SETUP_KEY="$2"; shift 2;;
     --api-token) API_TOKEN="$2"; shift 2;;
+    --ct-password) CT_PASSWORD="$2"; shift 2;;
+    --ssh-key-url) SSH_KEY_URL="$2"; shift 2;;
     *) die "Unbekannte Option: $1";;
   esac
 done
@@ -54,6 +58,12 @@ command -v pct >/dev/null || die "pct fehlt."
 [[ -n "$CUSTOMER" ]] || read -r -p "Firmenname: " CUSTOMER
 [[ -n "$SETUP_KEY" ]] || { read -r -s -p "NetBird Setup Key: " SETUP_KEY; echo; }
 [[ -n "$API_TOKEN" ]] || { read -r -s -p "NetBird API Token: " API_TOKEN; echo; }
+if [[ -z "$CT_PASSWORD" ]]; then
+  read -r -s -p "CT-Passwort (root + omadmin): " CT_PASSWORD; echo
+  read -r -s -p "CT-Passwort wiederholen: " CT_PASSWORD_CONFIRM; echo
+  [[ "$CT_PASSWORD" == "$CT_PASSWORD_CONFIRM" ]] || die "CT-Passwörter stimmen nicht überein."
+fi
+[[ -n "$CT_PASSWORD" ]] || die "CT-Passwort darf nicht leer sein."
 pct status "$CTID" >/dev/null 2>&1 && die "CT $CTID existiert bereits."
 
 case "$(uname -m)" in
@@ -94,6 +104,12 @@ else
   [[ -n "$GATEWAY" ]] && NET0+=",gw=$GATEWAY"
 fi
 
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+curl -fsSL "$SSH_KEY_URL" -o "$TMP/authorized_keys" || die "SSH Public Key konnte nicht geladen werden: $SSH_KEY_URL"
+grep -Eq '^ssh-(ed25519|rsa|ecdsa-[^ ]+) ' "$TMP/authorized_keys" || die "Ungültige authorized_keys-Datei."
+chmod 600 "$TMP/authorized_keys"
+
 log "Erstelle CT $CTID ($HOSTNAME_CT) ohne Zabbix"
 pct create "$CTID" "$TEMPLATE_PATH" \
   --hostname "$HOSTNAME_CT" \
@@ -106,7 +122,9 @@ pct create "$CTID" "$TEMPLATE_PATH" \
   --rootfs "$ROOTFS_STORAGE:$DISK_GB" \
   --net0 "$NET0" \
   --onboot 1 \
-  --ostype debian
+  --ostype debian \
+  --password "$CT_PASSWORD" \
+  --ssh-public-keys "$TMP/authorized_keys"
 
 CONF="/etc/pve/lxc/$CTID.conf"
 grep -qF 'lxc.cgroup2.devices.allow: c 10:200 rwm' "$CONF" || echo 'lxc.cgroup2.devices.allow: c 10:200 rwm' >> "$CONF"
@@ -119,9 +137,6 @@ for _ in {1..30}; do
 done
 pct exec "$CTID" -- test -c /dev/net/tun || die "TUN nicht im Container."
 
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
-
 curl -fsSL "$COMMON_URL" -o "$TMP/router-install.sh" || die "router-install.sh konnte nicht von GitHub geladen werden."
 chmod 700 "$TMP/router-install.sh"
 pct push "$CTID" "$TMP/router-install.sh" /root/router-install.sh -perms 700
@@ -129,6 +144,7 @@ pct push "$CTID" "$TMP/router-install.sh" /root/router-install.sh -perms 700
 cat > "$TMP/secrets" <<EOF
 NB_SETUP_KEY=$(printf '%q' "$SETUP_KEY")
 NB_API_TOKEN=$(printf '%q' "$API_TOKEN")
+NB_CT_PASSWORD=$(printf '%q' "$CT_PASSWORD")
 NB_MANAGEMENT_URL=$(printf '%q' "$MGMT_URL")
 NB_ROLE=$(printf '%q' "$ROLE")
 NB_PRIMARY_METRIC=$(printf '%q' "$PRIMARY_METRIC")

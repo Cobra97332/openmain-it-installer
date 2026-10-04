@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
+RAW_BASE="https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/patchmon-proxmox"
 CONFIG_FILE="/etc/patchmon-proxmox.env"
 DEFAULT_PATCHMON_URL="https://patchmon.openmain-it.de"
 
 [[ $EUID -eq 0 ]] || { echo "Bitte als root ausführen."; exit 1; }
+
+for cmd in curl apt-get systemctl; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "Benötigter Befehl fehlt: $cmd"; exit 1; }
+done
+
+if ! command -v jq >/dev/null 2>&1; then
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y jq
+fi
 
 echo "PatchMon Proxmox Installation"
 echo
@@ -31,22 +40,28 @@ echo "wird automatisch für neu aufgenommene Hosts verwendet."
 echo
 
 install -d -m 0755 /usr/local/sbin
-install -m 0700 "$BASE_DIR/patchmon-proxmox-deploy.bash" /usr/local/sbin/patchmon-proxmox-deploy
-install -m 0644 "$BASE_DIR/systemd/patchmon-proxmox-deploy.service" /etc/systemd/system/patchmon-proxmox-deploy.service
-install -m 0644 "$BASE_DIR/systemd/patchmon-proxmox-deploy.timer" /etc/systemd/system/patchmon-proxmox-deploy.timer
+
+curl -fsSL "$RAW_BASE/patchmon-proxmox-deploy.bash"   -o /usr/local/sbin/patchmon-proxmox-deploy
+chmod 0700 /usr/local/sbin/patchmon-proxmox-deploy
+
+curl -fsSL "$RAW_BASE/systemd/patchmon-proxmox-deploy.service"   -o /etc/systemd/system/patchmon-proxmox-deploy.service
+chmod 0644 /etc/systemd/system/patchmon-proxmox-deploy.service
+
+curl -fsSL "$RAW_BASE/systemd/patchmon-proxmox-deploy.timer"   -o /etc/systemd/system/patchmon-proxmox-deploy.timer
+chmod 0644 /etc/systemd/system/patchmon-proxmox-deploy.timer
 
 umask 077
-cat > "$CONFIG_FILE" <<EOF
-# Lokale Konfiguration für den PVE-Host
-PATCHMON_URL="$PATCHMON_URL"
-AUTO_ENROLLMENT_KEY="$AUTO_ENROLLMENT_KEY"
-AUTO_ENROLLMENT_SECRET="$AUTO_ENROLLMENT_SECRET"
-ENABLE_LXC=true
-ENABLE_LINUX_VMS=true
-ENABLE_WINDOWS_VMS=true
-ENABLE_FREEBSD_VMS=true
-DRY_RUN=false
-EOF
+{
+  echo "# Lokale Konfiguration für den PVE-Host"
+  printf 'PATCHMON_URL=%q\n' "$PATCHMON_URL"
+  printf 'AUTO_ENROLLMENT_KEY=%q\n' "$AUTO_ENROLLMENT_KEY"
+  printf 'AUTO_ENROLLMENT_SECRET=%q\n' "$AUTO_ENROLLMENT_SECRET"
+  echo "ENABLE_LXC=true"
+  echo "ENABLE_LINUX_VMS=true"
+  echo "ENABLE_WINDOWS_VMS=true"
+  echo "ENABLE_FREEBSD_VMS=true"
+  echo "DRY_RUN=false"
+} > "$CONFIG_FILE"
 chmod 0600 "$CONFIG_FILE"
 
 systemctl daemon-reload
@@ -55,6 +70,8 @@ systemctl enable --now patchmon-proxmox-deploy.timer
 echo
 echo "Installation abgeschlossen."
 echo "Konfiguration: $CONFIG_FILE"
+echo "Timer: patchmon-proxmox-deploy.timer ist aktiviert und gestartet."
+echo
 echo "Testlauf:"
 echo "  DRY_RUN=true /usr/local/sbin/patchmon-proxmox-deploy"
 echo

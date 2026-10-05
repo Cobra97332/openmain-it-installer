@@ -57,6 +57,14 @@ cd /opt/openmain-it-installer/pve-config-backup
 
 chmod 700 install.sh
 ./install.sh
+
+# Der Installer führt danach automatisch aus:
+# - Syntaxprüfung
+# - systemd-Prüfung
+# - PVE/PBS-Preflight
+# - SOFORT ein echtes Backup auf den PBS
+# - Prüfung des Backup-Service
+# - Aktivierung und Prüfung des Timers
 ```
 
 Für einen Kunden:
@@ -68,3 +76,26 @@ Für einen Kunden:
 ## Sicherheit
 
 Das Backup enthält sensible PVE-Konfigurationen und kann Secrets aus `/etc/pve/priv/` enthalten. Keine Zugangsdaten oder Verschlüsselungsschlüssel im öffentlichen GitHub-Repository ablegen.
+
+
+## Verhalten nach der Installation
+
+Wenn `./install.sh` ohne Fehler endet, ist die Einrichtung vollständig abgeschlossen.
+
+Der Installer führt automatisch folgende Schritte durch:
+
+1. Bash-Syntaxprüfung
+2. systemd-Unit-Prüfung
+3. PVE/PBS-Konfigurationscheck
+4. sofortiges echtes Konfigurationsbackup auf den PBS
+5. Prüfung von Service-Result und Exitcode
+6. Aktivierung und Prüfung des täglichen Timers
+
+Schlägt einer dieser Schritte fehl, wird der Timer deaktiviert und die Installation mit Fehler beendet.
+
+Zur Kontrolle kann jederzeit ausgeführt werden:
+
+```bash
+journalctl -u pve-config-backup.service -n 200 --no-pager
+systemctl status pve-config-backup.timer --no-pager
+```

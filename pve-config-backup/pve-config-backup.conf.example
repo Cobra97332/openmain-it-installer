@@ -1,0 +1,35 @@
+# /etc/pve-config-backup.conf
+#
+# Alle Werte sind optional.
+# Wenn genau ein aktiver PBS-Storage existiert, wird er automatisch erkannt.
+
+# Optional bei mehreren PBS-Storages:
+# PBS_STORAGE_ID="PBS-Backup"
+
+# Optional zur eindeutigen Kunden-Zuordnung:
+# CUSTOMER_ID="kunde-muster"
+
+# Optional feste Backup-ID:
+# BACKUP_ID="kunde-muster-pve01-config"
+
+# Namespace:
+# nicht setzen = automatisch aus dem PBS-Storage übernehmen
+# PBS_NAMESPACE="" = Root-Namespace erzwingen
+# PBS_NAMESPACE="kunde-muster" = festen Namespace verwenden
+
+# Normalerweise automatische Erkennung aus /etc/pve/storage.cfg:
+# PBS_SERVER="pbs.example.net"
+# PBS_DATASTORE="Backup"
+# PBS_USER="backup-user@pbs"
+# PBS_REPOSITORY="backup-user@pbs@pbs.example.net:Backup"
+# PBS_FINGERPRINT="AA:BB:CC:DD"
+
+# Standard:
+# PBS_PASSWORD_FILE="/etc/pve/priv/storage/<PBS_STORAGE_ID>.pw"
+
+# Optional für clientseitig verschlüsselte PBS-Backups:
+# PBS_KEY_FILE="/root/.config/proxmox-backup/encryption-key.json"
+
+KEEP_LOCAL_STAGE="0"
+INCLUDE_ROOT_SSH="0"
+STAGE_BASE="/var/lib/pve-config-backup"

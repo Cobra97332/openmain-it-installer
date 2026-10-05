@@ -121,6 +121,28 @@ bash install.sh
 
 Dadurch wird nur die Repository-Datei `install.sh` auf den GitHub-Stand zurückgesetzt. Die produktive Konfiguration unter `/etc/pve-config-backup.conf` wird nicht verändert.
 
+
+
+### PBS-Namespace fehlt
+
+Wenn beim ersten Backup die Meldung
+
+```text
+Error: namespace not found
+```
+
+erscheint, ist am PVE-PBS-Storage zwar ein Namespace eingetragen, dieser existiert auf dem PBS-Datastore aber noch nicht.
+
+Der Installer erkennt diesen Fall jetzt automatisch und fragt:
+
+```text
+Namespace '<NAME>' jetzt auf dem PBS anlegen und Backup erneut testen? [J/n]:
+```
+
+Bei Bestätigung versucht der Installer, den Namespace mit dem bereits im PVE konfigurierten PBS-Benutzer anzulegen. Danach wird das Backup automatisch erneut gestartet.
+
+Falls der verwendete PBS-Benutzer dafür keine Berechtigung hat, muss der Namespace auf dem PBS manuell angelegt werden. Alternativ kann der Namespace am PVE-Storage entfernt werden, wenn bewusst der Root-Namespace verwendet werden soll.
+
 ## Update
 
 ```bash

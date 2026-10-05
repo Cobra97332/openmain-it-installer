@@ -117,6 +117,7 @@ echo
 echo "==> Installiere Dateien"
 
 install -o root -g root -m 700   "$SCRIPT_DIR/pve-config-backup.sh"   /usr/local/sbin/pve-config-backup.sh
+install -o root -g root -m 700   "$SCRIPT_DIR/pve-config-restore.sh"  /usr/local/sbin/pve-config-restore.sh
 
 install -o root -g root -m 644   "$SCRIPT_DIR/pve-config-backup.service"   /etc/systemd/system/pve-config-backup.service
 
@@ -136,6 +137,7 @@ chmod 600 /etc/pve-config-backup.conf
 echo
 echo "==> 1/5 Bash-Syntax prüfen"
 bash -n /usr/local/sbin/pve-config-backup.sh || fail_install
+bash -n /usr/local/sbin/pve-config-restore.sh || fail_install
 bash -n "$0" || fail_install
 echo "OK"
 
@@ -192,4 +194,5 @@ systemctl list-timers pve-config-backup.timer --no-pager || true
 echo
 echo "Konfiguration: /etc/pve-config-backup.conf"
 echo "Manueller Check: /usr/local/sbin/pve-config-backup.sh --check"
+echo "Restore: /usr/local/sbin/pve-config-restore.sh"
 echo "Backup-Log: journalctl -u pve-config-backup.service -n 200 --no-pager"

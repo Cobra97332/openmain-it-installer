@@ -94,7 +94,7 @@ Der Installer führt automatisch folgende Schritte durch:
 3. PVE/PBS-Konfigurationscheck
 4. sofortiges echtes Konfigurationsbackup auf den PBS
 5. Prüfung von Service-Result und Exitcode
-6. Aktivierung und Prüfung des täglichen Timers
+6. Aktivierung und Prüfung des stündlichen Timers
 
 Schlägt einer dieser Schritte fehl, wird der Timer deaktiviert und die Installation mit Fehler beendet.
 
@@ -104,3 +104,20 @@ Zur Kontrolle kann jederzeit ausgeführt werden:
 journalctl -u pve-config-backup.service -n 200 --no-pager
 systemctl status pve-config-backup.timer --no-pager
 ```
+
+
+## Backup-Intervall
+
+Das PVE-Konfigurationsbackup läuft automatisch **stündlich**.
+
+Der systemd-Timer verwendet:
+
+```ini
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=300
+```
+
+Dadurch läuft pro Stunde ein Backup. Die zufällige Verzögerung von bis zu fünf Minuten verteilt die Last, wenn viele Kunden-PVE denselben PBS verwenden.
+
+Beim Installer wird zusätzlich sofort ein erstes Backup erstellt.

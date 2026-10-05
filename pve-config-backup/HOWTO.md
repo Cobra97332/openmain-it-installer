@@ -12,8 +12,7 @@ cd /opt
 git clone --depth 1 https://github.com/Cobra97332/openmain-it-installer.git
 cd /opt/openmain-it-installer/pve-config-backup
 
-chmod 700 install.sh
-./install.sh
+bash install.sh
 ```
 
 Es werden keine Argumente benötigt.
@@ -101,10 +100,26 @@ Nach einer Änderung am Repository den Timer aktualisieren:
 cd /opt/openmain-it-installer
 git pull --ff-only
 cd pve-config-backup
-./install.sh
+bash install.sh
 ```
 
 Der Installer erstellt dabei sofort ein Backup und installiert anschließend den stündlichen Timer.
+
+### Git-Pull meldet lokale Änderungen
+
+Bei älteren Installationen wurde `install.sh` mit `chmod 700` verändert. Git kann diese Änderung am Dateimodus als lokale Änderung erkennen und deshalb ein Update abbrechen.
+
+In diesem Fall:
+
+```bash
+cd /opt/openmain-it-installer
+git restore pve-config-backup/install.sh
+git pull --ff-only
+cd pve-config-backup
+bash install.sh
+```
+
+Dadurch wird nur die Repository-Datei `install.sh` auf den GitHub-Stand zurückgesetzt. Die produktive Konfiguration unter `/etc/pve-config-backup.conf` wird nicht verändert.
 
 ## Update
 
@@ -112,7 +127,7 @@ Der Installer erstellt dabei sofort ein Backup und installiert anschließend den
 cd /opt/openmain-it-installer
 git pull --ff-only
 cd pve-config-backup
-./install.sh
+bash install.sh
 ```
 
 Beim Update wird die vorhandene Konfiguration übernommen; Kunde und PBS-Storage können bei der interaktiven Abfrage neu gewählt werden.
@@ -400,8 +415,7 @@ cd /opt
 git clone --depth 1 https://github.com/Cobra97332/openmain-it-installer.git
 cd /opt/openmain-it-installer/pve-config-backup
 
-chmod 700 install.sh
-./install.sh
+bash install.sh
 ```
 
 Der Installer fragt wieder nach Kunden-ID und PBS-Storage und erstellt sofort ein neues Testbackup.

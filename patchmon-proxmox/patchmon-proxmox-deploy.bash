@@ -178,13 +178,27 @@ enroll_host() {
 
 install_lxc() {
   local id="$1" name="$2" state="$STATE_DIR/lxc-$id.json"
-  local api_id api_key cmd
+  local api_id api_key cmd eligibility
 
   if guest_linux_has_agent_lxc "$id"; then
     rm -f "$state"
     log "LXC $id ($name): PatchMon-Agent gesund, übersprungen"
     return
   fi
+
+  eligibility="$(linux_guest_eligibility_lxc "$id" "$name")"
+  case "$eligibility" in
+    haos)
+      rm -f "$state"
+      log "LXC $id ($name): Home Assistant OS erkannt – nicht für PatchMon geeignet, vor Enrollment übersprungen"
+      return
+      ;;
+    unsupported)
+      rm -f "$state"
+      log "LXC $id ($name): kein unterstützter Linux-Paketmanager (apt-get/dnf/yum/apk) erkannt – vor Enrollment übersprungen"
+      return
+      ;;
+  esac
 
   if guest_linux_has_config_lxc "$id" && [[ ! -s "$state" ]]; then
     if [[ "$AUTO_REENROLL_INVALID" == "true" ]] && guest_linux_registration_invalid_lxc "$id"; then
@@ -262,14 +276,75 @@ detect_vm_os() {
   grep -q 'exitcode' <<<"$out" && echo windows || echo unknown
 }
 
+
+linux_guest_eligibility_lxc() {
+  local id="$1" name="${2:-}" out
+
+  out="$(pct exec "$id" -- /bin/sh -c '
+    if test -r /etc/os-release && grep -Eqi "^(ID=\"?haos\"?|NAME=\"?Home Assistant OS\"?)$" /etc/os-release; then
+      echo PATCHMON_ELIGIBILITY=haos
+    elif command -v apt-get >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1 || command -v apk >/dev/null 2>&1; then
+      echo PATCHMON_ELIGIBILITY=supported
+    else
+      echo PATCHMON_ELIGIBILITY=unsupported
+    fi
+  ' 2>/dev/null || true)"
+
+  if grep -q 'PATCHMON_ELIGIBILITY=haos' <<<"$out" || grep -qiE '^(haos|home[-_.]?assistant)' <<<"$name"; then
+    echo haos
+  elif grep -q 'PATCHMON_ELIGIBILITY=supported' <<<"$out"; then
+    echo supported
+  else
+    echo unsupported
+  fi
+}
+
+linux_guest_eligibility_vm() {
+  local id="$1" name="${2:-}" out
+
+  out="$(qm guest exec "$id" -- /bin/sh -c '
+    if test -r /etc/os-release && grep -Eqi "^(ID=\"?haos\"?|NAME=\"?Home Assistant OS\"?)$" /etc/os-release; then
+      echo PATCHMON_ELIGIBILITY=haos
+    elif command -v apt-get >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1 || command -v apk >/dev/null 2>&1; then
+      echo PATCHMON_ELIGIBILITY=supported
+    else
+      echo PATCHMON_ELIGIBILITY=unsupported
+    fi
+  ' 2>/dev/null || true)"
+
+  if grep -q 'PATCHMON_ELIGIBILITY=haos' <<<"$out" || grep -qiE '^(haos|home[-_.]?assistant)' <<<"$name"; then
+    echo haos
+  elif grep -q 'PATCHMON_ELIGIBILITY=supported' <<<"$out"; then
+    echo supported
+  else
+    echo unsupported
+  fi
+}
+
 install_unix_vm() {
   local id="$1" name="$2" os="$3" state="$STATE_DIR/vm-$id.json"
-  local api_id api_key query cmd
+  local api_id api_key query cmd eligibility
 
   if guest_unix_has_agent_vm "$id"; then
     rm -f "$state"
     log "VM $id ($name/$os): PatchMon-Agent gesund, übersprungen"
     return
+  fi
+
+  if [[ "$os" == "linux" ]]; then
+    eligibility="$(linux_guest_eligibility_vm "$id" "$name")"
+    case "$eligibility" in
+      haos)
+        rm -f "$state"
+        log "VM $id ($name/$os): Home Assistant OS erkannt – nicht für PatchMon geeignet, vor Enrollment übersprungen"
+        return
+        ;;
+      unsupported)
+        rm -f "$state"
+        log "VM $id ($name/$os): kein unterstützter Linux-Paketmanager (apt-get/dnf/yum/apk) erkannt – vor Enrollment übersprungen"
+        return
+        ;;
+    esac
   fi
 
   if guest_unix_has_config_vm "$id" && [[ ! -s "$state" ]]; then

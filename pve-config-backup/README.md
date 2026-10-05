@@ -55,8 +55,7 @@ cd /opt
 git clone --depth 1 https://github.com/Cobra97332/openmain-it-installer.git
 cd /opt/openmain-it-installer/pve-config-backup
 
-chmod 700 install.sh
-./install.sh
+bash install.sh
 
 # Der Installer führt danach automatisch aus:
 # - Syntaxprüfung
@@ -75,7 +74,7 @@ Der Installer fragt interaktiv nach:
 Es sind keine Installationsargumente mehr notwendig.
 
 ```bash
-./install.sh
+bash install.sh
 ```
 
 ## Sicherheit
@@ -121,3 +120,26 @@ RandomizedDelaySec=300
 Dadurch läuft pro Stunde ein Backup. Die zufällige Verzögerung von bis zu fünf Minuten verteilt die Last, wenn viele Kunden-PVE denselben PBS verwenden.
 
 Beim Installer wird zusätzlich sofort ein erstes Backup erstellt.
+
+
+## Update-Hinweis
+
+Den Installer künftig mit
+
+```bash
+bash install.sh
+```
+
+starten. Dadurch wird das Git-Dateirecht von `install.sh` nicht lokal geändert.
+
+Falls ein älterer Stand beim `git pull` meldet, dass lokale Änderungen an `pve-config-backup/install.sh` überschrieben würden:
+
+```bash
+cd /opt/openmain-it-installer
+git restore pve-config-backup/install.sh
+git pull --ff-only
+cd pve-config-backup
+bash install.sh
+```
+
+Die lokale Datei `/etc/pve-config-backup.conf` liegt außerhalb des Git-Repositories und bleibt dabei erhalten.

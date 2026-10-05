@@ -43,7 +43,7 @@ Installation mit diesen Einstellungen starten? [J/n]:
 
 Danach erledigt der Installer automatisch:
 
-1. Backup-Skript, Service, Timer und Config installieren
+1. Backup-Skript, Restore-Skript, Service, Timer und Config installieren
 2. Bash-Syntax prüfen
 3. systemd-Units prüfen
 4. PVE/PBS-Konfiguration prüfen
@@ -136,6 +136,14 @@ Beim Update wird die vorhandene Konfiguration übernommen; Kunde und PBS-Storage
 
 Diese Anleitung ist für den Fall gedacht, dass der PVE-Host komplett neu installiert wurde und die Host-Konfiguration aus dem PBS-Backup zurückgeholt werden soll.
 
+Nach Installation des Projekts kann der Restore-Assistent verwendet werden:
+
+```bash
+/usr/local/sbin/pve-config-restore.sh
+```
+
+Der Assistent erkennt PBS-Storage, Repository und Namespace, lässt Backup-Gruppe und Snapshot auswählen und stellt `pve-config.pxar` zunächst sicher unter `/var/tmp/pve-config-restore/` wieder her. Er überschreibt dabei keine laufende PVE-Konfiguration. Danach können die folgenden Schritte zum Vergleichen und gezielten Zurückspielen verwendet werden.
+
 ### 1. PVE neu installieren
 
 Proxmox VE möglichst in derselben bzw. einer kompatiblen Version installieren.
@@ -166,7 +174,19 @@ grep -A12 '^pbs:' /etc/pve/storage.cfg
 
 Die Storage-ID merken.
 
-### 3. PBS-Zugang für proxmox-backup-client verwenden
+### 3. Restore-Assistent verwenden
+
+Wenn das Projekt bereits installiert ist:
+
+```bash
+/usr/local/sbin/pve-config-restore.sh
+```
+
+Nach Auswahl von Backup und Snapshot zeigt das Skript den erzeugten Staging-Pfad an. Diesen Pfad in den folgenden Beispielen anstelle von `/root/pve-config-restore` verwenden.
+
+Falls der Assistent nicht verfügbar ist, kann die Wiederherstellung weiterhin manuell wie unten beschrieben durchgeführt werden.
+
+### 4. PBS-Zugang für proxmox-backup-client verwenden
 
 Die benötigten Werte aus `/etc/pve/storage.cfg` ablesen:
 
@@ -202,7 +222,7 @@ export PBS_NAMESPACE="kunde-muster"
 
 Bei Root-Namespace `PBS_NAMESPACE` leer lassen und bei den folgenden Befehlen `--ns` weglassen.
 
-### 4. Vorhandene Host-Backups anzeigen
+### 5. Vorhandene Host-Backups anzeigen
 
 Mit Namespace:
 
@@ -231,7 +251,7 @@ oder ohne Kunden-ID:
 host/pve01-config/2026-10-05T...
 ```
 
-### 5. Backup zuerst in ein temporäres Verzeichnis zurückspielen
+### 6. Backup zuerst in ein temporäres Verzeichnis zurückspielen
 
 Das Backup niemals direkt über das laufende Dateisystem entpacken.
 
@@ -275,7 +295,7 @@ Danach prüfen:
 find /root/pve-config-restore -maxdepth 3 -type f | sort | less
 ```
 
-### 6. Alte Netzwerkkonfiguration prüfen
+### 7. Alte Netzwerkkonfiguration prüfen
 
 Besonders wichtig bei zusätzlichen öffentlichen IP-Adressen:
 
@@ -309,7 +329,7 @@ diff -u \
   /root/pve-config-restore/etc/network/interfaces || true
 ```
 
-### 7. Netzwerk gezielt wiederherstellen
+### 8. Netzwerk gezielt wiederherstellen
 
 Vorher aktuelle Neuinstallations-Konfiguration sichern:
 
@@ -354,7 +374,7 @@ ip rule
 ip -6 rule
 ```
 
-### 8. System- und eigene Skripte zurückspielen
+### 9. System- und eigene Skripte zurückspielen
 
 Eigene Skripte:
 
@@ -371,7 +391,7 @@ Beispiel:
 diff -u /etc/fstab /root/pve-config-restore/etc/fstab || true
 ```
 
-### 9. /etc/pve NICHT komplett blind überschreiben
+### 10. /etc/pve NICHT komplett blind überschreiben
 
 `/etc/pve` wird von Proxmox über pmxcfs verwaltet.
 
@@ -397,13 +417,13 @@ nodes/<alter-node>/lxc/
 
 VM- und CT-Konfigurationen sollten nur passend zu den tatsächlich wiederhergestellten VM-/CT-Datenträgern übernommen werden.
 
-### 10. VM- und CT-Backups aus PBS wiederherstellen
+### 11. VM- und CT-Backups aus PBS wiederherstellen
 
 Nachdem Netzwerk und PBS-Zugriff funktionieren, die normalen VM-/CT-Backups über die PVE-Weboberfläche oder die Proxmox-Werkzeuge wiederherstellen.
 
 Die Host-Konfigurationssicherung ersetzt kein VM-/CT-Backup.
 
-### 11. Backup-Projekt auf dem neuen PVE wieder installieren
+### 12. Backup-Projekt auf dem neuen PVE wieder installieren
 
 Nach erfolgreichem Restore:
 
@@ -420,7 +440,7 @@ bash install.sh
 
 Der Installer fragt wieder nach Kunden-ID und PBS-Storage und erstellt sofort ein neues Testbackup.
 
-### 12. Abschlusskontrolle
+### 13. Abschlusskontrolle
 
 Nach dem Wiederaufbau prüfen:
 

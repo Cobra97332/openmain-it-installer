@@ -35,3 +35,14 @@ bash install.sh
 ```
 
 Die produktive Konfiguration `/etc/pve-config-backup.conf` wird dadurch nicht gelöscht oder überschrieben.
+
+
+## Wiederherstellung
+
+Nach der Installation steht der Restore-Assistent bereit:
+
+```bash
+/usr/local/sbin/pve-config-restore.sh
+```
+
+Der gewählte PBS-Snapshot wird zunächst nur nach `/var/tmp/pve-config-restore/` wiederhergestellt. Die laufende PVE-Konfiguration wird dabei nicht automatisch überschrieben. Die weiteren Restore-Schritte sind in `HOWTO.md` dokumentiert.

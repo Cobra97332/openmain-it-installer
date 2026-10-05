@@ -67,10 +67,15 @@ chmod 700 install.sh
 # - Aktivierung und Prüfung des Timers
 ```
 
-Für einen Kunden:
+Der Installer fragt interaktiv nach:
+
+- Kundenname/ID (optional)
+- gewünschtem PBS-Storage
+
+Es sind keine Installationsargumente mehr notwendig.
 
 ```bash
-./install.sh --customer-id kunde-muster
+./install.sh
 ```
 
 ## Sicherheit

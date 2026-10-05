@@ -173,7 +173,7 @@ echo "Backup erfolgreich."
 journalctl -u pve-config-backup.service -n 30 --no-pager || true
 
 echo
-echo "==> 5/5 täglichen Timer aktivieren und prüfen"
+echo "==> 5/5 stündlichen Timer aktivieren und prüfen"
 systemctl enable --now pve-config-backup.timer || fail_install
 systemctl is-enabled --quiet pve-config-backup.timer || fail_install
 systemctl is-active --quiet pve-config-backup.timer || fail_install

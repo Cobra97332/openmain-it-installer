@@ -10,7 +10,7 @@ CUSTOMER_ID="${CUSTOMER_ID:-}"
 PBS_NAMESPACE="${PBS_NAMESPACE-__AUTO__}"
 BACKUP_ID="${BACKUP_ID:-}"
 STAGE_BASE="${STAGE_BASE:-/var/lib/pve-config-backup}"
-STAGE="$STAGE_BASE/stage"
+STAGE=""
 KEEP_LOCAL_STAGE="${KEEP_LOCAL_STAGE:-0}"
 INCLUDE_ROOT_SSH="${INCLUDE_ROOT_SSH:-0}"
 LOCK_FILE="${LOCK_FILE:-/run/lock/pve-config-backup.lock}"
@@ -20,8 +20,8 @@ die(){ printf 'PVE-CONFIG-BACKUP FEHLER: %s\n' "$*" >&2; exit 1; }
 
 cleanup(){
   local rc=$?
-  if [[ "$KEEP_LOCAL_STAGE" != "1" ]]; then
-    rm -rf -- "$STAGE"
+  if [[ "$KEEP_LOCAL_STAGE" != "1" && -n "${STAGE:-}" && -d "$STAGE" ]]; then
+    rm -rf -- "$STAGE" || true
   fi
   exit "$rc"
 }
@@ -31,10 +31,6 @@ trap cleanup EXIT
 command -v pveversion >/dev/null 2>&1 || die "Kein Proxmox VE erkannt."
 command -v proxmox-backup-client >/dev/null 2>&1 || die "proxmox-backup-client fehlt."
 [[ -r /etc/pve/storage.cfg ]] || die "/etc/pve/storage.cfg nicht lesbar."
-
-install -d -m 755 "$(dirname "$LOCK_FILE")"
-exec 9>"$LOCK_FILE"
-flock -n 9 || die "Ein anderer Backup-Lauf ist bereits aktiv."
 
 list_pbs(){
   awk '
@@ -146,7 +142,21 @@ if [[ -n "${1:-}" ]]; then
   die "Unbekannter Parameter: $1"
 fi
 
-rm -rf -- "$STAGE"
+# Nur echte Backup-Läufe benötigen den Lock. Ein --check darf parallel laufen.
+install -d -m 755 "$(dirname "$LOCK_FILE")"
+exec 9>"$LOCK_FILE"
+flock -n 9 || die "Ein anderer Backup-Lauf ist bereits aktiv."
+
+# Altes festes Staging-Verzeichnis aus Versionen vor 2.x erst entfernen,
+# nachdem der Lock exklusiv gehalten wird.
+install -d -m 700 "$STAGE_BASE"
+rm -rf -- "$STAGE_BASE/stage" 2>/dev/null || true
+
+# Jeder Lauf erhält ein eigenes Staging-Verzeichnis. Dadurch kann kein
+# fehlgeschlagener Check das Staging eines laufenden Backups löschen.
+STAGE="$(mktemp -d "$STAGE_BASE/stage.XXXXXX")"
+chmod 700 "$STAGE"
+
 install -d -m 700   "$STAGE/system-info/network"   "$STAGE/system-info/storage"   "$STAGE/system-info/proxmox"
 
 copy_path(){

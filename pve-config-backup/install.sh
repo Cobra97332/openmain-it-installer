@@ -1,50 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-CUSTOMER_ID_ARG=""
-PBS_STORAGE_ID_ARG=""
-
-usage() {
-  cat <<'EOF'
-Usage: install.sh [--customer-id NAME] [--storage-id STORAGE]
-
-Beispiele:
-  ./install.sh
-  ./install.sh --customer-id kunde-muster
-  ./install.sh --customer-id kunde-muster --storage-id PBS-Kunde
-
-Der Installer:
-  1. installiert Skript, Service und Timer
-  2. prüft Bash- und systemd-Konfiguration
-  3. prüft PVE/PBS per --check
-  4. startet SOFORT ein echtes Backup
-  5. prüft den Backup-Service
-  6. aktiviert erst danach den täglichen Timer
-EOF
+[[ $# -eq 0 ]] || {
+  echo "Dieser Installer benötigt keine Argumente." >&2
+  echo "Einfach ausführen mit: ./install.sh" >&2
+  exit 2
 }
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --customer-id)
-      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
-      CUSTOMER_ID_ARG="$2"
-      shift 2
-      ;;
-    --storage-id)
-      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
-      PBS_STORAGE_ID_ARG="$2"
-      shift 2
-      ;;
-    --help|-h)
-      usage
-      exit 0
-      ;;
-    *)
-      usage >&2
-      exit 2
-      ;;
-  esac
-done
 
 [[ $EUID -eq 0 ]] || {
   echo "Bitte als root ausführen." >&2
@@ -56,6 +17,11 @@ command -v pveversion >/dev/null 2>&1 || {
   exit 1
 }
 
+[[ -r /etc/pve/storage.cfg ]] || {
+  echo "/etc/pve/storage.cfg ist nicht lesbar." >&2
+  exit 1
+}
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 fail_install() {
@@ -63,12 +29,92 @@ fail_install() {
   echo "FEHLER: Installation/Test nicht erfolgreich." >&2
   systemctl disable --now pve-config-backup.timer >/dev/null 2>&1 || true
   echo "Timer wurde deaktiviert." >&2
-  echo "Log:" >&2
+  echo "Letztes Backup-Log:" >&2
   journalctl -u pve-config-backup.service -n 100 --no-pager >&2 2>/dev/null || true
   exit 1
 }
 
-echo "==> Installiere PVE Config Backup"
+list_active_pbs_storages() {
+  awk '
+    function flush() {
+      if (type == "pbs" && id != "" && disabled != "1") print id
+    }
+    /^[^[:space:]]/ {
+      flush()
+      type=""; id=""; disabled="0"
+      if ($1 == "pbs:") {
+        type="pbs"
+        id=$2
+      }
+      next
+    }
+    type == "pbs" && $1 == "disable" { disabled=$2 }
+    END { flush() }
+  ' /etc/pve/storage.cfg
+}
+
+set_config_value() {
+  local key="$1"
+  local value="$2"
+
+  sed -i -E "/^[[:space:]]*${key}=/d" /etc/pve-config-backup.conf
+  printf '%s=%q\n' "$key" "$value" >> /etc/pve-config-backup.conf
+}
+
+echo "============================================================"
+echo " PVE Config Backup - Installation"
+echo "============================================================"
+echo
+
+read -r -p "Kundenname/ID eingeben (leer = intern/kein Kunde): " CUSTOMER_ID
+
+mapfile -t PBS_STORAGES < <(list_active_pbs_storages)
+
+if [[ "${#PBS_STORAGES[@]}" -eq 0 ]]; then
+  echo "FEHLER: Kein aktiver PBS-Storage in /etc/pve/storage.cfg gefunden." >&2
+  echo "Bitte zuerst den Proxmox Backup Server als Storage in PVE einrichten." >&2
+  exit 1
+fi
+
+echo
+echo "Verfügbare PBS-Storages:"
+for i in "${!PBS_STORAGES[@]}"; do
+  printf '  %d) %s\n' "$((i + 1))" "${PBS_STORAGES[$i]}"
+done
+
+while true; do
+  if [[ "${#PBS_STORAGES[@]}" -eq 1 ]]; then
+    read -r -p "PBS-Storage auswählen [1]: " PBS_CHOICE
+    PBS_CHOICE="${PBS_CHOICE:-1}"
+  else
+    read -r -p "Nummer des PBS-Storage auswählen: " PBS_CHOICE
+  fi
+
+  if [[ "$PBS_CHOICE" =~ ^[0-9]+$ ]]      && (( PBS_CHOICE >= 1 && PBS_CHOICE <= ${#PBS_STORAGES[@]} )); then
+    PBS_STORAGE_ID="${PBS_STORAGES[$((PBS_CHOICE - 1))]}"
+    break
+  fi
+
+  echo "Ungültige Auswahl."
+done
+
+echo
+echo "Ausgewählte Konfiguration:"
+echo "  Kunde:       ${CUSTOMER_ID:-intern/kein Kunde}"
+echo "  PBS-Storage: $PBS_STORAGE_ID"
+echo
+
+read -r -p "Installation mit diesen Einstellungen starten? [J/n]: " CONFIRM
+case "${CONFIRM:-J}" in
+  J|j|Y|y|JA|Ja|ja|YES|Yes|yes) ;;
+  *)
+    echo "Installation abgebrochen."
+    exit 0
+    ;;
+esac
+
+echo
+echo "==> Installiere Dateien"
 
 install -o root -g root -m 700   "$SCRIPT_DIR/pve-config-backup.sh"   /usr/local/sbin/pve-config-backup.sh
 
@@ -80,22 +126,11 @@ if [[ ! -e /etc/pve-config-backup.conf ]]; then
   install -o root -g root -m 600     "$SCRIPT_DIR/pve-config-backup.conf.example"     /etc/pve-config-backup.conf
   echo "Konfiguration angelegt: /etc/pve-config-backup.conf"
 else
-  echo "Vorhandene /etc/pve-config-backup.conf bleibt erhalten."
+  echo "Vorhandene Konfiguration wird beibehalten und Auswahl aktualisiert."
 fi
 
-append_setting() {
-  local key="$1" value="$2"
-  [[ -n "$value" ]] || return 0
-
-  if grep -qE "^[[:space:]]*${key}=" /etc/pve-config-backup.conf; then
-    sed -i -E "s|^[[:space:]]*${key}=.*|${key}=\"${value//|/\\|}\"|"       /etc/pve-config-backup.conf
-  else
-    printf '\n%s="%s"\n' "$key" "$value" >> /etc/pve-config-backup.conf
-  fi
-}
-
-append_setting CUSTOMER_ID "$CUSTOMER_ID_ARG"
-append_setting PBS_STORAGE_ID "$PBS_STORAGE_ID_ARG"
+set_config_value CUSTOMER_ID "$CUSTOMER_ID"
+set_config_value PBS_STORAGE_ID "$PBS_STORAGE_ID"
 chmod 600 /etc/pve-config-backup.conf
 
 echo
@@ -121,6 +156,7 @@ echo "OK"
 echo
 echo "==> 4/5 SOFORT echtes Konfigurationsbackup auf PBS starten"
 systemctl reset-failed pve-config-backup.service >/dev/null 2>&1 || true
+
 if ! systemctl start pve-config-backup.service; then
   fail_install
 fi
@@ -145,6 +181,8 @@ systemctl is-active --quiet pve-config-backup.timer || fail_install
 echo
 echo "============================================================"
 echo "Installation vollständig erfolgreich."
+echo "Kunde: ${CUSTOMER_ID:-intern/kein Kunde}"
+echo "PBS-Storage: $PBS_STORAGE_ID"
 echo "Sofort-Backup: OK"
 echo "Backup-Service: OK"
 echo "Timer: aktiviert und aktiv"

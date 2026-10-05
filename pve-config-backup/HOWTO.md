@@ -72,6 +72,40 @@ journalctl -u pve-config-backup.service -n 200 --no-pager
 systemctl status pve-config-backup.timer --no-pager
 ```
 
+
+
+## Stündliches Backup
+
+Nach erfolgreicher Installation läuft das PVE-Konfigurationsbackup automatisch **einmal pro Stunde**.
+
+Der installierte Timer verwendet:
+
+```ini
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=300
+```
+
+Damit wird stündlich ein Host-Konfigurationsbackup erstellt. Die zufällige Verzögerung von bis zu fünf Minuten verhindert, dass viele Kunden-PVE exakt gleichzeitig auf denselben PBS schreiben.
+
+Timer prüfen:
+
+```bash
+systemctl status pve-config-backup.timer --no-pager
+systemctl list-timers pve-config-backup.timer
+```
+
+Nach einer Änderung am Repository den Timer aktualisieren:
+
+```bash
+cd /opt/openmain-it-installer
+git pull --ff-only
+cd pve-config-backup
+./install.sh
+```
+
+Der Installer erstellt dabei sofort ein Backup und installiert anschließend den stündlichen Timer.
+
 ## Update
 
 ```bash

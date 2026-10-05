@@ -53,6 +53,25 @@ list_active_pbs_storages() {
   ' /etc/pve/storage.cfg
 }
 
+
+storage_value() {
+  local sid="$1"
+  local key="$2"
+
+  awk -v sid="$sid" -v key="$key" '
+    /^[^[:space:]]/ {
+      inblock=($1=="pbs:" && $2==sid)
+      next
+    }
+    inblock && $1==key {
+      $1=""
+      sub(/^[[:space:]]+/,"")
+      print
+      exit
+    }
+  ' /etc/pve/storage.cfg
+}
+
 set_config_value() {
   local key="$1"
   local value="$2"
@@ -160,7 +179,64 @@ echo "==> 4/5 SOFORT echtes Konfigurationsbackup auf PBS starten"
 systemctl reset-failed pve-config-backup.service >/dev/null 2>&1 || true
 
 if ! systemctl start pve-config-backup.service; then
-  fail_install
+  BACKUP_LOG="$(journalctl -u pve-config-backup.service -n 80 --no-pager 2>/dev/null || true)"
+
+  if grep -qi "namespace not found" <<<"$BACKUP_LOG"; then
+    PBS_NAMESPACE="$(storage_value "$PBS_STORAGE_ID" namespace)"
+    [[ -n "$PBS_NAMESPACE" ]] || PBS_NAMESPACE="$(storage_value "$PBS_STORAGE_ID" ns)"
+
+    if [[ -n "$PBS_NAMESPACE" ]]; then
+      echo
+      echo "PBS-Namespace '$PBS_NAMESPACE' ist am PVE-Storage eingetragen,"
+      echo "existiert aber auf dem PBS-Datastore noch nicht."
+      echo
+
+      read -r -p "Namespace '$PBS_NAMESPACE' jetzt auf dem PBS anlegen und Backup erneut testen? [J/n]: " CREATE_NS
+
+      case "${CREATE_NS:-J}" in
+        J|j|Y|y|JA|Ja|ja|YES|Yes|yes)
+          PBS_SERVER="$(storage_value "$PBS_STORAGE_ID" server)"
+          PBS_DATASTORE="$(storage_value "$PBS_STORAGE_ID" datastore)"
+          PBS_USER="$(storage_value "$PBS_STORAGE_ID" username)"
+          PBS_FINGERPRINT="$(storage_value "$PBS_STORAGE_ID" fingerprint)"
+
+          repo_server="$PBS_SERVER"
+          if [[ "$repo_server" == *:* && "$repo_server" != \[*\] ]]; then
+            repo_server="[$repo_server]"
+          fi
+
+          PBS_REPOSITORY="${PBS_USER}@${repo_server}:${PBS_DATASTORE}"
+          export PBS_PASSWORD_FILE="/etc/pve/priv/storage/${PBS_STORAGE_ID}.pw"
+          [[ -n "$PBS_FINGERPRINT" ]] && export PBS_FINGERPRINT
+
+          echo "Lege Namespace '$PBS_NAMESPACE' an..."
+
+          if ! proxmox-backup-client namespace create "$PBS_NAMESPACE"             --repository "$PBS_REPOSITORY"; then
+            echo "Namespace konnte mit dem konfigurierten PBS-Benutzer nicht angelegt werden." >&2
+            echo "Bitte Namespace auf dem PBS manuell anlegen oder die PBS-Berechtigungen prüfen." >&2
+            fail_install
+          fi
+
+          echo "Namespace angelegt. Starte Backup erneut..."
+          systemctl reset-failed pve-config-backup.service >/dev/null 2>&1 || true
+
+          if ! systemctl start pve-config-backup.service; then
+            fail_install
+          fi
+          ;;
+        *)
+          echo "Namespace wurde nicht angelegt." >&2
+          echo "Bitte auf dem PBS im Datastore '$PBS_DATASTORE' den Namespace '$PBS_NAMESPACE' anlegen" >&2
+          echo "oder den Namespace aus dem PVE-Storage entfernen, wenn der Root-Namespace verwendet werden soll." >&2
+          fail_install
+          ;;
+      esac
+    else
+      fail_install
+    fi
+  else
+    fail_install
+  fi
 fi
 
 RESULT="$(systemctl show pve-config-backup.service -p Result --value 2>/dev/null || true)"

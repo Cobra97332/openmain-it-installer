@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily PVE host configuration backup
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+RandomizedDelaySec=1800
+Unit=pve-config-backup.service
+
+[Install]
+WantedBy=timers.target

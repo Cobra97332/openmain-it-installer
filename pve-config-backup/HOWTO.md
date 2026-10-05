@@ -16,32 +16,42 @@ chmod 700 install.sh
 ./install.sh
 ```
 
-Für einen Kunden:
+Es werden keine Argumente benötigt.
 
-```bash
-./install.sh --customer-id kunde-muster
+Der Installer fragt interaktiv:
+
+1. Kundenname/ID (leer = intern/kein Kunde)
+2. verfügbaren PBS-Storage
+3. Bestätigung der Auswahl
+
+Beispiel:
+
+```text
+Kundenname/ID eingeben (leer = intern/kein Kunde): kunde-muster
+
+Verfügbare PBS-Storages:
+  1) PBS-Kunde
+  2) PBS-Archiv
+
+Nummer des PBS-Storage auswählen: 1
+
+Ausgewählte Konfiguration:
+  Kunde:       kunde-muster
+  PBS-Storage: PBS-Kunde
+
+Installation mit diesen Einstellungen starten? [J/n]:
 ```
 
-Bei mehreren PBS-Storages:
+Danach erledigt der Installer automatisch:
 
-```bash
-./install.sh --customer-id kunde-muster --storage-id PBS-Backup
-```
-
-## Was der Installer automatisch macht
-
-Nach dem Start werden automatisch ausgeführt:
-
-1. Installation von Backup-Skript, Service, Timer und Config
-2. Bash-Syntaxprüfung
-3. Prüfung der systemd-Units
-4. Prüfung der PVE-/PBS-Konfiguration
-5. sofortiges echtes Host-Konfigurationsbackup auf den PBS
-6. Prüfung des Service-Ergebnisses und Exitcodes
-7. Aktivierung des täglichen Timers
-8. Prüfung, ob der Timer aktiv und enabled ist
-
-Wenn einer dieser Schritte fehlschlägt, beendet sich der Installer mit Fehler und deaktiviert den Timer.
+1. Backup-Skript, Service, Timer und Config installieren
+2. Bash-Syntax prüfen
+3. systemd-Units prüfen
+4. PVE/PBS-Konfiguration prüfen
+5. sofort ein echtes Backup auf den PBS starten
+6. Backup-Service und Exitcode prüfen
+7. Timer aktivieren
+8. prüfen, ob der Timer aktiv ist
 
 Wenn am Ende erscheint:
 
@@ -56,23 +66,10 @@ ist keine weitere Einrichtung nötig.
 
 ## Kontrolle
 
-Backup-Log:
-
-```bash
-journalctl -u pve-config-backup.service -n 200 --no-pager
-```
-
-Timer:
-
-```bash
-systemctl status pve-config-backup.timer --no-pager
-systemctl list-timers pve-config-backup.timer
-```
-
-PVE/PBS-Erkennung:
-
 ```bash
 /usr/local/sbin/pve-config-backup.sh --check
+journalctl -u pve-config-backup.service -n 200 --no-pager
+systemctl status pve-config-backup.timer --no-pager
 ```
 
 ## Update
@@ -80,9 +77,8 @@ PVE/PBS-Erkennung:
 ```bash
 cd /opt/openmain-it-installer
 git pull --ff-only
-
 cd pve-config-backup
 ./install.sh
 ```
 
-Beim Update wird eine vorhandene `/etc/pve-config-backup.conf` nicht überschrieben. Der Installer führt anschließend erneut ein sofortiges Testbackup aus.
+Beim Update wird die vorhandene Konfiguration übernommen; Kunde und PBS-Storage können bei der interaktiven Abfrage neu gewählt werden.

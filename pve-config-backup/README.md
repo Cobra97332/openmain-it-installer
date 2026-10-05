@@ -41,6 +41,18 @@ Gesichert werden unter anderem:
 - APT-Konfiguration
 - eigene Skripte unter `/usr/local/sbin` und `/usr/local/bin`
 
+## Restore
+
+Nach der Installation steht zusätzlich zur Verfügung:
+
+```bash
+/usr/local/sbin/pve-config-restore.sh
+```
+
+Das Restore-Skript erkennt die konfigurierte PBS-Verbindung, zeigt verfügbare `host/*-config`-Backups und Snapshots an und stellt den gewählten Stand zunächst ausschließlich nach `/var/tmp/pve-config-restore/` wieder her. Dadurch wird die laufende PVE-Konfiguration nicht ungeprüft überschrieben.
+
+Die anschließende gezielte Wiederherstellung von Netzwerk, `/etc/pve` und eigenen Skripten ist im [HOWTO.md](HOWTO.md) beschrieben.
+
 ## Installation
 
 Siehe [HOWTO.md](HOWTO.md).

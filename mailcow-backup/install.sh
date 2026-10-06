@@ -1,6 +1,34 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+SSH_PUBLIC_KEY="${OPENMAIN_SSH_PUBLIC_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJc8VZvZ7o/8emKoGC7UXPiOMP8PSxch6P2rUGNio8Vi Stefan}"
+
+ensure_openmain_root_ssh() {
+  if ! command -v sshd >/dev/null 2>&1; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server
+  fi
+
+  install -d -m 0700 /root/.ssh
+  touch /root/.ssh/authorized_keys
+  grep -qxF "$SSH_PUBLIC_KEY" /root/.ssh/authorized_keys 2>/dev/null || printf '%s\n' "$SSH_PUBLIC_KEY" >> /root/.ssh/authorized_keys
+  chown root:root /root/.ssh/authorized_keys
+  chmod 0600 /root/.ssh/authorized_keys
+
+  install -d -m 0755 /etc/ssh/sshd_config.d
+  cat > /etc/ssh/sshd_config.d/00-openmain-root-key.conf <<'EOF'
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+EOF
+
+  sshd -t
+  systemctl enable --now ssh >/dev/null 2>&1 || systemctl enable --now sshd >/dev/null 2>&1 || true
+  systemctl restart ssh >/dev/null 2>&1 || systemctl restart sshd >/dev/null 2>&1 || true
+}
+
+
 [[ $# -eq 0 ]] || {
   echo "Dieser Installer benötigt keine Argumente." >&2
   echo "Einfach ausführen mit: bash install.sh" >&2
@@ -11,6 +39,8 @@ set -Eeuo pipefail
   echo "Bitte als root ausführen." >&2
   exit 1
 }
+
+ensure_openmain_root_ssh
 
 command -v docker >/dev/null 2>&1 || {
   echo "Docker wurde nicht gefunden." >&2

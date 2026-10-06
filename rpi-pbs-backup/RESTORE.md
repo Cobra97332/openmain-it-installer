@@ -85,10 +85,10 @@ metadata/packages.tsv
 Beispiel für `/etc` auf einen Testpfad:
 
 ```bash
-rsync -aHAXn /srv/rpi-pbs-restore/kunde1-router/system/etc/ root@NEUER-PI:/etc/
+rsync -aHAXn --fake-super --numeric-ids /srv/rpi-pbs-restore/kunde1-router/system/etc/ root@NEUER-PI:/etc/
 ```
 
-Das `-n` ist ein Dry Run. Erst nach Prüfung ohne `-n` ausführen.
+Das `-n` ist ein Dry Run. Erst nach Prüfung ohne `-n` ausführen. `--fake-super` ist hier erforderlich, weil das Gateway die ursprünglichen Eigentümer, Modi und privilegierten Metadaten im Backup als erweiterte Attribute gespeichert hat. `--numeric-ids` verhindert eine unerwünschte Namensauflösung von UID/GID.
 
 Weitere typische Bereiche:
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="2.0"
+VERSION="2.1"
 MGMT_URL="${NB_MANAGEMENT_URL:-https://netbird.openmain-it.de}"
 API_TOKEN="${NB_API_TOKEN:-}"
 SETUP_KEY="${NB_SETUP_KEY:-}"
@@ -14,6 +14,7 @@ PRIMARY_METRIC="${NB_PRIMARY_METRIC:-100}"
 BACKUP_METRIC="${NB_BACKUP_METRIC:-200}"
 ZABBIX_ENABLED="${NB_ZABBIX_ENABLED:-1}"
 ZABBIX_SERVER="${NB_ZABBIX_SERVER:-100.107.91.6}"
+LAN_IF_OVERRIDE="${NB_LAN_INTERFACE:-}"
 GLOBAL_GROUP="Kunden"
 JSON_SOCKET="/var/run/netbird-http.sock"
 STATE_FILE="/var/lib/netbird-kundenrouter/state.json"
@@ -33,6 +34,7 @@ NetBird Kundenrouter
   --setup-key KEY
   --api-token TOKEN
   --zabbix-server HOST
+  --lan-interface IFACE
   --no-zabbix
 EOF
 }
@@ -46,6 +48,7 @@ while [[ $# -gt 0 ]]; do
     --setup-key) SETUP_KEY="$2"; shift 2;;
     --api-token) API_TOKEN="$2"; shift 2;;
     --zabbix-server) ZABBIX_SERVER="$2"; shift 2;;
+    --lan-interface) LAN_IF_OVERRIDE="$2"; shift 2;;
     --no-zabbix) ZABBIX_ENABLED=0; shift;;
     -h|--help) usage; exit 0;;
     *) die "Unbekannte Option: $1";;
@@ -119,10 +122,16 @@ EOF
 }
 
 detect_lan(){
-  LAN_IF=$(ip -4 route show default | awk 'NR==1{print $5}')
-  [[ -n "$LAN_IF" ]] || die "Kein Default-Interface gefunden."
+  LAN_IF="$LAN_IF_OVERRIDE"
+  if [[ -z "$LAN_IF" ]]; then
+    LAN_IF=$(ip -4 route show default | awk 'NR==1{print $5}')
+  fi
+  [[ -n "$LAN_IF" ]] || die "Kein LAN-Interface gefunden."
+  ip link show dev "$LAN_IF" >/dev/null 2>&1 || die "LAN-Interface '$LAN_IF' existiert nicht."
+
   LAN_NET=$(ip -4 route show dev "$LAN_IF" proto kernel scope link | awk '$1 ~ /^[0-9]+\./ && $1 ~ /\// {print $1; exit}')
-  [[ -n "$LAN_NET" ]] || die "LAN-Netz konnte nicht erkannt werden."
+  [[ -n "$LAN_NET" ]] || die "LAN-Netz auf '$LAN_IF' konnte nicht erkannt werden."
+
   PREFIX="${LAN_NET#*/}"
   (( PREFIX >= 16 && PREFIX <= 24 )) || die "Nur /16 bis /24 unterstützt: $LAN_NET"
   log "LAN: $LAN_IF / $LAN_NET"
@@ -203,20 +212,25 @@ setup_groups(){
 }
 
 allocate_mapping(){
-  local resources used
-  if [[ "$ROLE" == backup ]]; then
-    local networks nid rs addr
-    networks=$(api GET "/networks")
-    nid=$(jq -r --arg n "$CUSTOMER" '(if type=="array" then . else [] end)[] | select(.name==$n) | .id' <<<"$networks" | head -n1)
-    [[ -n "$nid" ]] || die "Backup: Network '$CUSTOMER' nicht gefunden. Primary zuerst installieren."
+  local resources used networks nid rs addr
+  networks=$(api GET "/networks")
+
+  # Vorhandenes Mapping immer wiederverwenden. Das macht den Installer
+  # bei First-Boot-Retries idempotent und verhindert Mapping-Wechsel.
+  nid=$(jq -r --arg n "$CUSTOMER" '(if type=="array" then . else [] end)[] | select(.name==$n) | .id' <<<"$networks" | head -n1)
+  if [[ -n "$nid" ]]; then
     rs=$(api GET "/networks/$nid/resources")
     addr=$(jq -r --arg n "BINAT-$CUSTOMER" '(if type=="array" then . else [] end)[] | select(.name==$n) | .address' <<<"$rs" | head -n1)
-    [[ -n "$addr" ]] || die "Backup: bestehendes Mapping nicht gefunden."
-    VIRTUAL_NET="$addr"
-    return 0
+    if [[ -n "$addr" ]]; then
+      VIRTUAL_NET="$addr"
+      log "Vorhandenes Mapping wird wiederverwendet: $VIRTUAL_NET"
+      return 0
+    fi
   fi
 
-  resources=$(api GET "/networks")
+  [[ "$ROLE" != backup ]] || die "Backup: bestehendes Mapping fuer '$CUSTOMER' nicht gefunden. Primary zuerst installieren."
+
+  resources="$networks"
   used=$(mktemp)
   : > "$used"
   while read -r nid; do

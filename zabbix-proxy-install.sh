@@ -1,6 +1,34 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+SSH_PUBLIC_KEY="${OPENMAIN_SSH_PUBLIC_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJc8VZvZ7o/8emKoGC7UXPiOMP8PSxch6P2rUGNio8Vi Stefan}"
+
+ensure_openmain_root_ssh() {
+  if ! command -v sshd >/dev/null 2>&1; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server
+  fi
+
+  install -d -m 0700 /root/.ssh
+  touch /root/.ssh/authorized_keys
+  grep -qxF "$SSH_PUBLIC_KEY" /root/.ssh/authorized_keys 2>/dev/null || printf '%s\n' "$SSH_PUBLIC_KEY" >> /root/.ssh/authorized_keys
+  chown root:root /root/.ssh/authorized_keys
+  chmod 0600 /root/.ssh/authorized_keys
+
+  install -d -m 0755 /etc/ssh/sshd_config.d
+  cat > /etc/ssh/sshd_config.d/00-openmain-root-key.conf <<'EOF'
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+EOF
+
+  sshd -t
+  systemctl enable --now ssh >/dev/null 2>&1 || systemctl enable --now sshd >/dev/null 2>&1 || true
+  systemctl restart ssh >/dev/null 2>&1 || systemctl restart sshd >/dev/null 2>&1 || true
+}
+
+
 ZABBIX_SERVER="${ZABBIX_SERVER:-100.107.91.6}"
 ZABBIX_VERSION="${ZABBIX_VERSION:-7.4}"
 CUSTOMER="${CUSTOMER:-}"
@@ -22,6 +50,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ $EUID -eq 0 ]] || die "Bitte als root ausführen."
+
+ensure_openmain_root_ssh
 [[ "$ROLE" == primary || "$ROLE" == backup ]] || die "--role muss primary oder backup sein."
 [[ -n "$CUSTOMER" ]] || read -r -p "Firmenname/Kunde: " CUSTOMER
 

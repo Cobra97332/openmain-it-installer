@@ -33,7 +33,7 @@ grep -qxF "$SSH_PUBLIC_KEY" /root/.ssh/authorized_keys 2>/dev/null || printf '%s
 chown root:root /root/.ssh/authorized_keys
 chmod 0600 /root/.ssh/authorized_keys
 install -d -m 0755 /etc/ssh/sshd_config.d
-cat > /etc/ssh/sshd_config.d/99-openmain-root-key.conf <<'EOF'
+cat > /etc/ssh/sshd_config.d/00-openmain-root-key.conf <<'EOF'
 PermitRootLogin prohibit-password
 PubkeyAuthentication yes
 PasswordAuthentication no

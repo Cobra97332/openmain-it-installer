@@ -1,55 +1,62 @@
 # Sicherheitskonzept
 
-## Grundprinzip
+## Empfohlene Trennung
 
-Der Raspberry Pi besitzt keine PBS-Anmeldedaten. Er darf nur per SSH auf ein dediziertes Staging-Verzeichnis des Backup-Gateways schreiben und den validierenden Ingest-Wrapper auslösen.
+Das Raspberry-Pi-Backup-Gateway läuft in einem eigenen **unprivilegierten Debian-13-LXC**. Dadurch erhalten Raspberry Pis keinen SSH-Zugriff auf den PVE-Host selbst.
+
+```text
+Raspberry Pi -> SSH -> Gateway-CT -> PBS
+```
+
+Der Benutzer `rpi-backup` im CT darf per `sudo` ausschließlich `/usr/local/sbin/rpi-pbs-ingest` ausführen.
 
 ## PBS-Zugangsdaten
 
-- Token nur auf dem x86-Gateway speichern.
-- Secret-Datei: `0600 root:root`.
-- API-Token auf den notwendigen Datastore/Namespace begrenzen.
-- Keine Tokens, Passwörter, PSKs oder private Schlüssel in Git committen.
+Der PVE-Deploy-Installer übernimmt für die Erstinstallation die bereits vorhandene Credential-Datei des ausgewählten PVE-PBS-Storages und kopiert sie als:
 
-## SSH
+```text
+/etc/openmain/pbs-secret
+```
 
-- dedizierter Benutzer `rpi-backup`
-- Key-basierte Anmeldung
-- kein Root-SSH für den Backup-Transport erforderlich
-- Gateway möglichst nur über Management-LAN oder NetBird erreichbar machen
-- Public Keys dürfen ins `authorized_keys`; private Keys bleiben ausschließlich auf dem jeweiligen Raspberry Pi
+in den Gateway-CT. Rechte:
 
-## sudo
+```text
+0600 root:root
+```
 
-Der Benutzer `rpi-backup` darf nur `/usr/local/sbin/rpi-pbs-ingest` per sudo ausführen. Der Wrapper akzeptiert ausschließlich streng validierte Backup-IDs und baut den Staging-Pfad selbst.
+Für produktive Kundenumgebungen wird empfohlen, anschließend einen **eigenen PBS-API-Token nur für Raspberry-Pi-Backups** zu verwenden. Rechte nur auf den benötigten Datastore/Namespace vergeben.
+
+Keine Tokens, Passwörter, PSKs oder privaten SSH-Schlüssel in Git committen.
+
+## Netzwerk
+
+Empfohlen:
+
+- Gateway-CT nur über Management-LAN oder NetBird erreichbar machen
+- SSH TCP/22 nicht öffentlich ins Internet veröffentlichen
+- PBS TCP/8007 nur zwischen Gateway-CT und PBS zulassen
+- optional PVE-Firewall-Regeln direkt am CT aktivieren
 
 ## Staging
 
-`/srv/rpi-pbs-staging` enthält eine aktuelle Kopie der gesicherten Daten und ist damit wie ein Backup zu behandeln:
+`/var/lib/openmain-rpi-pbs` liegt standardmäßig auf einem separaten CT-Mountpoint mit `backup=0`.
 
-```bash
-chmod 700 /srv/rpi-pbs-staging
-chown rpi-backup:rpi-backup /srv/rpi-pbs-staging
-```
+Grund: Die dortigen Daten sind nur ein Staging-/Zwischenstand. Die eigentliche Sicherung liegt auf PBS. Dadurch wird vermieden, dass PVE dieselben Raspberry-Pi-Daten ein zweites Mal als Teil des Gateway-CT sichert.
 
-Bei besonders sensiblen Systemen das Gateway selbst verschlüsseln bzw. entsprechend absichern.
+## SSH
 
-## Clientseitige PBS-Verschlüsselung
-
-Optional kann auf dem Gateway ein PBS-Keyfile gesetzt werden:
-
-```bash
-PBS_KEYFILE="/etc/openmain/rpi-pbs.key"
-```
-
-Das Keyfile muss separat und sicher gesichert werden. Ohne Schlüssel ist ein verschlüsseltes Backup nicht wiederherstellbar.
+- eigener Benutzer `rpi-backup`
+- Key-basierte Anmeldung
+- Account-Passwort gesperrt
+- Public Keys nur in `/home/rpi-backup/.ssh/authorized_keys`
+- private Schlüssel verbleiben auf den jeweiligen Raspberry Pis
 
 ## DSGVO
 
 Wenn Raspberry Pis personenbezogene Daten verarbeiten:
 
-- Zugriff auf PBS und Gateway auf erforderliche Administratoren beschränken.
-- Backup-Retention dokumentieren.
-- Löschfristen auch für Backups berücksichtigen.
-- Restore-Zugriffe und administrative Tätigkeiten nachvollziehbar protokollieren.
-- Offsite-/Cloud-Replikationen entsprechend dem eigenen AVV-/TOM-Konzept behandeln.
+- Zugriffe auf PBS und Gateway-CT beschränken
+- Retention/Löschfristen dokumentieren
+- Restore-Zugriffe nachvollziehbar halten
+- Offsite-Replikationen in das eigene AVV/TOM-Konzept aufnehmen
+- Verschlüsselung und Schlüsselaufbewahrung getrennt dokumentieren

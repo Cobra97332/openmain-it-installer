@@ -70,3 +70,10 @@ Die vollständige Anleitung für Zabbix Server, Proxy und Agent auf Debian 13:
 - [patchmon-proxmox/README.md](patchmon-proxmox/README.md)
 
 Unterstützt Linux-LXC, Linux-VMs, Windows-VMs und FreeBSD/OPNsense-VMs.
+
+
+## Raspberry Pi NetBird Kundenrouter
+
+- netbird-router/raspberry-pi/README.md
+- netbird-router/raspberry-pi/HOWTO.md
+- netbird-router/raspberry-pi/install-router.sh

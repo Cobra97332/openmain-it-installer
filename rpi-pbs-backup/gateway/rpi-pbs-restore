@@ -38,6 +38,20 @@ repo_args=(--repository "$PBS_REPOSITORY")
 restore_args=("${repo_args[@]}")
 [[ -n "$PBS_KEYFILE" ]] && restore_args+=(--keyfile "$PBS_KEYFILE")
 
+archive_present() {
+  local logical="$1" json="$2" stem
+  stem="${logical%.pxar}"
+  jq -e --arg logical "$logical" --arg stem "$stem" '
+    any(.[]?;
+      ((.filename // ."file-name" // .name // "") as $f
+       | ($f == $logical)
+         or ($f | startswith($logical + "."))
+         or ($f | startswith($stem + ".mpxar"))
+         or ($f | startswith($stem + ".ppxar")))
+    )
+  ' <<<"$json" >/dev/null
+}
+
 cmd="${1:-}"
 ID="${2:-}"
 [[ -n "$cmd" && -n "$ID" ]] || { usage; exit 2; }
@@ -55,13 +69,30 @@ case "$cmd" in
     [[ "$TARGET" == /* ]] || { echo "Target must be an absolute path" >&2; exit 2; }
     mkdir -p "$TARGET"
     chmod 700 "$TARGET"
+
+    files_json="$(proxmox-backup-client snapshot files "$SNAPSHOT" "${repo_args[@]}" --output-format json)" || {
+      echo "Snapshot-Dateiliste konnte nicht gelesen werden." >&2
+      exit 3
+    }
+
+    for required in system.pxar metadata.pxar; do
+      archive_present "$required" "$files_json" || {
+        echo "Pflichtarchiv fehlt im Snapshot: $required" >&2
+        exit 4
+      }
+    done
+
+    restored=0
     for archive in system.pxar docker.pxar metadata.pxar; do
-      if proxmox-backup-client snapshot files "$SNAPSHOT" "${restore_args[@]}" 2>/dev/null | grep -qE "(^|[[:space:]])${archive}([[:space:]]|$)"; then
+      if archive_present "$archive" "$files_json"; then
         mkdir -p "$TARGET/${archive%.pxar}"
         proxmox-backup-client restore "$SNAPSHOT" "$archive" "$TARGET/${archive%.pxar}" \
           --allow-existing-dirs true "${restore_args[@]}"
+        restored=$((restored + 1))
       fi
     done
+
+    (( restored >= 2 )) || { echo "Kein vollständiger Restore erfolgt." >&2; exit 5; }
     echo "Restore extracted to: $TARGET"
     ;;
   *)

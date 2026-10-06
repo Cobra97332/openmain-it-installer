@@ -15,6 +15,7 @@ BACKUP_METRIC="${NB_BACKUP_METRIC:-200}"
 ZABBIX_ENABLED="${NB_ZABBIX_ENABLED:-1}"
 ZABBIX_SERVER="${NB_ZABBIX_SERVER:-100.107.91.6}"
 LAN_IF_OVERRIDE="${NB_LAN_INTERFACE:-}"
+SSH_PUBLIC_KEY="${NB_SSH_PUBLIC_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJc8VZvZ7o/8emKoGC7UXPiOMP8PSxch6P2rUGNio8Vi Stefan}"
 GLOBAL_GROUP="Kunden"
 JSON_SOCKET="/var/run/netbird-http.sock"
 STATE_FILE="/var/lib/netbird-kundenrouter/state.json"
@@ -105,10 +106,17 @@ setup_access(){
     printf '%s:%s\n' "$ADMIN_USER" "$CT_PASSWORD" | chpasswd
   fi
 
+  install -d -m 0700 /root/.ssh
+  touch /root/.ssh/authorized_keys
+  grep -qxF "$SSH_PUBLIC_KEY" /root/.ssh/authorized_keys 2>/dev/null || printf '%s\n' "$SSH_PUBLIC_KEY" >> /root/.ssh/authorized_keys
+  chown root:root /root/.ssh/authorized_keys
+  chmod 0600 /root/.ssh/authorized_keys
+
   install -d -m 0700 -o "$ADMIN_USER" -g "$ADMIN_USER" "/home/$ADMIN_USER/.ssh"
-  if [[ -s /root/.ssh/authorized_keys ]]; then
-    install -m 0600 -o "$ADMIN_USER" -g "$ADMIN_USER" /root/.ssh/authorized_keys "/home/$ADMIN_USER/.ssh/authorized_keys"
-  fi
+  touch "/home/$ADMIN_USER/.ssh/authorized_keys"
+  grep -qxF "$SSH_PUBLIC_KEY" "/home/$ADMIN_USER/.ssh/authorized_keys" 2>/dev/null || printf '%s\n' "$SSH_PUBLIC_KEY" >> "/home/$ADMIN_USER/.ssh/authorized_keys"
+  chown "$ADMIN_USER:$ADMIN_USER" "/home/$ADMIN_USER/.ssh/authorized_keys"
+  chmod 0600 "/home/$ADMIN_USER/.ssh/authorized_keys"
 
   install -d -m 0755 /etc/ssh/sshd_config.d
   local password_auth="no"

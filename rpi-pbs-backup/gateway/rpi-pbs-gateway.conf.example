@@ -1,17 +1,22 @@
-# OpenMain x86 gateway -> Proxmox Backup Server
+# OpenMain Raspberry Pi -> PBS Gateway auf Proxmox VE
+# Diese Datei wird vom PVE-Installer normalerweise automatisch erzeugt.
 # chmod 0600
 
-STAGING_BASE="/srv/rpi-pbs-staging"
-PBS_REPOSITORY="backup@pbs!rpi@pbs.example.invalid:Backup"
-PBS_PASSWORD_FILE="/etc/openmain/pbs-token.secret"
-PBS_FINGERPRINT=""
-PBS_NAMESPACE="rpi"
+PVE_STORAGE_ID="PBS_Terramaster"
+STAGING_BASE="/var/lib/openmain-rpi-pbs/staging"
 
-# Optional client-side PBS encryption key. Leave empty to use PBS transport/auth only.
+# Wird aus /etc/pve/storage.cfg erzeugt.
+PBS_REPOSITORY="root@pam@192.0.2.10:Backup"
+
+# Vorhandene PVE-Credential-Datei; Secret wird nicht nach /etc/openmain kopiert.
+PBS_PASSWORD_FILE="/etc/pve/priv/storage/PBS_Terramaster.pw"
+PBS_FINGERPRINT=""
+PBS_NAMESPACE=""
+
+# Optional: clientseitige PBS-Verschlüsselung.
 PBS_KEYFILE=""
 
-# Change detection: legacy, data or metadata (supported by current PBS client).
+# legacy, data oder metadata
 PBS_CHANGE_DETECTION="data"
 
-# Restore extraction target on the gateway.
-RESTORE_BASE="/srv/rpi-pbs-restore"
+RESTORE_BASE="/var/lib/openmain-rpi-pbs/restore"

@@ -81,8 +81,24 @@ PBS_PW_FILE="/etc/pve/priv/storage/${PVE_PBS_STORAGE}.pw"
 [[ -r "$PBS_PW_FILE" ]] || { echo "FEHLER: PBS Credential-Datei fehlt: $PBS_PW_FILE" >&2; exit 1; }
 
 pveam update >/dev/null
-TEMPLATE="$(pveam available --section system | awk '$2 ~ /^debian-13-standard_/ {print $2}' | sort -V | tail -1)"
-[[ -n "$TEMPLATE" ]] || { echo "FEHLER: Kein Debian-13-LXC-Template gefunden." >&2; exit 1; }
+
+HOST_ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
+case "$HOST_ARCH" in
+  amd64) TEMPLATE_ARCH="amd64" ;;
+  arm64) TEMPLATE_ARCH="arm64" ;;
+  *)
+    echo "FEHLER: Nicht unterstützte PVE-Architektur: ${HOST_ARCH:-unbekannt}" >&2
+    exit 1
+    ;;
+esac
+
+echo "==> PVE-Architektur: $HOST_ARCH"
+TEMPLATE="$(pveam available --section system | awk -v arch="$TEMPLATE_ARCH" '$2 ~ ("^debian-13-standard_.*_" arch "\\.tar\\.zst$") {print $2}' | sort -V | tail -1)"
+[[ -n "$TEMPLATE" ]] || {
+  echo "FEHLER: Kein Debian-13-LXC-Template für Architektur $TEMPLATE_ARCH gefunden." >&2
+  exit 1
+}
+echo "==> Verwende Template: $TEMPLATE"
 if ! pveam list "$TEMPLATE_STORAGE" | awk 'NR>1 {print $1}' | grep -q "/$TEMPLATE$"; then
   echo "==> Lade Template: $TEMPLATE"
   pveam download "$TEMPLATE_STORAGE" "$TEMPLATE"

@@ -1,4 +1,4 @@
-# HOWTO – Raspberry Pi auf Proxmox Backup Server sichern
+# HOWTO – Raspberry Pi direkt über einen PVE-Host auf PBS sichern
 
 ## 1. Voraussetzungen
 
@@ -7,86 +7,87 @@
 - Raspberry Pi OS oder Debian mit systemd
 - ARMv7 oder ARM64
 - root-Zugriff
-- SSH-Verbindung zum Backup-Gateway
+- SSH-Verbindung zum PVE-Host
 - `rsync` und OpenSSH-Client werden vom Installer installiert
 
-### Backup-Gateway
+### Proxmox VE
 
-- x86-64 Debian oder Proxmox VE
-- offizieller `proxmox-backup-client`
-- Netzwerkzugriff auf PBS TCP/8007
-- Netzwerkzugriff vom Raspberry Pi auf SSH TCP/22 oder einen abweichenden SSH-Port
+- x86-64 Proxmox VE
+- der gewünschte Proxmox Backup Server ist bereits unter **Datacenter → Storage** als Typ `pbs` eingetragen
+- das PBS-Storage funktioniert auf dem Node
+- ausreichend lokaler Speicher für das Staging
+- SSH vom Raspberry Pi zum PVE-Host bzw. dessen NetBird-/Management-IP
 
 ### PBS
 
-Empfohlen ist ein eigener API-Token nur für Raspberry-Pi-Backups. Rechte nur auf den benötigten Datastore/Namespace vergeben.
-
-Beispielstruktur:
-
-```text
-Datastore: Backup
-Namespace: rpi
-
-host/kunde1-router
-host/kunde1-iobroker
-host/intern-monitoring
-```
+Das Script kann die bereits in PVE hinterlegten PBS-Zugangsdaten verwenden. Für produktive Installationen ist ein eigener PBS-Benutzer/API-Token mit minimal benötigten Rechten dennoch die bevorzugte Variante.
 
 Keine PBS-Tokens oder Secrets in GitHub ablegen.
 
-## 2. Gateway installieren
+## 2. Gateway direkt auf PVE installieren
 
-Einfachinstallation aus dem öffentlichen Repository:
+Auf dem PVE-Host als `root`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/rpi-pbs-backup/install-gateway-from-github.sh | bash
 ```
 
-Konfiguration öffnen:
+Der Installer:
+
+1. prüft, ob er auf Proxmox VE läuft,
+2. installiert/prüft `proxmox-backup-client`, `rsync`, `openssh-server` und `sudo`,
+3. liest alle `pbs:`-Storages aus `/etc/pve/storage.cfg`,
+4. lässt bei mehreren Storages eines auswählen,
+5. übernimmt Server, Datastore, Benutzer, Fingerprint und Namespace,
+6. verwendet `/etc/pve/priv/storage/<STORAGE-ID>.pw` als vorhandene Credential-Datei,
+7. erstellt den Benutzer `rpi-backup`,
+8. richtet Staging und Restore-Verzeichnisse ein,
+9. installiert `rpi-pbs-ingest` und `rpi-pbs-restore`,
+10. testet den PBS-Zugriff.
+
+Beispielauswahl ohne Rückfrage:
 
 ```bash
-nano /etc/openmain/rpi-pbs-gateway.conf
+PVE_PBS_STORAGE="PBS_Terramaster" \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/rpi-pbs-backup/install-gateway-from-github.sh)"
+```
+
+Neu konfigurieren:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/rpi-pbs-backup/install-gateway-from-github.sh | bash -s -- --reconfigure
+```
+
+Konfiguration prüfen:
+
+```bash
+cat /etc/openmain/rpi-pbs-gateway.conf
 ```
 
 Beispiel:
 
 ```bash
-STAGING_BASE="/srv/rpi-pbs-staging"
-PBS_REPOSITORY="backup@pbs!rpi@pbs.example.invalid:Backup"
-PBS_PASSWORD_FILE="/etc/openmain/pbs-token.secret"
-PBS_FINGERPRINT=""
-PBS_NAMESPACE="rpi"
+PVE_STORAGE_ID="PBS_Terramaster"
+STAGING_BASE="/var/lib/openmain-rpi-pbs/staging"
+PBS_REPOSITORY="root@pam@192.168.0.221:Backup"
+PBS_PASSWORD_FILE="/etc/pve/priv/storage/PBS_Terramaster.pw"
+PBS_FINGERPRINT="..."
+PBS_NAMESPACE=""
 PBS_KEYFILE=""
 PBS_CHANGE_DETECTION="data"
+RESTORE_BASE="/var/lib/openmain-rpi-pbs/restore"
 ```
 
-Token-Secret anlegen:
+### Staging auf anderes Dateisystem legen
+
+Vor der Installation:
 
 ```bash
-install -m 0600 /dev/null /etc/openmain/pbs-token.secret
-nano /etc/openmain/pbs-token.secret
+RPI_PBS_STAGING_BASE="/mnt/local-backup/rpi-staging" \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/rpi-pbs-backup/install-gateway-from-github.sh)"
 ```
 
-Dateirechte prüfen:
-
-```bash
-stat -c '%a %U:%G %n' /etc/openmain/pbs-token.secret
-```
-
-Erwartet:
-
-```text
-600 root:root /etc/openmain/pbs-token.secret
-```
-
-PBS-Verbindung testen:
-
-```bash
-source /etc/openmain/rpi-pbs-gateway.conf
-export PBS_REPOSITORY PBS_PASSWORD_FILE
-[ -n "$PBS_FINGERPRINT" ] && export PBS_FINGERPRINT
-proxmox-backup-client status --repository "$PBS_REPOSITORY"
-```
+Das Staging enthält den jeweils aktuellen Datenstand der Raspberry Pis und bleibt für inkrementelle `rsync`-Läufe erhalten. Deshalb muss auf dem PVE-Host ausreichend Platz vorhanden sein.
 
 ## 3. Raspberry Pi installieren
 
@@ -108,9 +109,11 @@ GATEWAY_PORT="22"
 CUSTOMER="kunde1"
 ```
 
-`BACKUP_ID=""` sollte normalerweise leer bleiben. Dann wird automatisch z. B. aus `CUSTOMER="kunde1"` und Hostname `router` die PBS-ID `kunde1-router`.
+`GATEWAY_HOST` sollte bevorzugt die NetBird-IP oder eine dedizierte Management-IP des PVE-Nodes sein.
 
-## 4. SSH-Key am Gateway freischalten
+`BACKUP_ID=""` sollte normalerweise leer bleiben. Dann wird aus `CUSTOMER="kunde1"` und Hostname `router` automatisch `kunde1-router`.
+
+## 4. SSH-Key auf dem PVE-Host freischalten
 
 Auf dem Pi:
 
@@ -118,7 +121,7 @@ Auf dem Pi:
 cat /root/.ssh/openmain-rpi-pbs.pub
 ```
 
-Auf dem Gateway:
+Auf dem PVE-Host:
 
 ```bash
 nano /home/rpi-backup/.ssh/authorized_keys
@@ -132,7 +135,7 @@ Verbindung vom Pi testen:
 ssh -i /root/.ssh/openmain-rpi-pbs rpi-backup@100.64.0.10 true
 ```
 
-Für produktive Umgebungen sollte das Gateway nur über internes Management-Netz oder NetBird erreichbar sein.
+PVE-SSH sollte nur aus Management-Netzen bzw. über NetBird erreichbar sein. Kein unnötiges SSH-Inbound aus dem Internet freigeben.
 
 ## 5. Backup-Pfade
 
@@ -150,56 +153,44 @@ EXTRA_PATHS=(/srv /data)
 
 Nicht vorhandene Pfade werden automatisch übersprungen.
 
-### `/var/lib/docker`
+### Docker
 
-Das komplette Docker-Datenverzeichnis wird bewusst nicht über den normalen Systemlauf gesichert. Persistente Named Volumes und Bind-Mounts werden per `docker inspect` erkannt und separat gesichert.
-
-Regenerierbare Container-Layer unter `overlay2` müssen dadurch nicht auf PBS gespeichert werden.
+`/var/lib/docker` wird nicht vollständig kopiert. Persistente Named Volumes und Bind-Mounts werden per `docker inspect` erkannt und separat gesichert. Regenerierbare `overlay2`-Layer und Images werden dadurch nicht unnötig auf PBS gespeichert.
 
 ## 6. Docker und Datenbanken
 
-Standardmäßig werden alle aktuell laufenden Docker-Container beim zweiten Delta-Lauf kurz gestoppt:
+Standardmäßig werden laufende Docker-Container für den zweiten Delta-Lauf kurz gestoppt:
 
 ```bash
 QUIESCE_DOCKER="yes"
 ```
 
-Zusätzlich werden laufende Host-Dienste aus dieser Liste kurz gestoppt:
+Host-Dienste aus dieser Liste werden ebenfalls kurz gestoppt, sofern sie aktiv sind:
 
 ```bash
 QUIESCE_SERVICE_NAMES=(influxdb influxdb2 mariadb mysql postgresql grafana-server mosquitto)
 ```
 
-Weitere Dienste können ergänzt werden.
-
-Wenn ein bestimmtes System keinen Stopp verträgt:
+Wenn ein System keinen Stopp verträgt:
 
 ```bash
 QUIESCE_DOCKER="no"
 QUIESCE_SERVICES="no"
 ```
 
-Dann ist bei Datenbanken jedoch keine applikationskonsistente Sicherung garantiert.
+Dann ist bei laufenden Datenbanken keine vollständige Applikationskonsistenz garantiert.
 
 ## 7. Ersten Test durchführen
 
+Auf dem Raspberry Pi:
+
 ```bash
 systemctl start rpi-pbs-backup.service
-```
-
-Status:
-
-```bash
 systemctl status rpi-pbs-backup.service --no-pager -l
-```
-
-Log:
-
-```bash
 journalctl -u rpi-pbs-backup.service -n 300 --no-pager
 ```
 
-Lokaler Erfolgsstatus:
+Lokaler Status:
 
 ```bash
 cat /var/lib/openmain-rpi-backup/last-status
@@ -208,6 +199,12 @@ cat /var/lib/openmain-rpi-backup/last-success
 
 `last-status` muss `0` enthalten.
 
+Auf dem PVE-Host kann das Staging geprüft werden:
+
+```bash
+find /var/lib/openmain-rpi-pbs/staging -maxdepth 2 -type d -print
+```
+
 ## 8. Timer
 
 ```bash
@@ -215,38 +212,11 @@ systemctl enable --now rpi-pbs-backup.timer
 systemctl list-timers rpi-pbs-backup.timer
 ```
 
-Standard:
-
-```text
-Samstag 03:00 Uhr
-+ 0–30 Minuten RandomizedDelaySec
-```
-
-Zeitplan ändern:
-
-```bash
-systemctl edit rpi-pbs-backup.timer
-```
-
-Beispiel täglich 02:30 Uhr:
-
-```ini
-[Timer]
-OnCalendar=
-OnCalendar=*-*-* 02:30:00
-RandomizedDelaySec=900
-```
-
-Danach:
-
-```bash
-systemctl daemon-reload
-systemctl restart rpi-pbs-backup.timer
-```
+Standard: Samstag 03:00 Uhr plus 0–30 Minuten Zufallsversatz.
 
 ## 9. PBS-Retention
 
-Retention zentral über PBS konfigurieren. Beispiel:
+Retention zentral auf PBS konfigurieren, z. B.:
 
 ```text
 keep-daily:   7
@@ -254,14 +224,20 @@ keep-weekly:  4
 keep-monthly: 12
 ```
 
-Zusätzlich regelmäßige PBS-Verify-Jobs konfigurieren.
+Zusätzlich regelmäßige Verify-Jobs konfigurieren.
 
-## 10. Kontrolle auf dem Gateway
+## 10. Restore
 
-Staging:
+Snapshots auf dem PVE-Gateway anzeigen:
 
 ```bash
-find /srv/rpi-pbs-staging -maxdepth 2 -type d -print
+rpi-pbs-restore list kunde1-router
 ```
 
-Der aktuelle Staging-Stand bleibt erhalten, damit spätere rsync-Läufe nur Änderungen übertragen müssen.
+Backup in ein separates Restore-Verzeichnis extrahieren:
+
+```bash
+rpi-pbs-restore extract kunde1-router 'host/kunde1-router/2026-10-06T01:15:00Z'
+```
+
+Weitere Hinweise: [RESTORE.md](RESTORE.md).

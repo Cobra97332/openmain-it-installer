@@ -1,0 +1,18 @@
+# /etc/mailcow-backup.conf
+#
+# Wird vom interaktiven Installer erzeugt/aktualisiert.
+
+MAILCOW_DIR="/opt/mailcow-dockerized"
+BACKUP_ROOT="/var/backups/mailcow"
+
+# Optionale Kundenkennung für Metadaten.
+CUSTOMER_ID=""
+
+# Stündlich: mysql + crypt + redis
+RETENTION_CRITICAL_DAYS="3"
+
+# Täglich: vollständiges Mailcow-Backup
+RETENTION_FULL_DAYS="14"
+
+# Mailcow empfiehlt für Multithreading ungefähr CPU-Kerne minus 2.
+THREADS="1"

@@ -175,6 +175,8 @@ pct exec <CTID> -- chown rpi-backup:rpi-backup /home/rpi-backup/.ssh/authorized_
 pct exec <CTID> -- chmod 600 /home/rpi-backup/.ssh/authorized_keys
 ```
 
+Hinweis: Der Installer hinterlegt zusätzlich den OpenMain-Admin-Key für Root unter `/root/.ssh/authorized_keys`. Root-SSH ist nur per Public Key erlaubt.
+
 Vom Pi testen:
 
 ```bash

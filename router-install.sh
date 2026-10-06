@@ -121,7 +121,7 @@ setup_access(){
   install -d -m 0755 /etc/ssh/sshd_config.d
   local password_auth="no"
   [[ -n "$CT_PASSWORD" ]] && password_auth="yes"
-  cat > /etc/ssh/sshd_config.d/99-openmain-access.conf <<EOF
+  cat > /etc/ssh/sshd_config.d/00-openmain-access.conf <<EOF
 PermitRootLogin prohibit-password
 PubkeyAuthentication yes
 PasswordAuthentication $password_auth

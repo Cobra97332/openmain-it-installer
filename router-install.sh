@@ -111,10 +111,12 @@ setup_access(){
   fi
 
   install -d -m 0755 /etc/ssh/sshd_config.d
-  cat > /etc/ssh/sshd_config.d/99-openmain-access.conf <<'EOF'
+  local password_auth="no"
+  [[ -n "$CT_PASSWORD" ]] && password_auth="yes"
+  cat > /etc/ssh/sshd_config.d/99-openmain-access.conf <<EOF
 PermitRootLogin prohibit-password
 PubkeyAuthentication yes
-PasswordAuthentication yes
+PasswordAuthentication $password_auth
 EOF
   systemctl enable --now ssh >/dev/null 2>&1 || systemctl enable --now sshd >/dev/null 2>&1 || true
   systemctl restart ssh >/dev/null 2>&1 || systemctl restart sshd >/dev/null 2>&1 || true

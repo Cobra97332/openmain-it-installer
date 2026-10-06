@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly Mailcow critical backup
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=300
+Unit=mailcow-backup-hourly.service
+
+[Install]
+WantedBy=timers.target

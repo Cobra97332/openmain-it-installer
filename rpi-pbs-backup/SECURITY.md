@@ -45,11 +45,14 @@ Grund: Die dortigen Daten sind nur ein Staging-/Zwischenstand. Die eigentliche S
 
 ## SSH
 
-- eigener Benutzer `rpi-backup`
+- eigener Backup-Benutzer `rpi-backup`
 - Key-basierte Anmeldung
-- Account-Passwort gesperrt
-- Public Keys nur in `/home/rpi-backup/.ssh/authorized_keys`
-- private Schlüssel verbleiben auf den jeweiligen Raspberry Pis
+- Account-Passwort von `rpi-backup` gesperrt
+- Backup-Client-Keys liegen in `/home/rpi-backup/.ssh/authorized_keys`
+- der OpenMain-Admin-Key liegt zusätzlich in `/root/.ssh/authorized_keys`
+- Root-SSH ist ausschließlich per Public Key erlaubt (`PermitRootLogin prohibit-password`)
+- SSH-Passwort- und Keyboard-Interactive-Anmeldung sind deaktiviert
+- private Schlüssel verbleiben auf den jeweiligen Admin-/Raspberry-Systemen
 
 ## DSGVO
 

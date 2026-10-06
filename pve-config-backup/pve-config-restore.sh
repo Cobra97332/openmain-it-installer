@@ -76,7 +76,15 @@ setup_repository() {
   [[ "$server" == *:* && "$server" != \[*\] ]] && server="[$server]"
   PBS_REPOSITORY="${PBS_REPOSITORY:-${PBS_USER}@${server}:${PBS_DATASTORE}}"
 
+  local pw_file
+  pw_file="${PBS_PASSWORD_FILE:-/etc/pve/priv/storage/${PBS_STORAGE_ID}.pw}"
+  [[ -r "$pw_file" ]] || die "PBS-Secret nicht lesbar: $pw_file"
+  export PBS_PASSWORD_FILE="$pw_file"
+
   [[ -n "$PBS_FINGERPRINT" ]] && export PBS_FINGERPRINT
+  if [[ -n "${PBS_KEY_FILE:-}" && ! -r "$PBS_KEY_FILE" ]]; then
+    die "PBS_KEY_FILE nicht lesbar: $PBS_KEY_FILE"
+  fi
   export PBS_REPOSITORY
 }
 
@@ -129,7 +137,7 @@ choose_snapshot() {
     jq -r '
       sort_by(."backup-time") | reverse
       | .[]
-      | [."backup-time"|tostring, (.verification.state // "unbekannt")]
+      | [(."backup-time"|tostring), (.verification.state // "unbekannt")]
       | @tsv
     ' <<<"$json"
   )

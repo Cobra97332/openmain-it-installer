@@ -162,7 +162,7 @@ remove=[
 ]
 lines=[]
 for line in t.splitlines():
-    if line.strip().startswith("linux") and "initrd=" in line:
+    if line.strip().startswith("linux"):
         for x in remove: line=line.replace(x,"")
         line=" ".join(line.split())
         if " --- " in line:
@@ -186,21 +186,18 @@ if [[ -f md5sum.txt ]]; then
 fi
 cd "$WORKDIR"
 
-log "Baue ISO mit dem bewährten Debian-V8-Verfahren ..."
+log "Baue ISO und übernehme BIOS-/UEFI-Bootstruktur des Debian-Originals ..."
 
 rm -f "$OUTPUT_ISO"
-xorriso -as mkisofs \
-  -r -V "DEBIAN_NB_AUTO" \
-  -o "$OUTPUT_ISO" \
-  -J -joliet-long \
-  -cache-inodes \
-  -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-  -b isolinux/isolinux.bin \
-  -c isolinux/boot.cat \
-  -boot-load-size 4 \
-  -boot-info-table \
-  -no-emul-boot \
-  "$ISO_DIR"
+xorriso \
+  -indev "$ISO_FILE" \
+  -outdev "$OUTPUT_ISO" \
+  -overwrite on \
+  -update_r "$ISO_DIR" / \
+  -volid "DEBIAN_NB_AUTO" \
+  -append_partition all revoke - \
+  -boot_image any replay \
+  -commit
 
 [[ -s "$OUTPUT_ISO" ]] || die "ISO wurde nicht erzeugt."
 
@@ -208,4 +205,4 @@ sha256sum "$OUTPUT_ISO" | tee "$OUTPUT_ISO.sha256"
 
 log "Fertig: $OUTPUT_ISO"
 log "Basis: offizielles Debian 13 Netinst"
-log "Methode: getesteter V8 ISO-Build"
+log "Methode: Debian-Bootstruktur per xorriso replay erhalten (BIOS + UEFI)"

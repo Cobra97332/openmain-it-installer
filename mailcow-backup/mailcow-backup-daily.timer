@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Mailcow full backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=1800
+Unit=mailcow-backup-daily.service
+
+[Install]
+WantedBy=timers.target

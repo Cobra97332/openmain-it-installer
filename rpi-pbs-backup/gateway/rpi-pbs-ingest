@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+CONFIG="${RPI_PBS_GATEWAY_CONFIG:-/etc/openmain/rpi-pbs-gateway.conf}"
+[[ $EUID -eq 0 ]] || { echo "Must run as root" >&2; exit 1; }
+[[ -r "$CONFIG" ]] || { echo "Config missing: $CONFIG" >&2; exit 1; }
+# shellcheck disable=SC1090
+source "$CONFIG"
+
+ID="${1:-}"
+[[ "$ID" =~ ^[a-z0-9][a-z0-9._-]{0,119}$ ]] || { echo "Invalid backup id" >&2; exit 2; }
+: "${STAGING_BASE:=/srv/rpi-pbs-staging}"
+: "${PBS_REPOSITORY:?PBS_REPOSITORY missing}"
+: "${PBS_PASSWORD_FILE:?PBS_PASSWORD_FILE missing}"
+: "${PBS_NAMESPACE:=}"
+: "${PBS_KEYFILE:=}"
+: "${PBS_CHANGE_DETECTION:=data}"
+
+STAGE="${STAGING_BASE%/}/$ID"
+[[ -d "$STAGE/system" && -d "$STAGE/metadata" ]] || { echo "Staging incomplete: $STAGE" >&2; exit 3; }
+command -v proxmox-backup-client >/dev/null 2>&1 || { echo "proxmox-backup-client missing" >&2; exit 4; }
+
+exec 9>"/run/lock/rpi-pbs-ingest-${ID}.lock"
+flock -n 9 || { echo "Backup already running for $ID" >&2; exit 5; }
+
+export PBS_REPOSITORY PBS_PASSWORD_FILE
+[[ -n "${PBS_FINGERPRINT:-}" ]] && export PBS_FINGERPRINT
+
+specs=(
+  "system.pxar:$STAGE/system"
+  "metadata.pxar:$STAGE/metadata"
+)
+[[ -d "$STAGE/docker" ]] && specs+=("docker.pxar:$STAGE/docker")
+
+args=(
+  backup
+  "${specs[@]}"
+  --backup-type host
+  --backup-id "$ID"
+  --repository "$PBS_REPOSITORY"
+  --change-detection-mode "$PBS_CHANGE_DETECTION"
+)
+[[ -n "$PBS_NAMESPACE" ]] && args+=(--ns "$PBS_NAMESPACE")
+[[ -n "$PBS_KEYFILE" ]] && args+=(--keyfile "$PBS_KEYFILE")
+
+proxmox-backup-client "${args[@]}"
+mkdir -p "$STAGE/.state"
+date +%s > "$STAGE/.state/last-pbs-success"
+echo "PBS backup successful: host/$ID"

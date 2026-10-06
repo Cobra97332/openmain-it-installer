@@ -4,6 +4,25 @@
 
 Das Hauptrepository bleibt privat.
 
+## Raspberry Pi → Proxmox Backup Server
+
+Universelles Backup für Raspberry Pi 3/4/5 sowie Debian/Raspberry Pi OS auf ARMv7/ARM64. Der Pi überträgt per rsync/SSH an ein x86-64-Gateway; dort schreibt der offizielle `proxmox-backup-client` auf PBS.
+
+- [rpi-pbs-backup/README.md](rpi-pbs-backup/README.md)
+- [rpi-pbs-backup/HOWTO.md](rpi-pbs-backup/HOWTO.md)
+- [rpi-pbs-backup/RESTORE.md](rpi-pbs-backup/RESTORE.md)
+
+Client installieren:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/rpi-pbs-backup/install-client-from-github.sh | bash
+```
+
+Gateway installieren:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/rpi-pbs-backup/install-gateway-from-github.sh | bash
+```
 
 ## ISO-Build: bewährtes V8-Verfahren
 
@@ -37,13 +56,12 @@ netbird-router-debian13-amd64.iso.sha256
 ```
 
 Die Buildmaschine benötigt keine Anmeldung bei GitHub und kein SCP.
+
 ## Zabbix aktualisieren
 
 Die vollständige Anleitung für Zabbix Server, Proxy und Agent auf Debian 13:
 
 - [docs/ZABBIX-UPGRADE.md](docs/ZABBIX-UPGRADE.md)
-
-
 
 ## PatchMon Proxmox Auto-Deployment
 

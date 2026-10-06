@@ -1,0 +1,17 @@
+# OpenMain x86 gateway -> Proxmox Backup Server
+# chmod 0600
+
+STAGING_BASE="/srv/rpi-pbs-staging"
+PBS_REPOSITORY="backup@pbs!rpi@pbs.example.invalid:Backup"
+PBS_PASSWORD_FILE="/etc/openmain/pbs-token.secret"
+PBS_FINGERPRINT=""
+PBS_NAMESPACE="rpi"
+
+# Optional client-side PBS encryption key. Leave empty to use PBS transport/auth only.
+PBS_KEYFILE=""
+
+# Change detection: legacy, data or metadata (supported by current PBS client).
+PBS_CHANGE_DETECTION="data"
+
+# Restore extraction target on the gateway.
+RESTORE_BASE="/srv/rpi-pbs-restore"

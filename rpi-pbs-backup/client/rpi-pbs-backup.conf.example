@@ -1,0 +1,37 @@
+# OpenMain universal Raspberry Pi -> PBS backup client
+# This file is sourced by bash. Keep permissions at 0600.
+
+GATEWAY_HOST="100.64.0.10"
+GATEWAY_PORT="22"
+GATEWAY_USER="rpi-backup"
+GATEWAY_BASE="/srv/rpi-pbs-staging"
+SSH_KEY="/root/.ssh/openmain-rpi-pbs"
+
+# Empty = derive from hostname. Optional customer prefix is added to the backup id.
+CUSTOMER=""
+BACKUP_ID=""
+
+# Briefly stop running Docker containers and selected host services for the second rsync pass.
+QUIESCE_DOCKER="yes"
+QUIESCE_SERVICES="yes"
+QUIESCE_SERVICE_NAMES=(influxdb influxdb2 mariadb mysql postgresql grafana-server mosquitto)
+
+# Base data that is useful for a bare-metal rebuild on virtually any Raspberry Pi.
+BASE_PATHS=(/etc /root /home /opt /usr/local /var/www /var/lib)
+
+# Additional application paths, e.g. /srv /data
+EXTRA_PATHS=()
+
+# Skip large/regenerable host data. Docker persistent mounts are detected separately.
+RSYNC_EXCLUDES=("lost+found")
+
+# Paths relative to /var/lib. Docker persistent mounts are backed up separately.
+VAR_LIB_EXCLUDES=(
+  "/docker/***"
+  "/containerd/***"
+  "/apt/lists/***"
+  "/systemd/coredump/***"
+)
+
+# Docker bind mounts matching these prefixes are not copied as persistent app data.
+DOCKER_SKIP_PREFIXES=(/proc /sys /dev /run)

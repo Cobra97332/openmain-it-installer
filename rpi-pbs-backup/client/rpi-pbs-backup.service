@@ -1,0 +1,11 @@
+[Unit]
+Description=OpenMain universal Raspberry Pi PBS backup
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rpi-pbs-backup
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

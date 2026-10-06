@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+CONFIG="${RPI_PBS_GATEWAY_CONFIG:-/etc/openmain/rpi-pbs-gateway.conf}"
+[[ $EUID -eq 0 ]] || { echo "Must run as root" >&2; exit 1; }
+[[ -r "$CONFIG" ]] || { echo "Config missing: $CONFIG" >&2; exit 1; }
+# shellcheck disable=SC1090
+source "$CONFIG"
+
+: "${PBS_REPOSITORY:?PBS_REPOSITORY missing}"
+: "${PBS_PASSWORD_FILE:?PBS_PASSWORD_FILE missing}"
+: "${PBS_NAMESPACE:=}"
+: "${PBS_KEYFILE:=}"
+: "${RESTORE_BASE:=/srv/rpi-pbs-restore}"
+
+export PBS_REPOSITORY PBS_PASSWORD_FILE
+[[ -n "${PBS_FINGERPRINT:-}" ]] && export PBS_FINGERPRINT
+
+usage() {
+  cat <<USAGE
+Usage:
+  rpi-pbs-restore list <backup-id>
+  rpi-pbs-restore extract <backup-id> <snapshot> [target-dir]
+
+Examples:
+  rpi-pbs-restore list kunde1-router
+  rpi-pbs-restore extract kunde1-router 'host/kunde1-router/2026-10-06T01:15:00Z'
+USAGE
+}
+
+valid_id() {
+  [[ "$1" =~ ^[a-z0-9][a-z0-9._-]{0,119}$ ]]
+}
+
+repo_args=(--repository "$PBS_REPOSITORY")
+[[ -n "$PBS_NAMESPACE" ]] && repo_args+=(--ns "$PBS_NAMESPACE")
+restore_args=("${repo_args[@]}")
+[[ -n "$PBS_KEYFILE" ]] && restore_args+=(--keyfile "$PBS_KEYFILE")
+
+cmd="${1:-}"
+ID="${2:-}"
+[[ -n "$cmd" && -n "$ID" ]] || { usage; exit 2; }
+valid_id "$ID" || { echo "Invalid backup id" >&2; exit 2; }
+
+case "$cmd" in
+  list)
+    proxmox-backup-client snapshot list "host/$ID" "${repo_args[@]}"
+    ;;
+  extract)
+    SNAPSHOT="${3:-}"
+    TARGET="${4:-${RESTORE_BASE%/}/$ID}"
+    [[ -n "$SNAPSHOT" ]] || { usage; exit 2; }
+    [[ "$SNAPSHOT" == "host/$ID/"* ]] || { echo "Snapshot does not match backup id: $SNAPSHOT" >&2; exit 2; }
+    [[ "$TARGET" == /* ]] || { echo "Target must be an absolute path" >&2; exit 2; }
+    mkdir -p "$TARGET"
+    chmod 700 "$TARGET"
+    for archive in system.pxar docker.pxar metadata.pxar; do
+      if proxmox-backup-client snapshot files "$SNAPSHOT" "${restore_args[@]}" 2>/dev/null | grep -qE "(^|[[:space:]])${archive}([[:space:]]|$)"; then
+        mkdir -p "$TARGET/${archive%.pxar}"
+        proxmox-backup-client restore "$SNAPSHOT" "$archive" "$TARGET/${archive%.pxar}" \
+          --allow-existing-dirs true "${restore_args[@]}"
+      fi
+    done
+    echo "Restore extracted to: $TARGET"
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

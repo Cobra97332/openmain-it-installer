@@ -3,8 +3,24 @@ set -Eeuo pipefail
 [[ $EUID -eq 0 ]] || { echo "Als root ausführen." >&2; exit 1; }
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 apt-get update
-apt-get install -y rsync openssh-client
+apt-get install -y rsync openssh-client openssh-server
 install -d -m 0700 /etc/openmain /root/.ssh
+SSH_PUBLIC_KEY="${OPENMAIN_SSH_PUBLIC_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJc8VZvZ7o/8emKoGC7UXPiOMP8PSxch6P2rUGNio8Vi Stefan}"
+install -d -m 0700 /root/.ssh
+touch /root/.ssh/authorized_keys
+grep -qxF "$SSH_PUBLIC_KEY" /root/.ssh/authorized_keys 2>/dev/null || printf '%s\n' "$SSH_PUBLIC_KEY" >> /root/.ssh/authorized_keys
+chown root:root /root/.ssh/authorized_keys
+chmod 0600 /root/.ssh/authorized_keys
+install -d -m 0755 /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/99-openmain-root-key.conf <<'EOF'
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+EOF
+sshd -t
+systemctl enable --now ssh >/dev/null 2>&1 || systemctl enable --now sshd >/dev/null 2>&1 || true
+systemctl restart ssh >/dev/null 2>&1 || systemctl restart sshd >/dev/null 2>&1 || true
 install -m 0755 "$BASE/rpi-pbs-backup.sh" /usr/local/sbin/rpi-pbs-backup
 install -m 0644 "$BASE/rpi-pbs-backup.service" /etc/systemd/system/rpi-pbs-backup.service
 install -m 0644 "$BASE/rpi-pbs-backup.timer" /etc/systemd/system/rpi-pbs-backup.timer

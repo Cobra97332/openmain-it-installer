@@ -206,6 +206,10 @@ install_lxc() {
       rm -f "$state"
     else
       log "LXC $id ($name): PatchMon-Konfiguration vorhanden, Agent aber nicht erreichbar. Registrierung nicht eindeutig ungültig – kein neues Enrollment, um Dubletten zu vermeiden."
+      if [[ "$DRY_RUN" == "true" ]]; then
+        log "LXC $id ($name): DRY_RUN – Dienstneustart/Report wird nicht ausgeführt."
+        return 0
+      fi
       pct exec "$id" -- /bin/sh -c 'systemctl restart patchmon-agent >/dev/null 2>&1 || service patchmon-agent restart >/dev/null 2>&1 || true; sleep 2; /usr/local/bin/patchmon-agent report >/dev/null 2>&1 || true' >>"$LOG_FILE" 2>&1 || true
       return 1
     fi
@@ -353,6 +357,10 @@ install_unix_vm() {
       rm -f "$state"
     else
       log "VM $id ($name/$os): PatchMon-Konfiguration vorhanden, Agent aber nicht erreichbar. Registrierung nicht eindeutig ungültig – kein neues Enrollment, um Dubletten zu vermeiden."
+      if [[ "$DRY_RUN" == "true" ]]; then
+        log "VM $id ($name/$os): DRY_RUN – Dienstneustart/Report wird nicht ausgeführt."
+        return 0
+      fi
       qm guest exec "$id" -- /bin/sh -c 'systemctl restart patchmon-agent >/dev/null 2>&1 || service patchmon-agent restart >/dev/null 2>&1 || true; sleep 2; /usr/local/bin/patchmon-agent report >/dev/null 2>&1 || true' >>"$LOG_FILE" 2>&1 || true
       return 1
     fi
@@ -411,9 +419,18 @@ install_windows_vm() {
   fi
 
   if guest_windows_has_config_vm "$id" && [[ ! -s "$state" ]]; then
-    log "VM $id ($name/windows): PatchMon-Konfiguration vorhanden, Agent aber nicht erreichbar. Kein neues Enrollment, damit kein doppelter Host entsteht."
-    qm guest exec "$id" -- powershell.exe -NoProfile -NonInteractive -Command "Restart-Service -Name PatchMonAgent -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; if (Test-Path 'C:\\Program Files\\PatchMon\\patchmon-agent.exe') { & 'C:\\Program Files\\PatchMon\\patchmon-agent.exe' report *> \$null }" >>"$LOG_FILE" 2>&1 || true
-    return 1
+    if [[ "$AUTO_REENROLL_INVALID" == "true" ]] && guest_windows_registration_invalid_vm "$id"; then
+      log "VM $id ($name/windows): vorhandene Agent-Credentials werden von PatchMon mit HTTP 401 abgelehnt. Host fehlt oder Registrierung ist ungültig – erneutes Enrollment."
+      rm -f "$state"
+    else
+      log "VM $id ($name/windows): PatchMon-Konfiguration vorhanden, Agent aber nicht erreichbar. Registrierung nicht eindeutig ungültig – kein neues Enrollment, um Dubletten zu vermeiden."
+      if [[ "$DRY_RUN" == "true" ]]; then
+        log "VM $id ($name/windows): DRY_RUN – Dienstneustart/Report wird nicht ausgeführt."
+        return 0
+      fi
+      qm guest exec "$id" -- powershell.exe -NoProfile -NonInteractive -Command "Restart-Service -Name PatchMonAgent -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; if (Test-Path 'C:\\Program Files\\PatchMon\\patchmon-agent.exe') { & 'C:\\Program Files\\PatchMon\\patchmon-agent.exe' report *> \$null }" >>"$LOG_FILE" 2>&1 || true
+      return 1
+    fi
   fi
 
   enroll_host "vm" "$id" "$name" "windows" "$state" || {

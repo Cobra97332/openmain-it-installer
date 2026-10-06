@@ -379,7 +379,13 @@ install_unix_vm() {
     query="?os=freebsd"
     cmd="set -e
 command -v curl >/dev/null 2>&1 || pkg install -y curl
-curl -fsSL '$PATCHMON_URL/api/v1/hosts/install$query' -H 'X-API-ID: $api_id' -H 'X-API-KEY: $api_key' | sh"
+tmp=\$(mktemp /tmp/patchmon-install.XXXXXX)
+trap 'rm -f "\$tmp"' EXIT
+curl -fsSL '$PATCHMON_URL/api/v1/hosts/install$query' -H 'X-API-ID: $api_id' -H 'X-API-KEY: $api_key' -o "\$tmp"
+sh -n "\$tmp"
+sh "\$tmp"
+rm -f "\$tmp"
+trap - EXIT"
   else
     query=""
     [[ "$FORCE_INSTALL" == "true" ]] && query="?force=true"
@@ -391,7 +397,13 @@ if ! command -v curl >/dev/null 2>&1; then
   elif command -v apk >/dev/null 2>&1; then apk add --no-cache curl;
   else echo 'curl fehlt und kein unterstützter Paketmanager gefunden' >&2; exit 20; fi
 fi
-curl -fsSL '$PATCHMON_URL/api/v1/hosts/install$query' -H 'X-API-ID: $api_id' -H 'X-API-KEY: $api_key' | sh"
+tmp=\$(mktemp /tmp/patchmon-install.XXXXXX)
+trap 'rm -f "\$tmp"' EXIT
+curl -fsSL '$PATCHMON_URL/api/v1/hosts/install$query' -H 'X-API-ID: $api_id' -H 'X-API-KEY: $api_key' -o "\$tmp"
+sh -n "\$tmp"
+sh "\$tmp"
+rm -f "\$tmp"
+trap - EXIT"
   fi
 
   if qm guest exec "$id" -- /bin/sh -c "$cmd" >>"$LOG_FILE" 2>&1; then

@@ -372,7 +372,10 @@ main(){
   setup_zabbix
   save_state
   log "Fertig: $CUSTOMER / $ROLE / Metric $ROUTER_METRIC / $VIRTUAL_NET -> $LAN_NET"
-  [[ "$ZABBIX_ENABLED" == 1 ]] && log "Zabbix Proxy aktiv -> $ZABBIX_SERVER"
+  if [[ "$ZABBIX_ENABLED" == 1 ]]; then
+    log "Zabbix Proxy aktiv -> $ZABBIX_SERVER"
+  fi
+  return 0
 }
 
 main "$@"

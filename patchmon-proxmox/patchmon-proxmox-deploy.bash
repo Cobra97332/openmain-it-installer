@@ -232,7 +232,13 @@ if ! command -v curl >/dev/null 2>&1; then
   elif command -v apk >/dev/null 2>&1; then apk add --no-cache curl;
   else echo 'curl fehlt und kein unterstützter Paketmanager gefunden' >&2; exit 20; fi
 fi
-curl -fsSL '$PATCHMON_URL/api/v1/hosts/install$([[ "$FORCE_INSTALL" == "true" ]] && printf '?force=true')' -H 'X-API-ID: $api_id' -H 'X-API-KEY: $api_key' | sh"
+tmp=\$(mktemp /tmp/patchmon-install.XXXXXX)
+trap 'rm -f "\$tmp"' EXIT
+curl -fsSL '$PATCHMON_URL/api/v1/hosts/install$([[ "$FORCE_INSTALL" == "true" ]] && printf '?force=true')' -H 'X-API-ID: $api_id' -H 'X-API-KEY: $api_key' -o "\$tmp"
+sh -n "\$tmp"
+sh "\$tmp"
+rm -f "\$tmp"
+trap - EXIT"
 
   if pct exec "$id" -- /bin/sh -c "$cmd" >>"$LOG_FILE" 2>&1; then
     if pct exec "$id" -- /bin/sh -c 'systemctl restart patchmon-agent >/dev/null 2>&1 || service patchmon-agent restart >/dev/null 2>&1 || true; sleep 2; /usr/local/bin/patchmon-agent ping >/dev/null 2>&1 && /usr/local/bin/patchmon-agent report >/dev/null 2>&1' >>"$LOG_FILE" 2>&1; then

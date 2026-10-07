@@ -215,30 +215,67 @@ def base_dashboard(title, uid, tags=None, refresh="30s", from_time="now-6h"):
     }
 
 def variables(group_regex):
+    # Grafana-Zabbix 6.x uses structured template-variable queries.
+    # Legacy string queries such as "*" or "$group.*" leave the variable
+    # dropdowns empty on current plugin versions.
     return [
         {
+            "allFormat": "regex values",
             "current": {},
             "datasource": ds(),
+            "definition": "Zabbix - group",
+            "hide": 0,
             "includeAll": False,
             "label": "Gruppe",
+            "multi": False,
+            "multiFormat": "glob",
             "name": "group",
             "options": [],
-            "query": "*",
+            "query": {
+                "application": "",
+                "group": "/.*/",
+                "host": "",
+                "item": "",
+                "queryType": "group",
+            },
             "refresh": 1,
-            "regex": "/" + group_regex.replace("/", r"\/") + "/",
+            "refresh_on_load": False,
+            "regex": "/" + group_regex.replace("/", r"\\/") + "/",
+            "skipUrlSync": False,
+            "sort": 0,
+            "tagValuesQuery": "",
+            "tagsQuery": "",
             "type": "query",
+            "useTags": False,
         },
         {
+            "allFormat": "glob",
             "current": {},
             "datasource": ds(),
+            "definition": "Zabbix - host",
+            "hide": 0,
             "includeAll": False,
             "label": "Host",
+            "multi": False,
+            "multiFormat": "glob",
             "name": "host",
             "options": [],
-            "query": "$group.*",
+            "query": {
+                "application": "",
+                "group": "$group",
+                "host": "/.*/",
+                "item": "",
+                "queryType": "host",
+            },
             "refresh": 1,
+            "refresh_on_load": False,
             "regex": "",
+            "skipUrlSync": False,
+            "sort": 0,
+            "tagValuesQuery": "",
+            "tagsQuery": "",
             "type": "query",
+            "useTags": False,
         },
     ]
 

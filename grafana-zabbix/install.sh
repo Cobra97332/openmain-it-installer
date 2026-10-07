@@ -5,7 +5,7 @@ BASE_URL="${OPENMAIN_GITHUB_RAW:-https://raw.githubusercontent.com/Cobra97332/op
 INSTALL_DIR="${OPENMAIN_GRAFANA_ZABBIX_DIR:-/opt/openmain-grafana-zabbix}"
 PROVISIONING_DIR="${GRAFANA_PROVISIONING_DIR:-/etc/grafana/provisioning}"
 DASHBOARD_DIR="${GRAFANA_DASHBOARD_DIR:-/var/lib/grafana/dashboards/openmain}"
-ENV_FILE="${OPENMAIN_ZABBIX_ENV_FILE:-/etc/openmain-zabbix-metadata.env}"
+ENV_FILE="/etc/openmain-zabbix-metadata.env"
 DATASOURCE_UID="${GRAFANA_ZABBIX_UID:-}"
 
 if [[ $EUID -ne 0 ]]; then
@@ -68,6 +68,10 @@ curl -fsSL "$BASE_URL/provisioning/dashboards/openmain.yaml" -o "$PROVISIONING_D
 curl -fsSL "$BASE_URL/openmain-zabbix-metadata.env.example" -o "$INSTALL_DIR/openmain-zabbix-metadata.env.example"
 
 chmod 0755 "$INSTALL_DIR/generate-dashboards.py" "$INSTALL_DIR/sync-zabbix-groups.py"
+
+if [[ ! -e "$ENV_FILE" ]]; then
+  install -m 0600 "$INSTALL_DIR/openmain-zabbix-metadata.env.example" "$ENV_FILE"
+fi
 
 python3 "$INSTALL_DIR/generate-dashboards.py" \
   --datasource-uid "$DATASOURCE_UID" \

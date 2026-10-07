@@ -30,6 +30,25 @@ PROFILES = {
             ("VPN status", r"/(WireGuard|OpenVPN|IPsec|VPN).*(status|Status|state|State)/", "short", "stat"),
         ],
     },
+    "netbird": {
+        "title": "OpenMain - NetBird",
+        "group_regex": r"^OpenMain/NetBird(?:/|$)",
+        "panels": [
+            ("Docker containers", r"/Docker: Containers (total|running|stopped|paused)/", "short", "stat"),
+            ("NetBird container status", r"/Container .*?(netbird|traefik|relay|coturn|signal|management|dashboard).*:.*(Status|State)/", "short", "stat"),
+            ("NetBird container CPU", r"/Container .*?(netbird|traefik|relay|coturn|signal|management|dashboard).*:.*CPU/", "percent", "timeseries"),
+            ("NetBird container memory", r"/Container .*?(netbird|traefik|relay|coturn|signal|management|dashboard).*:.*Memory.*(usage|utilization|percent|%)/", "percent", "timeseries"),
+            ("NetBird container memory bytes", r"/Container .*?(netbird|traefik|relay|coturn|signal|management|dashboard).*:.*Memory.*(used|usage bytes|usage)/", "bytes", "timeseries"),
+            ("NetBird container network RX", r"/Container .*?(netbird|traefik|relay|coturn|signal|management|dashboard).*:.*(Network input|Network receive|Received|RX)/", "bps", "timeseries"),
+            ("NetBird container network TX", r"/Container .*?(netbird|traefik|relay|coturn|signal|management|dashboard).*:.*(Network output|Network transmit|Sent|TX)/", "bps", "timeseries"),
+            ("Container restarts", r"/Container .*?(netbird|traefik|relay|coturn|signal|management|dashboard).*:.*(Restart|restart)/", "short", "timeseries"),
+            ("Host CPU", r"/CPU.*(utilization|usage)/", "percent", "timeseries"),
+            ("Host memory", r"/Memory.*(utilization|usage)/", "percent", "timeseries"),
+            ("Host filesystem", r"/(Filesystem|FS).*space.*(utilization|usage)|Space utilization/", "percent", "timeseries"),
+            ("Host network", r"/Interface .*:.*(Bits received|Bits sent|traffic|Traffic)|Network.*(received|sent)/", "bps", "timeseries"),
+            ("Docker version / info", r"/Docker:.*(Server version|Architecture|Operating system|Kernel version|Images total)/", "short", "stat"),
+        ],
+    },
     "pve": {
         "title": "OpenMain - Proxmox VE",
         "group_regex": r"^OpenMain/PVE(?:/|$)",
@@ -543,9 +562,10 @@ def make_tv_dashboard():
         problem_stat(13, "QNAP", 2, 12, 5, "OpenMain/QNAP", 4, 4),
         problem_stat(14, "Synology", 2, 16, 5, "OpenMain/Synology", 4, 4),
         problem_stat(15, "NAS gesamt", 2, 20, 5, "OpenMain/NAS", 4, 4),
+        problem_stat(16, "NetBird", 2, 0, 9, "OpenMain/NetBird", 4, 4),
 
-        problems_table(4, "Kritische Systeme - aktive Probleme", "OpenMain/Critical", "/.*/", 0, 0, 9, 24, 10),
-        problems_table(5, "Alle High/Disaster Probleme", "/.*/", "/.*/", 4, 0, 19, 24, 10),
+        problems_table(4, "Kritische Systeme - aktive Probleme", "OpenMain/Critical", "/.*/", 0, 0, 13, 24, 10),
+        problems_table(5, "Alle High/Disaster Probleme", "/.*/", "/.*/", 4, 0, 23, 24, 10),
     ]
     return d
 

@@ -1,0 +1,22 @@
+apiVersion: 1
+
+datasources:
+  - name: Zabbix
+    type: alexanderzobnin-zabbix-datasource
+    uid: zabbix-main
+    access: proxy
+    url: https://zabbix.openmain-it.de/api_jsonrpc.php
+    isDefault: true
+    jsonData:
+      authType: token
+      trends: true
+      trendsFrom: 7d
+      trendsRange: 4d
+      cacheTTL: 1h
+      timeout: 30
+      queryTimeout: 60
+      disableReadOnlyUsersAck: true
+      disableDataAlignment: false
+    secureJsonData:
+      apiToken: $ZABBIX_GRAFANA_API_TOKEN
+    editable: false

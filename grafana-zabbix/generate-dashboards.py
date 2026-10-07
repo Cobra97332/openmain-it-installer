@@ -12,6 +12,7 @@ PROFILES = {
     "opnsense": {
         "title": "OpenMain - OPNsense",
         "group_regex": r"^OpenMain/OPNsense(?:/|$)",
+        "group": "OpenMain/OPNsense",
         "panels": [
             ("Packet filter status", r"/(OPNsense: )?Packet filter running status/", "short", "stat"),
             ("Uptime", r"/(System|OPNsense).*(Uptime|uptime)|System uptime/", "s", "stat"),
@@ -38,6 +39,7 @@ PROFILES = {
     "netbird": {
         "title": "OpenMain - NetBird",
         "group_regex": r"^OpenMain/NetBird(?:/|$)",
+        "group": "OpenMain/NetBird",
         "panels": [
             ("Docker containers", r"/Docker: Containers (total|running|stopped|paused)/", "short", "stat"),
             ("NetBird container status", r"/Container .*?(netbird|traefik|relay|coturn|signal|management|dashboard).*:.*(Status|State)/", "short", "stat"),
@@ -57,6 +59,7 @@ PROFILES = {
     "pve": {
         "title": "OpenMain - Proxmox VE",
         "group_regex": r"^OpenMain/PVE(?:/|$)",
+        "group": "OpenMain/PVE",
         "panels": [
             ("CPU", r"/(Cluster|Node .*|QEMU .*|LXC .*):.*CPU.*(utilization|usage)/", "percent", "timeseries"),
             ("Memory", r"/(Cluster|Node .*|QEMU .*|LXC .*):.*Memory.*(utilization|usage)/", "percent", "timeseries"),
@@ -75,6 +78,7 @@ PROFILES = {
     "idrac": {
         "title": "OpenMain - Dell iDRAC",
         "group_regex": r"^OpenMain/iDRAC(?:/|$)",
+        "group": "OpenMain/iDRAC",
         "panels": [
             ("Overall health", r"/Overall system health status|(System|Global).*(health|Health|status|Status)|Rollup/", "short", "stat"),
             ("Temperatures", r"/(Temperature|Temp|temperature|temp).*(Reading|reading|Value|value)/", "celsius", "timeseries"),
@@ -92,6 +96,7 @@ PROFILES = {
     "nas": {
         "title": "OpenMain - NAS",
         "group_regex": r"^OpenMain/NAS(?:/|$)",
+        "group": "OpenMain/NAS",
         "panels": [
             ("System health", r"/(System|Overall).*(health|status)/", "short", "stat"),
             ("CPU", r"/(CPU|Processor).*(utilization|usage)/", "percent", "timeseries"),
@@ -109,6 +114,7 @@ PROFILES = {
     "qnap": {
         "title": "OpenMain - QNAP",
         "group_regex": r"^OpenMain/QNAP(?:/|$)",
+        "group": "OpenMain/QNAP",
         "panels": [
             ("System health", r"/(System|Overall).*(health|Health|status|Status)/", "short", "stat"),
             ("CPU", r"/(CPU|Processor).*(utilization|usage)/", "percent", "timeseries"),
@@ -126,6 +132,7 @@ PROFILES = {
     "synology": {
         "title": "OpenMain - Synology",
         "group_regex": r"^OpenMain/Synology(?:/|$)",
+        "group": "OpenMain/Synology",
         "panels": [
             ("System health", r"/(System|Overall|DiskStation).*(health|Health|status|Status)/", "short", "stat"),
             ("CPU", r"/(CPU|Processor).*(utilization|usage)/", "percent", "timeseries"),
@@ -253,39 +260,21 @@ def base_dashboard(title, uid, tags=None, refresh="30s", from_time="now-6h"):
         "weekStart": "monday",
     }
 
-def variables(group_regex):
-    # Grafana-Zabbix 6.x uses structured template-variable queries.
-    # Legacy string queries such as "*" or "$group.*" leave the variable
-    # dropdowns empty on current plugin versions.
+def variables(group_name):
+    # Each device dashboard targets exactly one managed OpenMain host group.
+    # Using a constant group avoids depending on Grafana-Zabbix group
+    # enumeration, which can return an empty variable even when the datasource
+    # can query hosts/items in that group.
     return [
         {
-            "allFormat": "regex values",
-            "current": {},
-            "datasource": ds(),
-            "definition": "Zabbix - group",
-            "hide": 0,
-            "includeAll": False,
+            "current": {"selected": True, "text": group_name, "value": group_name},
+            "hide": 2,
             "label": "Gruppe",
-            "multi": False,
-            "multiFormat": "glob",
             "name": "group",
-            "options": [],
-            "query": {
-                "application": "",
-                "group": "/.*/",
-                "host": "",
-                "item": "",
-                "queryType": "group",
-            },
-            "refresh": 1,
-            "refresh_on_load": False,
-            "regex": "/" + group_regex.replace("/", r"\\/") + "/",
+            "options": [{"selected": True, "text": group_name, "value": group_name}],
+            "query": group_name,
             "skipUrlSync": False,
-            "sort": 0,
-            "tagValuesQuery": "",
-            "tagsQuery": "",
-            "type": "query",
-            "useTags": False,
+            "type": "constant",
         },
         {
             "allFormat": "glob",
@@ -301,13 +290,13 @@ def variables(group_regex):
             "options": [],
             "query": {
                 "application": "",
-                "group": "$group",
+                "group": group_name,
                 "host": "/.*/",
                 "item": "",
                 "queryType": "host",
             },
             "refresh": 1,
-            "refresh_on_load": False,
+            "refresh_on_load": True,
             "regex": "",
             "skipUrlSync": False,
             "sort": 0,
@@ -319,9 +308,8 @@ def variables(group_regex):
     ]
 
 
-
-def opnsense_variables(group_regex):
-    vars_ = variables(group_regex)
+def opnsense_variables(group_name):
+    vars_ = variables(group_name)
     vars_.append({
         "current": {"selected": True, "text": ".*", "value": ".*"},
         "hide": 0,
@@ -513,9 +501,9 @@ def problem_stat(pid, title, min_severity, x, y, group="/.*/", w=6, h=5):
 def make_device_dashboard(key, profile):
     d = base_dashboard(profile["title"], f"openmain-{key}", ["OpenMain", "Zabbix", key])
     d["templating"]["list"] = (
-        opnsense_variables(profile["group_regex"])
+        opnsense_variables(profile["group"])
         if key == "opnsense"
-        else variables(profile["group_regex"])
+        else variables(profile["group"])
     )
     d["panels"].append(problems_table(1, "Aktive Probleme", y=0, h=8))
     pid = 2

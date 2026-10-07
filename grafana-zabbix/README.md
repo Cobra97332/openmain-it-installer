@@ -29,11 +29,11 @@ Der Sync ordnet aktive Hosts anhand verknüpfter Zabbix-Templates und Hostnamen 
 
 Zusätzlich werden Host-Tags `openmain.platform=<typ>` und für kritische Systeme `openmain.critical=true` gesetzt.
 
-Standardmäßig gelten OPNsense, PVE, iDRAC, NAS, QNAP und Synology als kritisch. Über `OPENMAIN_CRITICAL_PLATFORMS` kann das geändert werden.
+Standardmäßig gelten OPNsense, PVE, iDRAC, NAS, QNAP und Synology als kritisch. Über `OPENMAIN_CRITICAL_PLATFORMS` kann das geändert werden. Zusätzliche zentrale Hosts können über `OPENMAIN_CRITICAL_HOST_REGEX` oder das vorhandene Host-Tag `openmain.critical=true` automatisch in `OpenMain/Critical` aufgenommen werden.
 
 ## Voraussetzungen
 
-- Grafana
+- Grafana 11.6 oder neuer
 - Grafana-Zabbix Plugin `alexanderzobnin-zabbix-app`
 - Zabbix 7.x
 - Python 3

@@ -6,6 +6,33 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+ENV_FILE = Path(os.environ.get("OPENMAIN_ZABBIX_ENV_FILE", "/etc/openmain-zabbix-metadata.env"))
+
+def load_env_file(path):
+    """Load KEY=VALUE pairs without shell evaluation.
+
+    Existing process environment variables take precedence.
+    This intentionally supports regex values containing characters such as
+    parentheses and pipes, which are awkward to source from a shell.
+    """
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+load_env_file(ENV_FILE)
 
 API_URL = os.environ.get("ZABBIX_API_URL", "https://zabbix.openmain-it.de/api_jsonrpc.php")
 API_TOKEN = os.environ.get("ZABBIX_ADMIN_API_TOKEN") or os.environ.get("NB_ZABBIX_API_TOKEN", "")

@@ -17,6 +17,7 @@ CRITICAL_PLATFORMS = {
     ).split(",")
     if x.strip()
 }
+CRITICAL_HOST_REGEX = os.environ.get("OPENMAIN_CRITICAL_HOST_REGEX", "").strip()
 
 GROUPS = {
     "opnsense": "OpenMain/OPNsense",
@@ -125,13 +126,28 @@ def main():
 
     for host in hosts:
         platforms = classify(host)
-        if not platforms:
+        current_tagset = existing_tag_map(host.get("tags", []))
+        critical_by_tag = ("openmain.critical", "true") in current_tagset
+        critical_by_regex = False
+        if CRITICAL_HOST_REGEX:
+            try:
+                critical_by_regex = bool(
+                    re.search(
+                        CRITICAL_HOST_REGEX,
+                        f"{host.get('host', '')} {host.get('name', '')}",
+                    )
+                )
+            except re.error as exc:
+                raise RuntimeError(f"OPENMAIN_CRITICAL_HOST_REGEX ist ungültig: {exc}") from exc
+
+        is_critical = bool(platforms & CRITICAL_PLATFORMS) or critical_by_tag or critical_by_regex
+        if not platforms and not is_critical:
             continue
         classified += 1
 
         current_groups = {g["groupid"]: g["name"] for g in host.get("hostgroups", [])}
         desired_group_names = {GROUPS[p] for p in platforms if p in GROUPS}
-        if platforms & CRITICAL_PLATFORMS:
+        if is_critical:
             desired_group_names.add(CRITICAL_GROUP)
 
         desired_group_ids = set(current_groups.keys())
@@ -147,7 +163,7 @@ def main():
             if pair not in tagset:
                 tags.append({"tag": pair[0], "value": pair[1]})
                 tagset.add(pair)
-        if platforms & CRITICAL_PLATFORMS:
+        if is_critical:
             pair = ("openmain.critical", "true")
             if pair not in tagset:
                 tags.append({"tag": pair[0], "value": pair[1]})
@@ -163,7 +179,8 @@ def main():
             continue
 
         changed += 1
-        print(f"UPDATE   {host['name']}: {', '.join(sorted(platforms))}")
+        labels = sorted(platforms) or ["critical"]
+        print(f"UPDATE   {host['name']}: {', '.join(labels)}")
         if args.dry_run:
             continue
 

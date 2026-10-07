@@ -1,0 +1,72 @@
+name: Grafana Zabbix CI
+
+on:
+  push:
+    paths:
+      - 'grafana-zabbix/**'
+      - '.github/workflows/grafana-zabbix-ci.yml'
+  pull_request:
+    paths:
+      - 'grafana-zabbix/**'
+      - '.github/workflows/grafana-zabbix-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python syntax
+        run: |
+          python3 -m py_compile \
+            grafana-zabbix/generate-dashboards.py \
+            grafana-zabbix/sync-zabbix-groups.py
+
+      - name: Bash syntax
+        run: bash -n grafana-zabbix/install.sh
+
+      - name: Generate dashboards
+        run: |
+          rm -rf /tmp/openmain-dashboards
+          python3 grafana-zabbix/generate-dashboards.py \
+            --datasource-uid ci-zabbix \
+            --output /tmp/openmain-dashboards
+
+      - name: Validate dashboard JSON
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("/tmp/openmain-dashboards")
+          files = sorted(root.glob("*.json"))
+          expected = {
+              "opnsense.json",
+              "pve.json",
+              "idrac.json",
+              "nas.json",
+              "qnap.json",
+              "synology.json",
+              "problems.json",
+              "tv.json",
+          }
+
+          assert {p.name for p in files} == expected, [p.name for p in files]
+
+          uids = set()
+          for path in files:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              assert data["title"].startswith("OpenMain - "), path
+              assert data["uid"] not in uids, data["uid"]
+              assert data["panels"], path
+              uids.add(data["uid"])
+
+              encoded = json.dumps(data)
+              assert "ci-zabbix" in encoded, f"Datasource UID fehlt in {path}"
+
+          print(f"OK: {len(files)} Dashboards, {len(uids)} eindeutige UIDs")
+          PY

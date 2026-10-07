@@ -379,8 +379,16 @@ def make_tv_dashboard():
         problem_stat(1, "Kritische Systeme: High+", 4, 0, 0, "OpenMain/Critical", 8, 5),
         problem_stat(2, "Gesamt: High+", 4, 8, 0, "/.*/", 8, 5),
         problem_stat(3, "Gesamt: Warning+", 2, 16, 0, "/.*/", 8, 5),
-        problems_table(4, "Kritische Systeme - aktive Probleme", "OpenMain/Critical", "/.*/", 0, 0, 5, 24, 10),
-        problems_table(5, "Alle High/Disaster Probleme", "/.*/", "/.*/", 4, 0, 15, 24, 10),
+
+        problem_stat(10, "OPNsense", 2, 0, 5, "OpenMain/OPNsense", 4, 4),
+        problem_stat(11, "PVE", 2, 4, 5, "OpenMain/PVE", 4, 4),
+        problem_stat(12, "iDRAC", 2, 8, 5, "OpenMain/iDRAC", 4, 4),
+        problem_stat(13, "QNAP", 2, 12, 5, "OpenMain/QNAP", 4, 4),
+        problem_stat(14, "Synology", 2, 16, 5, "OpenMain/Synology", 4, 4),
+        problem_stat(15, "NAS gesamt", 2, 20, 5, "OpenMain/NAS", 4, 4),
+
+        problems_table(4, "Kritische Systeme - aktive Probleme", "OpenMain/Critical", "/.*/", 0, 0, 9, 24, 10),
+        problems_table(5, "Alle High/Disaster Probleme", "/.*/", "/.*/", 4, 0, 19, 24, 10),
     ]
     return d
 

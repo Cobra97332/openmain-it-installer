@@ -27,7 +27,9 @@ jobs:
             grafana-zabbix/sync-zabbix-groups.py
 
       - name: Bash syntax
-        run: bash -n grafana-zabbix/install.sh
+        run: |
+          bash -n grafana-zabbix/install.sh
+          bash -n grafana-zabbix/install-docker.sh
 
       - name: Generate dashboards
         run: |

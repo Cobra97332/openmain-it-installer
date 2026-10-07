@@ -33,7 +33,8 @@ PROFILES = {
         "panels": [
             ("CPU", r"/(Cluster|Node .*|QEMU .*|LXC .*):.*CPU.*(utilization|usage)/", "percent", "timeseries"),
             ("Memory", r"/(Cluster|Node .*|QEMU .*|LXC .*):.*Memory.*(utilization|usage)/", "percent", "timeseries"),
-            ("Storage", r"/(Cluster: Storage utilization|Storage .*:.*(utilization|used|available)|Node .*:.*[Ff]ilesystem.*(utilization|used|available))/", "percent", "timeseries"),
+            ("Storage utilization", r"/(Cluster: Storage utilization|Storage .*:.*[Uu]tilization|Node .*:.*[Ff]ilesystem.*[Uu]tilization)/", "percent", "timeseries"),
+            ("Storage capacity", r"/(Cluster: Storage (used|total)|Storage .*:.*(used|Used|total|Total|available|Available)|Node .*:.*[Ff]ilesystem.*(used|Used|total|Total|available|Available))/", "bytes", "timeseries"),
             ("VM / LXC state", r"/Cluster: Number of (running|stopped) (virtual machines|LXC containers)|(QEMU|LXC).*:.*(Status|status)/", "short", "stat"),
             ("Cluster / Node health", r"/Cluster: (Quorum status|Number of cluster nodes.*)|Node .*:.*(Status|status)/", "short", "stat"),
             ("Physical disks / SMART", r"/Node .*: Disk .*:.*(SMART|Health|health|Status|status|Wearout|wearout|Temperature|temperature)/", "short", "stat"),

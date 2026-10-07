@@ -1,0 +1,14 @@
+apiVersion: 1
+
+providers:
+  - name: OpenMain Zabbix
+    orgId: 1
+    folder: OpenMain Monitoring
+    folderUid: openmain-monitoring
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards/openmain
+      foldersFromFilesStructure: false

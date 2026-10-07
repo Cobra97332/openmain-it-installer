@@ -1,1 +1,5 @@
 # OpenMain-IT public installer
+
+# Öffentliche Ablage enthält keine Dokumentation.
+# Dokumentation/HowTos/Runbooks gehören ausschließlich ins private Repo Cobra97332/Openmain-it.
+*.md

@@ -294,6 +294,72 @@ def variables(group_regex):
         },
     ]
 
+
+def customer_variables():
+    # Generic customer view: choose an existing Zabbix host group as customer
+    # scope, then optionally narrow down to a host.
+    return [
+        {
+            "allFormat": "regex values",
+            "current": {},
+            "datasource": ds(),
+            "definition": "Zabbix - group",
+            "hide": 0,
+            "includeAll": False,
+            "label": "Kunde / Gruppe",
+            "multi": False,
+            "multiFormat": "glob",
+            "name": "customer_group",
+            "options": [],
+            "query": {
+                "application": "",
+                "group": "/.*/",
+                "host": "",
+                "item": "",
+                "queryType": "group",
+            },
+            "refresh": 1,
+            "refresh_on_load": False,
+            "regex": "",
+            "skipUrlSync": False,
+            "sort": 1,
+            "tagValuesQuery": "",
+            "tagsQuery": "",
+            "type": "query",
+            "useTags": False,
+        },
+        {
+            "allFormat": "regex values",
+            "current": {},
+            "datasource": ds(),
+            "definition": "Zabbix - host",
+            "hide": 0,
+            "includeAll": True,
+            "allValue": "/.*/",
+            "label": "Host",
+            "multi": True,
+            "multiFormat": "regex values",
+            "name": "customer_host",
+            "options": [],
+            "query": {
+                "application": "",
+                "group": "$customer_group",
+                "host": "/.*/",
+                "item": "",
+                "queryType": "host",
+            },
+            "refresh": 1,
+            "refresh_on_load": False,
+            "regex": "",
+            "skipUrlSync": False,
+            "sort": 1,
+            "tagValuesQuery": "",
+            "tagsQuery": "",
+            "type": "query",
+            "useTags": False,
+        },
+    ]
+
 def field_defaults(unit="short", stat=False):
     # Generic device status values use vendor/Zabbix value mappings whose
     # numeric enums differ by template. Do not apply a universal >=1=red
@@ -434,6 +500,35 @@ def make_problems_dashboard():
     ]
     return d
 
+
+def make_customer_dashboard():
+    d = base_dashboard(
+        "OpenMain - Kundenübersicht",
+        "openmain-customers",
+        ["OpenMain", "Zabbix", "Customers"],
+        "30s",
+        "now-24h",
+    )
+    d["templating"]["list"] = customer_variables()
+    d["panels"] = [
+        problem_stat(1, "Disaster", 5, 0, 0, "$customer_group", 6, 5),
+        problem_stat(2, "High+", 4, 6, 0, "$customer_group", 6, 5),
+        problem_stat(3, "Average+", 3, 12, 0, "$customer_group", 6, 5),
+        problem_stat(4, "Warning+", 2, 18, 0, "$customer_group", 6, 5),
+        problems_table(
+            5,
+            "Aktive Probleme des Kunden",
+            "$customer_group",
+            "$customer_host",
+            0,
+            0,
+            5,
+            24,
+            14,
+        ),
+    ]
+    return d
+
 def make_tv_dashboard():
     d = base_dashboard("OpenMain - TV / NOC", "openmain-tv", ["OpenMain", "Zabbix", "TV", "NOC"], "30s", "now-3h")
     d["editable"] = False
@@ -465,6 +560,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     dashboards = {f"{key}.json": make_device_dashboard(key, profile) for key, profile in PROFILES.items()}
     dashboards["problems.json"] = make_problems_dashboard()
+    dashboards["customers.json"] = make_customer_dashboard()
     dashboards["tv.json"] = make_tv_dashboard()
     for filename, data in dashboards.items():
         (out / filename).write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

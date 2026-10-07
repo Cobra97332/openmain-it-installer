@@ -184,3 +184,52 @@ Für weitere Plattformen:
 1. neue Erkennungsregel in `sync-zabbix-groups.py`
 2. neues Profil in `generate-dashboards.py`
 3. Generator erneut ausführen
+
+
+## Docker-Grafana
+
+Für Docker-Grafana den Docker-Installer verwenden:
+
+~~~bash
+curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/grafana-zabbix/install-docker.sh | bash
+~~~
+
+Der Installer:
+
+1. erkennt den laufenden Grafana-Container,
+2. liest Compose-Service, Projekt und Working-Directory aus den Docker-Compose-Labels,
+3. versucht die vorhandene Zabbix-Datasource-UID aus `/var/lib/grafana/grafana.db` zu erkennen,
+4. erzeugt die acht OpenMain-Dashboards,
+5. legt im vorhandenen Compose-Verzeichnis eine separate `compose.openmain-zabbix.yaml` an,
+6. mountet Provisioning und Dashboards read-only in den Grafana-Container,
+7. prüft die zusammengeführte Compose-Konfiguration,
+8. recreated ausschließlich den Grafana-Service.
+
+Die bestehende `compose.yaml` wird nicht überschrieben.
+
+Für die gezeigte Installation unter `/opt/grafana` entsteht typischerweise:
+
+~~~text
+/opt/grafana/
+├── compose.yaml
+├── compose.openmain-zabbix.yaml
+└── openmain-grafana-zabbix/
+    ├── openmain.yaml
+    └── dashboards/
+        ├── opnsense.json
+        ├── pve.json
+        ├── idrac.json
+        ├── nas.json
+        ├── qnap.json
+        ├── synology.json
+        ├── problems.json
+        └── tv.json
+~~~
+
+Falls die Datasource-UID nicht automatisch erkannt wird:
+
+~~~bash
+curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/grafana-zabbix/install-docker.sh -o /tmp/install-grafana-zabbix.sh
+chmod +x /tmp/install-grafana-zabbix.sh
+GRAFANA_ZABBIX_UID=DEINE_UID /tmp/install-grafana-zabbix.sh
+~~~

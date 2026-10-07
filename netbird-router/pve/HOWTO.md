@@ -566,6 +566,17 @@ gespeichert.
 
 ## 18. Häufige Fehler
 
+### Zabbix Proxy: `failed to accept an incoming stats request`
+
+Der Proxy erlaubt lokale Statistikabfragen und den zentralen Zabbix-Server über NetBird:
+
+```ini
+StatsAllowedIP=127.0.0.1,::1,100.107.91.6
+```
+
+Bei abweichender Server-IP wird automatisch der Wert aus `ZABBIX_SERVER` verwendet. Dadurch werden lokale Abfragen von `127.0.0.1`/ `::1` und Abfragen des zentralen Zabbix-Servers akzeptiert.
+
+
 ### `Exec format error - Failed to exec /sbin/init`
 
 Ursache: falsches LXC-Template für die CPU-Architektur.

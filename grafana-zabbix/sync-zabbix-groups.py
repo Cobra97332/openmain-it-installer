@@ -40,7 +40,7 @@ CRITICAL_PLATFORMS = {
     x.strip().lower()
     for x in os.environ.get(
         "OPENMAIN_CRITICAL_PLATFORMS",
-        "opnsense,pve,idrac,nas,qnap,synology"
+        "opnsense,pve,idrac,nas,qnap,synology,netbird"
     ).split(",")
     if x.strip()
 }
@@ -53,6 +53,7 @@ GROUPS = {
     "nas": "OpenMain/NAS",
     "qnap": "OpenMain/QNAP",
     "synology": "OpenMain/Synology",
+    "netbird": "OpenMain/NetBird",
 }
 CRITICAL_GROUP = "OpenMain/Critical"
 
@@ -97,6 +98,8 @@ def classify(host):
     platforms = set()
     if re.search(r"\bopnsense\b", haystack):
         platforms.add("opnsense")
+    if re.search(r"\bnetbird\b", haystack):
+        platforms.add("netbird")
     if re.search(r"\bproxmox\b|\bpve\b", templates):
         platforms.add("pve")
     if re.search(r"\bidrac\b|dell poweredge", templates):
@@ -106,7 +109,7 @@ def classify(host):
     if re.search(r"\bsynology\b|\bdiskstation\b", haystack):
         platforms.update({"synology", "nas"})
 
-    if not platforms.intersection({"pve", "idrac", "opnsense", "qnap", "synology"}):
+    if not platforms.intersection({"pve", "idrac", "opnsense", "qnap", "synology", "netbird"}):
         if re.search(r"\bnas\b", haystack):
             platforms.add("nas")
 

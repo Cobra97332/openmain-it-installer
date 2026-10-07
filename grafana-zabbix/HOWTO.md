@@ -6,14 +6,16 @@ Empfohlene Basis:
 
 | System | Zabbix-Template |
 | --- | --- |
-| Proxmox VE | offizielles Proxmox-VE-Template |
-| Dell iDRAC | offizielles Dell-iDRAC-SNMP-Template |
-| OPNsense | OPNsense-Community-Template plus Zabbix Agent |
-| QNAP | QNAP-SNMP-Template, möglichst SNMPv3 |
-| Synology | Synology/SNMP-Template, möglichst SNMPv3 |
+| Proxmox VE | offizielles `Proxmox VE by HTTP` |
+| Dell iDRAC | offizielles `Dell iDRAC by SNMP` |
+| OPNsense | offizielles `OPNsense by SNMP` |
+| QNAP | Community-Template, z. B. `Template SNMP QNAP NAS`; nach Möglichkeit SNMPv3 |
+| Synology | Community-Template, z. B. `Synology DiskStation SNMPv3` |
 | generisches NAS | passendes Vendor-Template oder Linux/SNMP-Basis |
 
 Die Dashboards arbeiten mit Regex-Filtern auf Zabbix-Item-Namen. Je sauberer die Templates benannt sind, desto besser funktioniert die automatische Darstellung.
+
+Für QNAP und Synology werden Community-Templates verwendet. Nach dem ersten Import müssen die tatsächlich vorhandenen Item-Namen geprüft werden; bei Bedarf werden die Dashboard-Regexe in `generate-dashboards.py` angepasst.
 
 ## 2. Zabbix-Metadaten automatisch synchronisieren
 
@@ -60,6 +62,8 @@ Inhalt:
 ZABBIX_API_URL=https://zabbix.openmain-it.de/api_jsonrpc.php
 ZABBIX_ADMIN_API_TOKEN=HIER_TOKEN_EINTRAGEN
 OPENMAIN_CRITICAL_PLATFORMS=opnsense,pve,idrac,nas,qnap,synology
+# Optional: zusätzliche zentrale Hosts automatisch als kritisch markieren
+OPENMAIN_CRITICAL_HOST_REGEX=(?i)(zabbix|grafana|netbird|authentik|mailcow|vaultwarden|pbs)
 ~~~
 
 Aktivieren:

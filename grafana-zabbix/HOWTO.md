@@ -17,30 +17,49 @@ Die Dashboards arbeiten mit Regex-Filtern auf Zabbix-Item-Namen. Je sauberer die
 
 Für QNAP und Synology werden Community-Templates verwendet. Nach dem ersten Import müssen die tatsächlich vorhandenen Item-Namen geprüft werden; bei Bedarf werden die Dashboard-Regexe in `generate-dashboards.py` angepasst.
 
-## 2. Zabbix-Metadaten automatisch synchronisieren
+## 2. Installation
 
-Management-Token setzen:
+Für natives Grafana auf Debian/Ubuntu:
 
 ~~~bash
-export ZABBIX_ADMIN_API_TOKEN='...'
-export ZABBIX_API_URL='https://zabbix.openmain-it.de/api_jsonrpc.php'
+curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/grafana-zabbix/install.sh | bash
 ~~~
+
+Der Installer versucht die vorhandene Zabbix-Datasource-UID aus `/var/lib/grafana/grafana.db` zu erkennen. Falls Grafana eine andere Datenbank oder Docker verwendet, die UID explizit setzen:
+
+~~~bash
+curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/grafana-zabbix/install.sh -o /tmp/openmain-grafana-zabbix-install.sh
+chmod +x /tmp/openmain-grafana-zabbix-install.sh
+GRAFANA_ZABBIX_UID=DEINE_UID /tmp/openmain-grafana-zabbix-install.sh
+~~~
+
+Der Installer erzeugt die Dashboards, installiert den Dashboard-Provider und legt die Vorlage für den automatischen Zabbix-Metadaten-Sync unter `/etc/openmain-zabbix-metadata.env` an.
+
+## 3. Zabbix-Metadaten automatisch synchronisieren
+
+Die vom Installer angelegte Datei bearbeiten:
+
+~~~bash
+nano /etc/openmain-zabbix-metadata.env
+~~~
+
+Mindestens `ZABBIX_ADMIN_API_TOKEN` setzen. Die Datei bleibt mit Modus `0600` lokal auf dem Server und darf nicht in Git eingecheckt werden.
 
 Testlauf:
 
 ~~~bash
-python3 sync-zabbix-groups.py --dry-run --verbose
+/opt/openmain-grafana-zabbix/sync-zabbix-groups.py --dry-run --verbose
 ~~~
 
 Produktiver Lauf:
 
 ~~~bash
-python3 sync-zabbix-groups.py
+/opt/openmain-grafana-zabbix/sync-zabbix-groups.py
 ~~~
 
 Danach sollten die Gruppen `OpenMain/...` in Zabbix existieren.
 
-## 3. Regelmäßigen Sync per systemd installieren
+## 4. Regelmäßigen Sync per systemd installieren
 
 ~~~bash
 install -d -m 0755 /opt/openmain-grafana-zabbix
@@ -75,7 +94,7 @@ systemctl start openmain-zabbix-groups.service
 journalctl -u openmain-zabbix-groups.service -n 100 --no-pager
 ~~~
 
-## 4. Grafana-Datasource-UID
+## 5. Grafana-Datasource-UID
 
 Empfohlen:
 
@@ -91,7 +110,7 @@ python3 generate-dashboards.py \
   --output /var/lib/grafana/dashboards/openmain
 ~~~
 
-## 5. Dashboard-Provisioning
+## 6. Dashboard-Provisioning
 
 Provider-Datei unter `/etc/grafana/provisioning/dashboards/openmain.yaml`:
 
@@ -127,7 +146,7 @@ systemctl restart grafana-server
 
 Bei Docker müssen Provisioning- und Dashboard-Verzeichnisse persistent in den Grafana-Container gemountet sein.
 
-## 6. TV-Dashboard
+## 7. TV-Dashboard
 
 Dashboard: `OpenMain - TV / NOC`
 
@@ -146,7 +165,7 @@ Beispiel:
 https://GRAFANA-DOMAIN/d/openmain-tv/openmain-tv-noc?kiosk
 ~~~
 
-## 7. Problem-Dashboard
+## 8. Problem-Dashboard
 
 `OpenMain - Alle Probleme` zeigt:
 
@@ -158,7 +177,7 @@ https://GRAFANA-DOMAIN/d/openmain-tv/openmain-tv-noc?kiosk
 
 Das Dashboard arbeitet direkt mit Zabbix-Problems und benötigt keine manuelle Hostpflege.
 
-## 8. Erweiterung
+## 9. Erweiterung
 
 Für weitere Plattformen:
 

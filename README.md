@@ -77,3 +77,19 @@ Unterstützt Linux-LXC, Linux-VMs, Windows-VMs und FreeBSD/OPNsense-VMs.
 - netbird-router/raspberry-pi/README.md
 - netbird-router/raspberry-pi/HOWTO.md
 - netbird-router/raspberry-pi/install-router.sh
+
+
+## Grafana + Zabbix Dashboards
+
+Automatisch provisionierte, dynamische Dashboards für OPNsense, Proxmox VE, Dell iDRAC, NAS, QNAP und Synology sowie zentrale Problem- und TV/NOC-Ansichten:
+
+- [grafana-zabbix/README.md](grafana-zabbix/README.md)
+- [grafana-zabbix/HOWTO.md](grafana-zabbix/HOWTO.md)
+
+Dashboard-Provisioning installieren:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/grafana-zabbix/install.sh | bash
+```
+
+Hinweis: Vor dem Einsatz muss die UID der vorhandenen Grafana-Zabbix-Datasource geprüft werden. Standard ist `zabbix-main`; bei abweichender UID `GRAFANA_ZABBIX_UID` beim Installer setzen.

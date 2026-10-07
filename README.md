@@ -95,7 +95,3 @@ curl -fsSL https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/ma
 Hinweis: Vor dem Einsatz muss die UID der vorhandenen Grafana-Zabbix-Datasource geprüft werden. Standard ist `zabbix-main`; bei abweichender UID `GRAFANA_ZABBIX_UID` beim Installer setzen.
 
 
-## Betriebsdokumentation
-
-- [Vaultwarden über NetBird](docs/VAULTWARDEN-NETBIRD.md) – Sidecar-Netzwerk, Restart-Policy und Fehlerbehebung.
-- [Grafana ↔ Zabbix](docs/GRAFANA-ZABBIX-CONNECTION.md) – interne Docker-Verbindung, CSRF/Proxy und API-Authentifizierung.

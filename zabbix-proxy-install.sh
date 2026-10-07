@@ -95,6 +95,7 @@ chmod 600 "$PSK_FILE"
 cat > /etc/zabbix/zabbix_proxy.conf <<EOF
 ProxyMode=0
 Server=$ZABBIX_SERVER
+StatsAllowedIP=127.0.0.1,::1,$ZABBIX_SERVER
 Hostname=$PROXY_NAME
 DBName=/var/lib/zabbix/zabbix_proxy.db
 ProxyConfigFrequency=60

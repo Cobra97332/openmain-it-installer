@@ -14,20 +14,25 @@ PROFILES = {
         "group_regex": r"^OpenMain/OPNsense(?:/|$)",
         "panels": [
             ("Packet filter status", r"/(OPNsense: )?Packet filter running status/", "short", "stat"),
+            ("Uptime", r"/(System|OPNsense).*(Uptime|uptime)|System uptime/", "s", "stat"),
+            ("CPU utilization", r"/(CPU|Processor).*(utilization|usage)/", "percent", "timeseries"),
+            ("Memory utilization", r"/(Memory|RAM).*(utilization|usage)/", "percent", "timeseries"),
+            ("Load average", r"/[Ll]oad average/", "short", "timeseries"),
+            ("Filesystem utilization", r"/(Filesystem|FS).*space.*(utilization|usage)|Space utilization/", "percent", "timeseries"),
             ("State table utilization", r"/(OPNsense: )?States table utilization in %/", "percent", "timeseries"),
             ("State table current / limit", r"/(OPNsense: )?States table (current|limit)/", "short", "timeseries"),
-            ("Source tracking current / limit", r"/(OPNsense: )?Source tracking table (current|limit)/", "short", "timeseries"),
             ("Source tracking utilization", r"/(OPNsense: )?Source tracking table utilization/", "percent", "timeseries"),
+            ("Source tracking current / limit", r"/(OPNsense: )?Source tracking table (current|limit)/", "short", "timeseries"),
             ("Firewall rules", r"/(OPNsense: )?Firewall rules count/", "short", "stat"),
             ("Packet filter anomalies", r"/(OPNsense: )?(Packets with bad offset|Fragmented packets|Short packets|Normalized packets|Packets dropped due to memory limitation)/", "short", "timeseries"),
-            ("Interface traffic", r"/(OPNsense: )?Interface .*:.*(traffic|Traffic|bits|Bits)/", "bps", "timeseries"),
-            ("Interface errors / drops", r"/(OPNsense: )?Interface .*:.*(error|Error|discard|Discard|blocked|Blocked)/", "short", "timeseries"),
-            ("CPU utilization", r"/(CPU|Processor).*(utilization|usage)/", "percent", "timeseries"),
-            ("Load average", r"/[Ll]oad average/", "short", "timeseries"),
-            ("Memory utilization", r"/(Memory|RAM).*(utilization|usage)/", "percent", "timeseries"),
+            ("Interface traffic", r"/(OPNsense: )?Interface $interface_regex:.*(traffic|Traffic|bits|Bits|received|sent|RX|TX)/", "bps", "timeseries"),
+            ("Interface errors / drops", r"/(OPNsense: )?Interface $interface_regex:.*(error|Error|discard|Discard|drop|Drop|blocked|Blocked)/", "short", "timeseries"),
+            ("Interface status / speed", r"/(OPNsense: )?Interface $interface_regex:.*(status|Status|link|Link|speed|Speed)/", "short", "stat"),
             ("Gateway latency", r"/[Gg]ateway.*latency|latency.*[Gg]ateway/", "ms", "timeseries"),
             ("Gateway packet loss", r"/[Gg]ateway.*packet loss|packet loss.*[Gg]ateway/", "percent", "timeseries"),
             ("VPN status", r"/(WireGuard|OpenVPN|IPsec|VPN).*(status|Status|state|State)/", "short", "stat"),
+            ("VPN traffic / peers", r"/(WireGuard|OpenVPN|IPsec|VPN).*(traffic|Traffic|received|sent|peer|Peer|client|Client)/", "short", "timeseries"),
+            ("Temperatures", r"/(Temperature|temperature|Temp|temp)/", "celsius", "timeseries"),
         ],
     },
     "netbird": {
@@ -314,6 +319,21 @@ def variables(group_regex):
     ]
 
 
+
+def opnsense_variables(group_regex):
+    vars_ = variables(group_regex)
+    vars_.append({
+        "current": {"selected": True, "text": ".*", "value": ".*"},
+        "hide": 0,
+        "label": "Interface match",
+        "name": "interface_regex",
+        "options": [],
+        "query": ".*",
+        "skipUrlSync": False,
+        "type": "textbox",
+    })
+    return vars_
+
 def customer_variables():
     # Generic customer view: choose an existing Zabbix host group as customer
     # scope, then optionally narrow down to a host.
@@ -492,7 +512,11 @@ def problem_stat(pid, title, min_severity, x, y, group="/.*/", w=6, h=5):
 
 def make_device_dashboard(key, profile):
     d = base_dashboard(profile["title"], f"openmain-{key}", ["OpenMain", "Zabbix", key])
-    d["templating"]["list"] = variables(profile["group_regex"])
+    d["templating"]["list"] = (
+        opnsense_variables(profile["group_regex"])
+        if key == "opnsense"
+        else variables(profile["group_regex"])
+    )
     d["panels"].append(problems_table(1, "Aktive Probleme", y=0, h=8))
     pid = 2
     y = 8

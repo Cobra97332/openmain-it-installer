@@ -425,12 +425,13 @@ def build():
                     "type": "query",
                     "label": "Kunde",
                     "datasource": ds(),
-                    "definition": 'label_values(openmain_netbird_peer_connection_info{job="netbird-client-detail"},customer)',
+                    "definition": 'query_result(up{job="netbird-client-detail"} >= 0)',
                     "query": {
-                        "qryType": 1,
-                        "query": 'label_values(openmain_netbird_peer_connection_info{job="netbird-client-detail"},customer)',
+                        "qryType": 3,
+                        "query": 'query_result(up{job="netbird-client-detail"} >= 0)',
                         "refId": "RelayCustomer",
                     },
+                    "regex": '/customer="([^"]+)"/',
                     "refresh": 1,
                     "sort": 1,
                     "multi": True,
@@ -445,17 +446,16 @@ def build():
                     "label": "Quelle",
                     "datasource": ds(),
                     "definition": (
-                        'label_values(openmain_netbird_peer_connection_info{job="netbird-client-detail",'
-                        'customer=~"$customer"},host)'
+                        'query_result(up{job="netbird-client-detail",customer=~"$customer"} >= 0)'
                     ),
                     "query": {
-                        "qryType": 1,
+                        "qryType": 3,
                         "query": (
-                            'label_values(openmain_netbird_peer_connection_info{job="netbird-client-detail",'
-                            'customer=~"$customer"},host)'
+                            'query_result(up{job="netbird-client-detail",customer=~"$customer"} >= 0)'
                         ),
                         "refId": "RelaySource",
                     },
+                    "regex": '/host="([^"]+)"/',
                     "refresh": 1,
                     "sort": 1,
                     "multi": True,

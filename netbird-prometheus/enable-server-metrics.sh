@@ -14,7 +14,7 @@ trap 'rc=$?; echo "[FEHLER] Unerwarteter Abbruch in Zeile $LINENO (Exit $rc)." >
 
 [[ $EUID -eq 0 ]] || die "Bitte als root ausführen."
 
-for cmd in docker ip curl awk cut head grep; do
+for cmd in docker ip curl awk cut head grep sed; do
   command -v "$cmd" >/dev/null 2>&1 || die "$cmd fehlt."
 done
 docker compose version >/dev/null 2>&1 || die "Docker Compose Plugin fehlt."
@@ -176,7 +176,7 @@ docker port "$NETBIRD_CONTAINER" "$METRICS_PORT/tcp" 2>/dev/null || true
 log "Warte auf Metrics-Endpunkt..."
 metrics_sample=""
 for attempt in $(seq 1 30); do
-  if metrics_sample="$(curl -fsS --max-time 3 "http://$BIND_IP:$METRICS_PORT/metrics" 2>/dev/null | head -n 5)"; then
+  if metrics_sample="$(curl -fsS --max-time 3 "http://$BIND_IP:$METRICS_PORT/metrics" 2>/dev/null | sed -n '1,5p')"; then
     [[ -n "$metrics_sample" ]] && break
   fi
 

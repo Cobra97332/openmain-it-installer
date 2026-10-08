@@ -43,21 +43,28 @@ jobs:
           python3 -m py_compile netbird-prometheus/add-client-target.py
           python3 -m py_compile netbird-prometheus/normalize-dashboards.py
           python3 -m py_compile netbird-prometheus/generate-overview-dashboard.py
+          python3 -m py_compile netbird-prometheus/generate-relay-connections-dashboard.py
+          python3 -m py_compile netbird-prometheus/netbird-status-exporter.py
           python3 -m py_compile netbird-prometheus/sync-client-targets.py
 
       - name: PowerShell syntax
         shell: pwsh
         run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
+          foreach ($file in @(
             "netbird-prometheus/enable-client-metrics.ps1",
-            [ref]$tokens,
-            [ref]$errors
-          ) | Out-Null
-          if ($errors.Count -gt 0) {
-            $errors | ForEach-Object { Write-Error $_.Message }
-            exit 1
+            "netbird-prometheus/netbird-status-exporter.ps1"
+          )) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $file,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error ($file + ": " + $_.Message) }
+              exit 1
+            }
           }
 
       - name: Validate Windows client metrics safety model
@@ -66,7 +73,9 @@ jobs:
           grep -F 'netsh interface portproxy add v4tov4' netbird-prometheus/enable-client-metrics.ps1
           grep -F -- '-LocalAddress $ListenAddress' netbird-prometheus/enable-client-metrics.ps1
           grep -F -- '-RemoteAddress $RemoteAddress' netbird-prometheus/enable-client-metrics.ps1
-          grep -F 'Monitoring -> NetBird-Metrics TCP/$MetricsPort' netbird-prometheus/enable-client-metrics.ps1
+          grep -F 'Monitoring -> NetBird-Metrics TCP/$MetricsPort,$DetailPort' netbird-prometheus/enable-client-metrics.ps1
+          grep -F 'OpenMain NetBird Status Exporter' netbird-prometheus/enable-client-metrics.ps1
+          grep -F '127.0.0.1:$DetailPort' netbird-prometheus/enable-client-metrics.ps1
           ! grep -F -- '--local-metrics-address "$netBirdIp' netbird-prometheus/enable-client-metrics.ps1
 
       - name: Validate client metrics safety model
@@ -75,7 +84,10 @@ jobs:
           grep -F 'systemd-socket-proxyd' netbird-prometheus/enable-client-metrics.sh
           grep -F 'FreeBind=yes' netbird-prometheus/enable-client-metrics.sh
           grep -F 'ListenStream=$NETBIRD_IP:$METRICS_PORT' netbird-prometheus/enable-client-metrics.sh
-          ! grep -F -- '--local-metrics-address "$NETBIRD_IP:$METRICS_PORT"'             netbird-prometheus/enable-client-metrics.sh
+          grep -F 'ListenStream=$NETBIRD_IP:$DETAIL_PORT' netbird-prometheus/enable-client-metrics.sh
+          grep -F 'netbird-status-exporter.py' netbird-prometheus/enable-client-metrics.sh
+          grep -F '127.0.0.1:$DETAIL_PORT' netbird-prometheus/enable-client-metrics.sh
+          ! grep -F -- '--local-metrics-address "$NETBIRD_IP:$METRICS_PORT"' netbird-prometheus/enable-client-metrics.sh
 
       - name: Validate automatic rollout integration
         run: |

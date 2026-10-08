@@ -287,12 +287,15 @@ jobs:
           python3 netbird-prometheus/generate-overview-dashboard.py \
             /tmp/netbird-dashboards/overview.json
 
+          python3 netbird-prometheus/generate-relay-connections-dashboard.py \
+            /tmp/netbird-dashboards/relay-connections.json
+
           python3 - <<'PY'
           import json
           from pathlib import Path
 
           root = Path("/tmp/netbird-dashboards")
-          expected = {"management.json", "signal.json", "relay.json", "client.json", "overview.json"}
+          expected = {"management.json", "signal.json", "relay.json", "client.json", "overview.json", "relay-connections.json"}
           files = {p.name for p in root.glob("*.json")}
           assert files == expected, files
 
@@ -345,6 +348,12 @@ jobs:
                   assert 'connection_type="p2p"' in client_panels["P2P peers"]["targets"][0]["expr"]
                   assert 'connection_type="relay"' in client_panels["Relay peers"]["targets"][0]["expr"]
                   assert client_panels["Management connected"]["fieldConfig"]["defaults"]["mappings"]
+                  assert client_panels["Management connected"]["targets"][0]["instant"] is True
+                  assert client_panels["Management connected"]["targets"][0]["range"] is False
+                  assert client_panels["Management connected"]["targets"][0]["expr"].startswith("max(")
+                  assert client_panels["Known peers"]["targets"][0]["expr"].startswith("max(")
+                  assert client_panels["P2P peers"]["targets"][0]["expr"].startswith("max(")
+                  assert client_panels["Relay peers"]["targets"][0]["expr"].startswith("max(")
                   assert "directly connected P2P peers" in client_panels["Peer latency"]["description"]
 
               if path.name == "overview.json":
@@ -400,6 +409,48 @@ jobs:
                   assert 'netbird_peer_latency_seconds' in repr(overview_panels["P2P Latenz"])
                   assert overview_panels["Client Status"]["type"] == "table"
 
+              if path.name == "relay-connections.json":
+                  assert data["uid"] == "openmain-netbird-relay-connections"
+                  assert data["title"] == "NetBird / Relay Connections"
+                  assert data["refresh"] == "30s"
+                  variables_by_name = {
+                      v.get("name"): v
+                      for v in data.get("templating", {}).get("list", [])
+                  }
+                  assert set(variables_by_name) == {"datasource", "customer", "source"}
+
+                  relay_panels = {}
+                  def index_relay_panels(value):
+                      if isinstance(value, list):
+                          for item in value:
+                              index_relay_panels(item)
+                      elif isinstance(value, dict):
+                          title = value.get("title")
+                          if title:
+                              relay_panels[title] = value
+                          for item in value.values():
+                              index_relay_panels(item)
+                  index_relay_panels(data)
+
+                  for title in (
+                      "Relay-Beziehungen",
+                      "Clients mit Relay",
+                      "Ziel-Peers über Relay",
+                      "Verwendete Relay-Server",
+                      "Aktuelle Relay-Verbindungen – wer mit wem",
+                      "Relay-Verbindungen nach Quelle",
+                      "Relay-Verbindungen nach Relay-Server",
+                      "Relay Traffic gesendet",
+                      "Relay Traffic empfangen",
+                  ):
+                      assert title in relay_panels, title
+
+                  relay_repr = repr(data)
+                  assert "openmain_netbird_peer_connection_info" in relay_repr
+                  assert 'connection_type="relay"' in relay_repr
+                  assert "relay_address" in relay_repr
+                  assert 'job="netbird-client-detail"' in relay_repr
+                  assert relay_panels["Aktuelle Relay-Verbindungen – wer mit wem"]["type"] == "table"
               if path.name == "management.json":
                   for stale in (
                       "management_grpc_sync_request_counter_ratio_total",

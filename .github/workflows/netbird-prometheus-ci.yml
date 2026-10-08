@@ -191,6 +191,15 @@ jobs:
                   },
               },
               {
+                  "targets": ["100.64.10.21:9191"],
+                  "labels": {
+                      "host": "pc-intern",
+                      "customer": "intern",
+                      "managed_by": "netbird-api",
+                      "peer_id": "peer-b",
+                  },
+              },
+              {
                   "targets": ["100.64.10.24:9191"],
                   "labels": {
                       "host": "customer-explicit",
@@ -206,15 +215,6 @@ jobs:
                       "customer": "Unzugeordnet",
                       "managed_by": "netbird-api",
                       "peer_id": "peer-d",
-                  },
-              },
-              {
-                  "targets": ["100.64.10.21:9191"],
-                  "labels": {
-                      "host": "pc-intern",
-                      "customer": "intern",
-                      "managed_by": "netbird-api",
-                      "peer_id": "peer-b",
                   },
               },
           ], targets

@@ -250,6 +250,11 @@ jobs:
           assert "openmain_netbird_connected_peer_relations 2" in text
           print("detailed status exporter rendering OK")
           PY
+      - name: Validate Prometheus config reload handling
+        run: |
+          grep -F 'docker kill --signal HUP "$PROM_CONTAINER"' netbird-prometheus/install.sh
+          grep -F 'netbird-client-detail Job ist geladen.' netbird-prometheus/install.sh
+          grep -F 'up{job="netbird-client-detail"}' netbird-prometheus/install.sh
       - name: Validate auto-discovery systemd units
         run: |
           grep -F 'EnvironmentFile=/etc/openmain-netbird-prometheus.env' netbird-prometheus/systemd/openmain-netbird-target-sync.service

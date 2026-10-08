@@ -32,8 +32,8 @@ NETBIRD_IP="$(ip -4 -o addr show dev "$NETBIRD_INTERFACE" 2>/dev/null | awk 'NR=
 # Wichtige CloudPanel-Dienste nur pruefen; keine bestehenden VHosts anfassen.
 curl -kfsS -o /dev/null --connect-timeout 4 --max-time 8 https://127.0.0.1:8443/ ||
   die "CloudPanel-Port 8443 lokal nicht erreichbar (HTTP-Status oder TLS-Verbindung)."
-ss -ltnH | awk '{print $4}' | grep -Eq '[:.]443$' ||
-  log "WARNUNG: Lokal lauscht aktuell kein Web-VHost auf Port 443. Sites koennen vorerst 502 liefern."
+curl -ksS -o /dev/null --connect-timeout 4 --max-time 8 https://127.0.0.1:443/ ||
+  die "Website-Backend https://127.0.0.1:443/ ist nicht erreichbar. Bitte lokale NGINX-VHosts pruefen."
 
 if [[ ! -f "$CONF" ]]; then
   for port in "$ADMIN_PORT" "$SITES_PORT"; do
@@ -90,7 +90,7 @@ server {
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-Port 443;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr; # keine vom Aufrufer gesetzten XFF-Werte uebernehmen
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $openmain_nb_connection_upgrade;
         proxy_read_timeout 3600s;
@@ -118,7 +118,7 @@ server {
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-Port 443;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr; # keine vom Aufrufer gesetzten XFF-Werte uebernehmen
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $openmain_nb_connection_upgrade;
         proxy_request_buffering off;

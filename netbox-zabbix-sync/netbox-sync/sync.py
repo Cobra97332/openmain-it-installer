@@ -24,10 +24,28 @@ INTERVAL = max(60, int(os.getenv("SYNC_INTERVAL_SECONDS", "900")))
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 VERIFY_TLS = os.getenv("VERIFY_TLS", "true").lower() == "true"
 
+def authorization_value(token, default_scheme):
+    """Accept raw v1/v2 NetBox tokens or a single explicit Token/Bearer prefix."""
+    value = (token or "").strip()
+    if not value:
+        raise ValueError("API token is empty")
+    parts = value.split(None, 1)
+    if parts[0].lower() in ("token", "bearer"):
+        if len(parts) != 2 or not parts[1].strip():
+            raise ValueError("Authorization prefix without token")
+        value = parts[1].strip()
+        if value.lower().startswith(("token ", "bearer ")):
+            raise ValueError("Duplicate authorization prefixes")
+    if default_scheme == "Token":
+        scheme = "Bearer" if value.count(".") == 1 else "Token"
+    else:
+        scheme = default_scheme
+    return f"{scheme} {value}"
+
 def call(url, payload=None, token=None, auth="Bearer"):
     headers = {"Accept": "application/json", "User-Agent": "netbox-zabbix-sync/1.1"}
     if token:
-        headers["Authorization"] = f"{auth} {token}"
+        headers["Authorization"] = authorization_value(token, auth)
     if payload is not None:
         headers["Content-Type"] = "application/json"
     request = urllib.request.Request(

@@ -77,11 +77,15 @@ def render_metrics(netbird_bin):
             relay_count += 1
         connected_count += 1
 
+        relay_address = peer.get("relayAddress") or ""
+        if conn_type != "relay":
+            relay_address = ""
+
         labels = {
             "peer": peer.get("fqdn") or peer.get("netbirdIp") or "unknown",
             "peer_ip": peer.get("netbirdIp") or "",
             "connection_type": conn_type,
-            "relay_address": peer.get("relayAddress") or "",
+            "relay_address": relay_address,
         }
         label_text = ",".join(
             f'{key}="{prom_escape(value)}"' for key, value in labels.items()

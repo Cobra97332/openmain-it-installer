@@ -75,6 +75,7 @@ jobs:
               assert data.get("title"), path
               assert data.get("uid"), path
               assert "$__rate_interval" not in text, path
+              assert "$interval" not in text, path
               variables = data.get("templating", {}).get("list", [])
               assert any(v.get("type") == "datasource" and v.get("query") == "prometheus" for v in variables), path
 
@@ -99,6 +100,14 @@ jobs:
                     environment: "prod"
                     host: "netbird-server"
               metric_relabel_configs:
+                - source_labels: [__name__]
+                  regex: 'management_.*'
+                  target_label: application
+                  replacement: 'management'
+                - source_labels: [__name__]
+                  regex: 'signal_.*'
+                  target_label: application
+                  replacement: 'signal'
                 - source_labels: [__name__]
                   regex: 'signal_(.*)'
                   target_label: __name__

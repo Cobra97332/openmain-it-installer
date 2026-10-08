@@ -97,19 +97,30 @@ OVERRIDE_FILE="$COMPOSE_WORKDIR/compose.openmain-zabbix.yaml"
 install -d -m 0755 "$INSTALL_DIR" "$HOST_DASHBOARDS" "$HOST_BASE"
 
 curl -fsSL "$BASE_URL/generate-dashboards.py" -o "$INSTALL_DIR/generate-dashboards.py"
-curl -fsSL "$BASE_URL/sync-zabbix-groups.py" -o "$INSTALL_DIR/sync-zabbix-groups.py"
+curl -fsSL "$BASE_URL/sync-zabbix-groups.py" -o "$INSTALL_DIR/sync-zabbix-groups.py"\ncurl -fsSL "$BASE_URL/inspect-zabbix-host.py" -o "$INSTALL_DIR/inspect-zabbix-host.py"
 curl -fsSL "$BASE_URL/provisioning/dashboards/openmain.yaml" -o "$HOST_PROVIDER"
 curl -fsSL "$BASE_URL/openmain-zabbix-metadata.env.example" -o "$INSTALL_DIR/openmain-zabbix-metadata.env.example"
 curl -fsSL "$BASE_URL/systemd/openmain-zabbix-groups.service" -o /etc/systemd/system/openmain-zabbix-groups.service
 curl -fsSL "$BASE_URL/systemd/openmain-zabbix-groups.timer" -o /etc/systemd/system/openmain-zabbix-groups.timer
 
-chmod 0755 "$INSTALL_DIR/generate-dashboards.py" "$INSTALL_DIR/sync-zabbix-groups.py"
+chmod 0755 "$INSTALL_DIR/generate-dashboards.py" "$INSTALL_DIR/sync-zabbix-groups.py" "$INSTALL_DIR/inspect-zabbix-host.py"
 chmod 0644 "$HOST_PROVIDER" /etc/systemd/system/openmain-zabbix-groups.service /etc/systemd/system/openmain-zabbix-groups.timer
 
 if [[ ! -e "$ENV_FILE" ]]; then
   install -m 0600 "$INSTALL_DIR/openmain-zabbix-metadata.env.example" "$ENV_FILE"
 else
   chmod 0600 "$ENV_FILE"
+fi
+
+# Migration: NetBird ist Teil der kritischen OpenMain-Plattformen.
+if grep -q '^OPENMAIN_CRITICAL_PLATFORMS=' "$ENV_FILE"; then
+  current_platforms="$(sed -n 's/^OPENMAIN_CRITICAL_PLATFORMS=//p' "$ENV_FILE" | head -1)"
+  case ",$current_platforms," in
+    *,netbird,*) ;;
+    *) sed -i "s/^OPENMAIN_CRITICAL_PLATFORMS=.*/OPENMAIN_CRITICAL_PLATFORMS=$current_platforms,netbird/" "$ENV_FILE" ;;
+  esac
+else
+  echo 'OPENMAIN_CRITICAL_PLATFORMS=opnsense,pve,idrac,nas,qnap,synology,netbird' >> "$ENV_FILE"
 fi
 
 python3 "$INSTALL_DIR/generate-dashboards.py" --datasource-uid "$DATASOURCE_UID" --output "$HOST_DASHBOARDS"

@@ -162,6 +162,11 @@ curl -fsSL   "$BASE_URL/systemd/openmain-netbird-target-sync.service"   -o /etc/
 curl -fsSL   "$BASE_URL/systemd/openmain-netbird-target-sync.timer"   -o /etc/systemd/system/openmain-netbird-target-sync.timer
 chmod 0644   /etc/systemd/system/openmain-netbird-target-sync.service   /etc/systemd/system/openmain-netbird-target-sync.timer
 
+# Eigene generierte Dashboards vor der Upstream-Normalisierung entfernen.
+# Dadurch bleibt ein erneuter Installer-Lauf auch dann idempotent, wenn ein
+# zwischengespeicherter älterer normalizer.py noch exakt vier JSON-Dateien erwartet.
+rm -f   "$HOST_DASHBOARDS/overview.json"   "$HOST_DASHBOARDS/relay-connections.json"
+
 log "Lade offizielle NetBird-Grafana-Dashboards (Ref: $NETBIRD_REF)..."
 for dashboard in management signal relay client; do
   curl -fsSL \

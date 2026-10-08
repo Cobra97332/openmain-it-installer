@@ -94,6 +94,7 @@ jobs:
           grep -F -- '--enable-local-metrics' router-install.sh
           grep -F -- '--local-metrics-address "127.0.0.1:$METRICS_PORT"' router-install.sh
           grep -F 'METRICS_GROUP="${NB_METRICS_GROUP:-NetBird-Metrics}"' router-install.sh
+          grep -F 'METRICS_DETAIL_PORT="${NB_METRICS_DETAIL_PORT:-9192}"' router-install.sh
           grep -F 'ensure_setup_key_metrics_group' router-install.sh
           grep -F 'ensure_metrics_policy' router-install.sh
           grep -F 'openmain-netbird-client-metrics' router-install.sh
@@ -101,6 +102,7 @@ jobs:
           grep -F 'NB_METRICS_ENABLED' netbird-router/pve/install.sh
           grep -F 'NB_METRICS_ENABLED' netbird-router/pve/install-no-zabbix.sh
           grep -F 'NB_METRICS_ENABLED' netbird-router/raspberry-pi/install-router.sh
+          grep -F 'ports:[$port,$detail_port]' router-install.sh
 
       - name: Test NetBird API target rendering
         run: |
@@ -188,6 +190,54 @@ jobs:
           print("NetBird target rendering OK")
           PY
 
+      - name: Test detailed NetBird status exporter rendering
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+
+          path = Path("netbird-prometheus/netbird-status-exporter.py")
+          spec = importlib.util.spec_from_file_location("nb_status_exporter", path)
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          mod.netbird_status = lambda _: {
+              "peers": {
+                  "details": [
+                      {
+                          "fqdn": "peer-relay.example",
+                          "netbirdIp": "100.64.20.2",
+                          "status": "Connected",
+                          "connectionType": "Relayed",
+                          "relayAddress": "rels://relay.example:443",
+                          "transferReceived": 1234,
+                          "transferSent": 5678,
+                          "lastWireguardHandshake": "2026-10-08T10:00:00Z",
+                      },
+                      {
+                          "fqdn": "peer-p2p.example",
+                          "netbirdIp": "100.64.20.3",
+                          "status": "Connected",
+                          "connectionType": "P2P",
+                          "relayAddress": "",
+                          "transferReceived": 10,
+                          "transferSent": 20,
+                          "lastWireguardHandshake": "2026-10-08T10:00:00Z",
+                      },
+                  ]
+              }
+          }
+
+          text = mod.render_metrics("netbird")
+          assert 'peer="peer-relay.example"' in text
+          assert 'connection_type="relay"' in text
+          assert 'relay_address="rels://relay.example:443"' in text
+          assert 'peer="peer-p2p.example"' in text
+          assert 'connection_type="p2p"' in text
+          assert "openmain_netbird_relay_peer_relations 1" in text
+          assert "openmain_netbird_connected_peer_relations 2" in text
+          print("detailed status exporter rendering OK")
+          PY
       - name: Validate auto-discovery systemd units
         run: |
           grep -F 'EnvironmentFile=/etc/openmain-netbird-prometheus.env' netbird-prometheus/systemd/openmain-netbird-target-sync.service

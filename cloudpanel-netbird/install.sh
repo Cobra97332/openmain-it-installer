@@ -149,7 +149,7 @@ if ! nginx -t; then
 fi
 
 # Nur fortfahren, wenn diese Datei in die effektive NGINX-Konfiguration geladen wird.
-if ! nginx -T 2>&1 | grep -Fq "configuration file $CONF:"; then
+if ! nginx -T 2>&1 | grep -F "configuration file $CONF:" >/dev/null; then
   restore
   die "Datei wird nicht aus nginx.conf eingebunden. Rueckgaengig gemacht."
 fi

@@ -13,6 +13,7 @@ ENVIRONMENT_LABEL="${NETBIRD_ENVIRONMENT:-prod}"
 NETBIRD_HOST_LABEL="${NETBIRD_HOST_LABEL:-netbird-server}"
 GRAFANA_CONTAINER="${GRAFANA_CONTAINER:-}"
 NETBIRD_METRICS_TARGET="${NETBIRD_METRICS_TARGET:-}"
+NETBIRD_RATE_INTERVAL="${NETBIRD_RATE_INTERVAL:-2m}"
 
 die() { echo "[FEHLER] $*" >&2; exit 1; }
 log() { echo "[+] $*"; }
@@ -92,29 +93,15 @@ for dashboard in management signal relay client; do
     -o "$HOST_DASHBOARDS/$dashboard.json"
 done
 
-python3 - "$HOST_DASHBOARDS" <<'PY'
-import json
-import sys
-from pathlib import Path
+log "Installiere Dashboard-Normalizer..."
+curl -fsSL "$BASE_URL/normalize-dashboards.py" -o "$INSTALL_DIR/normalize-dashboards.py"
+chmod 0755 "$INSTALL_DIR/normalize-dashboards.py"
 
-root = Path(sys.argv[1])
-expected = {"management.json", "signal.json", "relay.json", "client.json"}
-found = {p.name for p in root.glob("*.json")}
-if found != expected:
-    raise SystemExit(f"Dashboard-Satz unvollständig: {sorted(found)}")
+log "Passe NetBird-Dashboards an Grafana 13 an (Rate-Intervall: $NETBIRD_RATE_INTERVAL)..."
+python3 "$INSTALL_DIR/normalize-dashboards.py" \
+  "$HOST_DASHBOARDS" \
+  --rate-interval "$NETBIRD_RATE_INTERVAL"
 
-uids = set()
-for path in root.glob("*.json"):
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not data.get("title"):
-        raise SystemExit(f"Dashboard ohne Titel: {path}")
-    uid = data.get("uid")
-    if not uid or uid in uids:
-        raise SystemExit(f"Fehlende/doppelte Dashboard-UID: {path}")
-    uids.add(uid)
-    data["id"] = None
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-PY
 
 cat > "$HOST_CONFIG" <<EOF
 global:

@@ -29,6 +29,7 @@ jobs:
       - name: Python syntax
         run: |
           python3 -m py_compile netbird-prometheus/add-client-target.py
+          python3 -m py_compile netbird-prometheus/normalize-dashboards.py
 
       - name: Test client target helper
         run: |
@@ -55,6 +56,10 @@ jobs:
             curl -fsSL               "https://raw.githubusercontent.com/netbirdio/netbird/$ref/infrastructure_files/observability/grafana/dashboards/$dashboard.json"               -o "/tmp/netbird-dashboards/$dashboard.json"
           done
 
+          python3 netbird-prometheus/normalize-dashboards.py \
+            /tmp/netbird-dashboards \
+            --rate-interval 2m
+
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -65,13 +70,15 @@ jobs:
           assert files == expected, files
 
           for path in root.glob("*.json"):
-              data = json.loads(path.read_text())
+              text = path.read_text()
+              data = json.loads(text)
               assert data.get("title"), path
               assert data.get("uid"), path
+              assert "$__rate_interval" not in text, path
               variables = data.get("templating", {}).get("list", [])
               assert any(v.get("type") == "datasource" and v.get("query") == "prometheus" for v in variables), path
 
-          print("official NetBird dashboards OK")
+          print("official NetBird dashboards normalized OK")
           PY
 
       - name: Prometheus config syntax

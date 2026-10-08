@@ -32,6 +32,30 @@ jobs:
           python3 -m py_compile netbird-prometheus/add-client-target.py
           python3 -m py_compile netbird-prometheus/normalize-dashboards.py
 
+      - name: PowerShell syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "netbird-prometheus/enable-client-metrics.ps1",
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+
+      - name: Validate Windows client metrics safety model
+        run: |
+          grep -F '127.0.0.1:$MetricsPort' netbird-prometheus/enable-client-metrics.ps1
+          grep -F 'netsh interface portproxy add v4tov4' netbird-prometheus/enable-client-metrics.ps1
+          grep -F -- '-LocalAddress $ListenAddress' netbird-prometheus/enable-client-metrics.ps1
+          grep -F -- '-RemoteAddress $RemoteAddress' netbird-prometheus/enable-client-metrics.ps1
+          grep -F 'Monitoring -> NetBird-Metrics TCP/$MetricsPort' netbird-prometheus/enable-client-metrics.ps1
+          ! grep -F -- '--local-metrics-address "$netBirdIp' netbird-prometheus/enable-client-metrics.ps1
+
       - name: Validate client metrics safety model
         run: |
           grep -F '127.0.0.1' netbird-prometheus/enable-client-metrics.sh

@@ -26,6 +26,11 @@ ZABBIX_URL="${NETBIRD_ROUTER_ZABBIX_URL:-https://raw.githubusercontent.com/Cobra
 ZABBIX_API_HELPER_URL="${NETBIRD_ROUTER_ZABBIX_API_HELPER_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/zabbix-api-register.sh}"
 ZABBIX_SERVER="${NB_ZABBIX_SERVER:-100.107.91.6}"
 ZABBIX_API_TOKEN="${NB_ZABBIX_API_TOKEN:-}"
+METRICS_ENABLED="${NB_METRICS_ENABLED:-1}"
+METRICS_PORT="${NB_METRICS_PORT:-9191}"
+METRICS_GROUP="${NB_METRICS_GROUP:-NetBird-Metrics}"
+MONITORING_GROUP="${NB_MONITORING_GROUP:-Monitoring}"
+PROMETHEUS_NETBIRD_IP="${NB_PROMETHEUS_NETBIRD_IP:-100.107.91.6}"
 
 log(){ printf '\033[1;32m[+]\033[0m %s\n' "$*"; }
 die(){ printf '\033[1;31m[FEHLER]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -51,6 +56,11 @@ while [[ $# -gt 0 ]]; do
     --ct-password) CT_PASSWORD="$2"; shift 2;;
     --ssh-key-url) SSH_KEY_URL="$2"; shift 2;;
     --zabbix-server) ZABBIX_SERVER="$2"; shift 2;;
+    --metrics-port) METRICS_PORT="$2"; shift 2;;
+    --prometheus-netbird-ip) PROMETHEUS_NETBIRD_IP="$2"; shift 2;;
+    --metrics-group) METRICS_GROUP="$2"; shift 2;;
+    --monitoring-group) MONITORING_GROUP="$2"; shift 2;;
+    --no-metrics) METRICS_ENABLED=0; shift;;
     *) die "Unbekannte Option: $1";;
   esac
 done
@@ -58,6 +68,9 @@ done
 [[ $EUID -eq 0 ]] || die "Als root auf dem PVE-Host ausführen."
 command -v pct >/dev/null || die "pct fehlt."
 [[ "$ROLE" == primary || "$ROLE" == backup ]] || die "Rolle muss primary oder backup sein."
+[[ "$METRICS_ENABLED" == 0 || "$METRICS_ENABLED" == 1 ]] || die "NB_METRICS_ENABLED muss 0 oder 1 sein."
+[[ "$METRICS_PORT" =~ ^[0-9]+$ ]] || die "Ungültiger Metrics-Port: $METRICS_PORT"
+(( METRICS_PORT >= 1 && METRICS_PORT <= 65535 )) || die "Ungültiger Metrics-Port: $METRICS_PORT"
 [[ -n "$CTID" ]] || CTID=$(pvesh get /cluster/nextid)
 [[ -n "$HOSTNAME_CT" ]] || read -r -p "Hostname: " HOSTNAME_CT
 [[ -n "$CUSTOMER" ]] || read -r -p "Firmenname: " CUSTOMER
@@ -158,6 +171,11 @@ NB_PRIMARY_METRIC=$(printf '%q' "$PRIMARY_METRIC")
 NB_BACKUP_METRIC=$(printf '%q' "$BACKUP_METRIC")
 NB_ZABBIX_SERVER=$(printf '%q' "$ZABBIX_SERVER")
 NB_ZABBIX_API_TOKEN=$(printf '%q' "$ZABBIX_API_TOKEN")
+NB_METRICS_ENABLED=$(printf '%q' "$METRICS_ENABLED")
+NB_METRICS_PORT=$(printf '%q' "$METRICS_PORT")
+NB_METRICS_GROUP=$(printf '%q' "$METRICS_GROUP")
+NB_MONITORING_GROUP=$(printf '%q' "$MONITORING_GROUP")
+NB_PROMETHEUS_NETBIRD_IP=$(printf '%q' "$PROMETHEUS_NETBIRD_IP")
 EOF
 chmod 600 "$TMP/secrets"
 pct push "$CTID" "$TMP/secrets" /root/.netbird-router-secrets -perms 600
@@ -172,3 +190,7 @@ echo "pct exec $CTID -- nft list table ip mein_binat"
 echo "pct exec $CTID -- cat /proc/sys/net/ipv4/ip_forward"
 echo "pct exec $CTID -- systemctl status zabbix-proxy --no-pager"
 echo "pct exec $CTID -- systemctl status zabbix-agent2 --no-pager"
+if [[ "$METRICS_ENABLED" == 1 ]]; then
+  echo "pct exec $CTID -- curl -fsS http://127.0.0.1:$METRICS_PORT/metrics | grep '^netbird_' | head"
+  echo "pct exec $CTID -- systemctl status openmain-netbird-metrics-proxy.socket --no-pager"
+fi

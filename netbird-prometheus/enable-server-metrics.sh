@@ -173,15 +173,25 @@ status="$(docker inspect "$NETBIRD_CONTAINER" --format '{{.State.Status}}' 2>/de
 log "Prüfe Docker-Portbindung..."
 docker port "$NETBIRD_CONTAINER" "$METRICS_PORT/tcp" 2>/dev/null || true
 
-log "Prüfe Metrics-Endpunkt..."
-if ! metrics_sample="$(curl -fsS --max-time 5 "http://$BIND_IP:$METRICS_PORT/metrics" | head -n 5)"; then
-  echo >&2
-  warn "Metrics-Endpunkt ist noch nicht erreichbar."
-  warn "Container-Logs:"
-  docker logs --tail=80 "$NETBIRD_CONTAINER" >&2 || true
-  die "Abruf von http://$BIND_IP:$METRICS_PORT/metrics fehlgeschlagen."
-fi
+log "Warte auf Metrics-Endpunkt..."
+metrics_sample=""
+for attempt in $(seq 1 30); do
+  if metrics_sample="$(curl -fsS --max-time 3 "http://$BIND_IP:$METRICS_PORT/metrics" 2>/dev/null | head -n 5)"; then
+    [[ -n "$metrics_sample" ]] && break
+  fi
 
+  if (( attempt == 30 )); then
+    echo >&2
+    warn "Metrics-Endpunkt ist nach 60 Sekunden noch nicht erreichbar."
+    warn "Container-Logs:"
+    docker logs --tail=80 "$NETBIRD_CONTAINER" >&2 || true
+    die "Abruf von http://$BIND_IP:$METRICS_PORT/metrics fehlgeschlagen."
+  fi
+
+  sleep 2
+done
+
+log "Metrics-Endpunkt ist erreichbar."
 printf '%s\n' "$metrics_sample"
 
 echo

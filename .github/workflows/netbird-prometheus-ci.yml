@@ -286,6 +286,13 @@ jobs:
             curl -fsSL               "https://raw.githubusercontent.com/netbirdio/netbird/$ref/infrastructure_files/observability/grafana/dashboards/$dashboard.json"               -o "/tmp/netbird-dashboards/$dashboard.json"
           done
 
+          # Simuliere einen wiederholten Installer-Lauf: generated Dashboards
+          # liegen bereits im Verzeichnis und dürfen den Normalizer nicht stören.
+          printf '%s\n' '{"title":"stale overview","uid":"stale-overview"}' \
+            > /tmp/netbird-dashboards/overview.json
+          printf '%s\n' '{"title":"stale relay","uid":"stale-relay"}' \
+            > /tmp/netbird-dashboards/relay-connections.json
+
           python3 netbird-prometheus/normalize-dashboards.py \
             /tmp/netbird-dashboards \
             --rate-interval 2m

@@ -165,7 +165,12 @@ jobs:
           }]
           merged = mod.merge_targets(existing, targets)
           assert len(merged) == 2, merged
-          assert any(item["labels"].get("host") == "manual-pbs" for item in merged)
+          assert not any(item["labels"].get("host") == "manual-pbs" for item in merged)
+          assert any(
+              item["labels"].get("host") == "pbsterramaster"
+              and item["labels"].get("managed_by") == "netbird-api"
+              for item in merged
+          )
           assert any(item["labels"].get("host") == "pc-intern" for item in merged)
           print("NetBird target rendering OK")
           PY

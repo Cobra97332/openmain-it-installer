@@ -8,7 +8,7 @@ DEFAULT_FILE = "/opt/openmain-netbird-prometheus/targets/netbird-clients.json"
 parser = argparse.ArgumentParser(description="NetBird Client Metrics Target verwalten")
 parser.add_argument("target", help="NetBird-IP oder NetBird-IP:Port")
 parser.add_argument("host", help="Hostname/Anzeigename")
-parser.add_argument("customer", nargs="?", default="", help="Optionaler Kundenname")
+parser.add_argument("customer", nargs="?", default="intern", help="Kundenname (Standard: intern)")
 parser.add_argument("--file", default=DEFAULT_FILE, help="Prometheus file_sd Zieldatei")
 args = parser.parse_args()
 
@@ -34,9 +34,7 @@ else:
 if not isinstance(data, list):
     raise SystemExit(f"{path} muss eine JSON-Liste enthalten.")
 
-labels = {"host": args.host}
-if args.customer:
-    labels["customer"] = args.customer
+labels = {"host": args.host, "customer": args.customer or "intern"}
 
 entry = {"targets": [target], "labels": labels}
 for idx, current in enumerate(data):

@@ -302,6 +302,34 @@ def _customer_from_host(peer, known_customer_groups):
     return None
 
 
+def _customer_from_nb_hostname(peer):
+    """Infer customer from the OpenMain router naming convention.
+
+    Legacy/customer routers are commonly named like:
+      nb-Bauer-1
+      nb-Bauer-2
+      nb-Muster-GmbH-1
+
+    Only this explicit nb-<customer>-<number> pattern is accepted so generic
+    internal hosts such as docker, pve or pbsterramaster are never reclassified.
+    """
+    for field in ("hostname", "name", "dns_label"):
+        value = str(peer.get(field) or "").strip()
+        if not value:
+            continue
+
+        short = value.split(".", 1)[0]
+        match = re.fullmatch(r"(?i)nb-(.+)-([0-9]+)", short)
+        if not match:
+            continue
+
+        customer = match.group(1).strip("-_ ")
+        if customer:
+            return customer
+
+    return None
+
+
 def infer_customer(
     peer,
     metrics_group,
@@ -341,6 +369,13 @@ def infer_customer(
     # use it only as the Prometheus customer label. We intentionally do not
     # mutate NetBird group membership here because groups may carry policies.
     inferred = _customer_from_host(peer, known_customer_groups or [])
+    if inferred:
+        return inferred
+
+    # Last-resort compatibility for older OpenMain customer routers whose
+    # NetBird customer group is missing or not returned by the API. This uses
+    # only the explicit nb-<customer>-<number> rollout naming convention.
+    inferred = _customer_from_nb_hostname(peer)
     if inferred:
         return inferred
 

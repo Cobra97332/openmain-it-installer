@@ -37,6 +37,7 @@ NETBIRD_CLIENT_DETAIL_PORT="${NETBIRD_CLIENT_DETAIL_PORT:-9192}"
 NETBIRD_CUSTOMER_FALLBACK="${NETBIRD_CUSTOMER_FALLBACK:-intern}"
 NETBIRD_CUSTOMER_ROOT_GROUP="${NETBIRD_CUSTOMER_ROOT_GROUP:-Kunden}"
 NETBIRD_UNASSIGNED_CUSTOMER="${NETBIRD_UNASSIGNED_CUSTOMER:-Unzugeordnet}"
+NETBIRD_CUSTOMER_MARKER_PREFIX="${NETBIRD_CUSTOMER_MARKER_PREFIX:-Kunde:}"
 NETBIRD_CUSTOMER_IGNORE_GROUPS="${NETBIRD_CUSTOMER_IGNORE_GROUPS:-}"
 
 die() { echo "[FEHLER] $*" >&2; exit 1; }
@@ -160,6 +161,11 @@ curl -fsSL "$BASE_URL/sync-client-targets.py" -o "$INSTALL_DIR/sync-client-targe
 chmod 0755 "$INSTALL_DIR/sync-client-targets.py"
 ln -sfn "$INSTALL_DIR/sync-client-targets.py" /usr/local/sbin/openmain-netbird-sync-targets
 
+log "Installiere Kundengruppen-Migrationshelper..."
+curl -fsSL "$BASE_URL/mark-customer-group.py" -o "$INSTALL_DIR/mark-customer-group.py"
+chmod 0755 "$INSTALL_DIR/mark-customer-group.py"
+ln -sfn "$INSTALL_DIR/mark-customer-group.py" /usr/local/sbin/openmain-netbird-mark-customer
+
 curl -fsSL   "$BASE_URL/systemd/openmain-netbird-target-sync.service"   -o /etc/systemd/system/openmain-netbird-target-sync.service
 curl -fsSL   "$BASE_URL/systemd/openmain-netbird-target-sync.timer"   -o /etc/systemd/system/openmain-netbird-target-sync.timer
 chmod 0644   /etc/systemd/system/openmain-netbird-target-sync.service   /etc/systemd/system/openmain-netbird-target-sync.timer
@@ -275,6 +281,7 @@ if [[ "$NETBIRD_AUTO_DISCOVERY" == 1 ]]; then
     printf 'NETBIRD_CUSTOMER_FALLBACK=%q\n' "$NETBIRD_CUSTOMER_FALLBACK"
     printf 'NETBIRD_CUSTOMER_ROOT_GROUP=%q\n' "$NETBIRD_CUSTOMER_ROOT_GROUP"
     printf 'NETBIRD_UNASSIGNED_CUSTOMER=%q\n' "$NETBIRD_UNASSIGNED_CUSTOMER"
+    printf 'NETBIRD_CUSTOMER_MARKER_PREFIX=%q\n' "$NETBIRD_CUSTOMER_MARKER_PREFIX"
     printf 'NETBIRD_CUSTOMER_IGNORE_GROUPS=%q\n' "$NETBIRD_CUSTOMER_IGNORE_GROUPS"
     printf 'NETBIRD_AUTO_POLICY=%q\n' "$NETBIRD_AUTO_POLICY"
   } > "$AUTO_ENV_FILE"

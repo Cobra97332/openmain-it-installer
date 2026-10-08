@@ -17,6 +17,7 @@ DEFAULT_TARGET_FILE = "/opt/openmain-netbird-prometheus/targets/netbird-clients.
 DEFAULT_CUSTOMER = "intern"
 DEFAULT_CUSTOMER_ROOT_GROUP = "Kunden"
 DEFAULT_UNASSIGNED_CUSTOMER = "Unzugeordnet"
+DEFAULT_CUSTOMER_MARKER_PREFIX = "Kunde:"
 DEFAULT_IGNORE_GROUPS = {
     "All",
     "Kunden",
@@ -245,49 +246,39 @@ def infer_customer(
     ignore_groups,
     customer_root_group=DEFAULT_CUSTOMER_ROOT_GROUP,
     unassigned_customer=DEFAULT_UNASSIGNED_CUSTOMER,
+    customer_marker_prefix=DEFAULT_CUSTOMER_MARKER_PREFIX,
 ):
-    """Resolve the Prometheus customer label from NetBird group membership only.
+    """Resolve customer only from explicit customer marker groups.
 
-    NetBird groups are authoritative. Hostnames are deliberately ignored:
-    names such as nb-Bauer-2 are operational labels and must never silently
-    change customer ownership in monitoring.
+    Operational/technical NetBird groups are intentionally ignored. This
+    prevents groups such as Monitoring-NetbirdClient, Zabbix-Kunden-Proxies,
+    Server, Daheim or Admins from ever being mistaken for a customer.
     """
     names = peer_group_names(peer)
+    prefixes = [customer_marker_prefix.casefold(), "customer:"]
 
-    # Explicit prefixed groups are the strongest signal.
+    markers = []
     for name in names:
         lowered = name.casefold()
-        for prefix in ("kunde:", "customer:"):
+        for prefix in prefixes:
             if lowered.startswith(prefix):
-                customer = name.split(":", 1)[1].strip()
+                customer = name[len(prefix):].strip()
                 if customer:
-                    return customer
+                    markers.append(customer)
+                break
 
-    ignored = {name.casefold() for name in ignore_groups}
-    ignored.update(
-        {
-            metrics_group.casefold(),
-            monitoring_group.casefold(),
-            customer_root_group.casefold(),
-        }
-    )
+    unique_markers = sorted(set(markers), key=str.casefold)
+    if len(unique_markers) == 1:
+        return unique_markers[0]
 
-    candidates = sorted(
-        {
-            name
-            for name in names
-            if name.casefold() not in ignored
-            and not name.casefold().startswith(("auto:", "role:", "rolle:"))
-        },
-        key=str.casefold,
-    )
+    if len(unique_markers) > 1:
+        warn(
+            "Mehrere Kundenzuordnungen für Peer "
+            f"{peer.get('hostname') or peer.get('name') or peer.get('id')}: "
+            + ", ".join(unique_markers)
+        )
+        return unassigned_customer
 
-    # A single non-technical group is treated as the customer group.
-    if len(candidates) == 1:
-        return candidates[0]
-
-    # A peer marked as a customer but without one unique customer group must
-    # never silently fall back to "intern". Surface it for cleanup instead.
     if any(name.casefold() == customer_root_group.casefold() for name in names):
         return unassigned_customer
 
@@ -302,6 +293,7 @@ def make_auto_targets(
     ignore_groups,
     customer_root_group=DEFAULT_CUSTOMER_ROOT_GROUP,
     unassigned_customer=DEFAULT_UNASSIGNED_CUSTOMER,
+    customer_marker_prefix=DEFAULT_CUSTOMER_MARKER_PREFIX,
 ):
     result = []
     for peer in peers:
@@ -328,6 +320,7 @@ def make_auto_targets(
             ignore_groups,
             customer_root_group=customer_root_group,
             unassigned_customer=unassigned_customer,
+            customer_marker_prefix=customer_marker_prefix,
         )
 
         labels = {
@@ -491,6 +484,12 @@ def parse_args():
         default=os.getenv("NETBIRD_UNASSIGNED_CUSTOMER", DEFAULT_UNASSIGNED_CUSTOMER),
     )
     parser.add_argument(
+        "--customer-marker-prefix",
+        default=os.getenv(
+            "NETBIRD_CUSTOMER_MARKER_PREFIX", DEFAULT_CUSTOMER_MARKER_PREFIX
+        ),
+    )
+    parser.add_argument(
         "--ignore-groups",
         default=os.getenv("NETBIRD_CUSTOMER_IGNORE_GROUPS", ""),
         help="Zusätzliche technische Gruppennamen, Komma-separiert",
@@ -618,6 +617,7 @@ def main():
         ignore_groups,
         customer_root_group=args.customer_root_group,
         unassigned_customer=args.unassigned_customer,
+        customer_marker_prefix=args.customer_marker_prefix,
     )
     merged = merge_targets(existing, automatic)
     changed = atomic_write_json(target_path, merged)

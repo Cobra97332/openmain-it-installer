@@ -38,14 +38,15 @@ for path in sorted(root.glob("*.json")):
     uids.add(uid)
 
     data["id"] = None
-    replacements = [0]
+    replacements = {"$__rate_interval": 0, "$interval": 0}
 
     def walk(value):
         if isinstance(value, str):
-            count = value.count("$__rate_interval")
-            if count:
-                replacements[0] += count
-                return value.replace("$__rate_interval", args.rate_interval)
+            for token in ("$__rate_interval", "$interval"):
+                count = value.count(token)
+                if count:
+                    replacements[token] += count
+                    value = value.replace(token, args.rate_interval)
             return value
         if isinstance(value, list):
             return [walk(item) for item in value]
@@ -56,11 +57,14 @@ for path in sorted(root.glob("*.json")):
     data = walk(data)
 
     rendered = json.dumps(data, indent=2) + "\n"
-    if "$__rate_interval" in rendered:
-        raise SystemExit(f"Unersetztes $__rate_interval in {path}")
+    leftovers = [token for token in ("$__rate_interval", "$interval") if token in rendered]
+    if leftovers:
+        raise SystemExit(f"Unersetzte Intervall-Variablen in {path}: {leftovers}")
 
     path.write_text(rendered, encoding="utf-8")
     print(
-        f"{path.name}: {replacements[0]} $__rate_interval "
+        f"{path.name}: "
+        f"{replacements['$__rate_interval']} $__rate_interval + "
+        f"{replacements['$interval']} $interval "
         f"ersetzt durch {args.rate_interval}"
     )

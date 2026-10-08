@@ -71,6 +71,7 @@ HOST_DASHBOARDS="$HOST_BASE/dashboards"
 HOST_DATASOURCE="$HOST_BASE/prometheus-datasource.yaml"
 HOST_PROVIDER="$HOST_BASE/netbird-dashboards.yaml"
 OVERRIDE_FILE="$COMPOSE_WORKDIR/compose.openmain-netbird-prometheus.yaml"
+PROM_RELABEL_CAPTURE='$1'
 
 install -d -m 0755 "$INSTALL_DIR" "$HOST_BASE" "$HOST_TARGETS" "$HOST_DASHBOARDS"
 
@@ -136,7 +137,7 @@ scrape_configs:
       - source_labels: [__name__]
         regex: 'signal_(.*)'
         target_label: __name__
-        replacement: '\$1'
+        replacement: "$PROM_RELABEL_CAPTURE"
 
   - job_name: netbird-client
     file_sd_configs:

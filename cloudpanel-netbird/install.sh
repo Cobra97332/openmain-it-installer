@@ -3,13 +3,13 @@
 # Keine Aenderung an CloudPanel-VHosts, NetBird-Docker-Compose oder Firewall.
 set -Eeuo pipefail
 
-ADMIN_DOMAIN="${ADMIN_DOMAIN:-cloudpanel.openmain-it.de\}"
-NETBIRD_INTERFACE="${NETBIRD_INTERFACE:-wt0\}"
-ADMIN_PORT="${ADMIN_PORT:-18080\}"
-SITES_PORT="${SITES_PORT:-18081\}"
+ADMIN_DOMAIN="${ADMIN_DOMAIN:-cloudpanel.openmain-it.de}"
+NETBIRD_INTERFACE="${NETBIRD_INTERFACE:-wt0}"
+ADMIN_PORT="${ADMIN_PORT:-18080}"
+SITES_PORT="${SITES_PORT:-18081}"
 CONF="/etc/nginx/conf.d/openmain-cloudpanel-netbird.conf"
 BACKUP_DIR="/root/openmain-cloudpanel-netbird-backups"
-MODE="${1:-install\}"
+MODE="${1:-install}"
 
 log() { printf '[cloudpanel-netbird] %s\n' "$*"; }
 die() { printf '[cloudpanel-netbird] FEHLER: %s\n' "$*" >&2; exit 1; }

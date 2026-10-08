@@ -158,6 +158,17 @@ jobs:
                       {"name": "NetBird-Metrics"},
                   ],
               },
+              {
+                  "id": "peer-e",
+                  "ip": "100.64.10.24",
+                  "hostname": "customer-explicit",
+                  "groups": [
+                      {"name": "All"},
+                      {"name": "Kunden"},
+                      {"name": "Kunde: Meier"},
+                      {"name": "NetBird-Metrics"},
+                  ],
+              },
           ]
 
           targets = mod.make_auto_targets(
@@ -167,19 +178,9 @@ jobs:
               9191,
               "intern",
               mod.DEFAULT_IGNORE_GROUPS,
-              known_customer_groups=["Bauer", "Beispielkunde"],
           )
 
           assert targets == [
-              {
-                  "targets": ["100.64.10.23:9191"],
-                  "labels": {
-                      "host": "nb-Bauer-2",
-                      "customer": "Bauer",
-                      "managed_by": "netbird-api",
-                      "peer_id": "peer-d",
-                  },
-              },
               {
                   "targets": ["100.64.10.20:9191"],
                   "labels": {
@@ -187,6 +188,24 @@ jobs:
                       "customer": "Bauer",
                       "managed_by": "netbird-api",
                       "peer_id": "peer-a",
+                  },
+              },
+              {
+                  "targets": ["100.64.10.24:9191"],
+                  "labels": {
+                      "host": "customer-explicit",
+                      "customer": "Meier",
+                      "managed_by": "netbird-api",
+                      "peer_id": "peer-e",
+                  },
+              },
+              {
+                  "targets": ["100.64.10.23:9191"],
+                  "labels": {
+                      "host": "nb-Bauer-2",
+                      "customer": "Unzugeordnet",
+                      "managed_by": "netbird-api",
+                      "peer_id": "peer-d",
                   },
               },
               {
@@ -205,55 +224,54 @@ jobs:
               "labels": {"host": "manual-pbs", "customer": "intern"},
           }]
           merged = mod.merge_targets(existing, targets)
-          assert len(merged) == 3, merged
+          assert len(merged) == 4, merged
           assert not any(item["labels"].get("host") == "manual-pbs" for item in merged)
           assert any(
               item["labels"].get("host") == "pbsterramaster"
-              and item["labels"].get("managed_by") == "netbird-api"
-              for item in merged
-          )
-          assert any(item["labels"].get("host") == "pc-intern" for item in merged)
-          assert any(
-              item["labels"].get("host") == "nb-Bauer-2"
               and item["labels"].get("customer") == "Bauer"
               for item in merged
           )
+          assert any(
+              item["labels"].get("host") == "nb-Bauer-2"
+              and item["labels"].get("customer") == "Unzugeordnet"
+              for item in merged
+          )
+          assert any(
+              item["labels"].get("host") == "pc-intern"
+              and item["labels"].get("customer") == "intern"
+              for item in merged
+          )
 
-          # Hostname inference is only a label fallback and must not change
-          # NetBird group membership or guess ambiguous customer names.
+          # Customer ownership must come from NetBird groups, never hostnames.
           assert mod.infer_customer(
               {
                   "hostname": "nb-Bauer-2",
-                  "groups": [{"name": "NetBird-Metrics"}, {"name": "Kunden"}],
+                  "groups": [
+                      {"name": "NetBird-Metrics"},
+                      {"name": "Kunden"},
+                      {"name": "Bauer"},
+                  ],
               },
               "NetBird-Metrics",
               "Monitoring",
               "intern",
               mod.DEFAULT_IGNORE_GROUPS,
-              known_customer_groups=["Bauer"],
           ) == "Bauer"
+
           assert mod.infer_customer(
               {
                   "hostname": "nb-Bauer-2",
-                  "groups": [{"name": "NetBird-Metrics"}, {"name": "Kunden"}],
+                  "groups": [
+                      {"name": "NetBird-Metrics"},
+                      {"name": "Kunden"},
+                  ],
               },
               "NetBird-Metrics",
               "Monitoring",
               "intern",
               mod.DEFAULT_IGNORE_GROUPS,
-              known_customer_groups=[],
-          ) == "Bauer"
-          assert mod.infer_customer(
-              {
-                  "hostname": "nb-Muster-GmbH-12",
-                  "groups": [{"name": "NetBird-Metrics"}, {"name": "Kunden"}],
-              },
-              "NetBird-Metrics",
-              "Monitoring",
-              "intern",
-              mod.DEFAULT_IGNORE_GROUPS,
-              known_customer_groups=[],
-          ) == "Muster-GmbH"
+          ) == "Unzugeordnet"
+
           assert mod.infer_customer(
               {
                   "hostname": "docker",
@@ -263,19 +281,24 @@ jobs:
               "Monitoring",
               "intern",
               mod.DEFAULT_IGNORE_GROUPS,
-              known_customer_groups=[],
           ) == "intern"
+
           assert mod.infer_customer(
               {
-                  "hostname": "nb-Bauer-Beispielkunde-2",
-                  "groups": [{"name": "NetBird-Metrics"}],
+                  "hostname": "ambiguous",
+                  "groups": [
+                      {"name": "NetBird-Metrics"},
+                      {"name": "Kunden"},
+                      {"name": "Bauer"},
+                      {"name": "Meier"},
+                  ],
               },
               "NetBird-Metrics",
               "Monitoring",
               "intern",
               mod.DEFAULT_IGNORE_GROUPS,
-              known_customer_groups=["Bauer", "Bauer-Beispielkunde"],
-          ) == "Bauer-Beispielkunde"
+          ) == "Unzugeordnet"
+
           print("NetBird target rendering OK")
           PY
 

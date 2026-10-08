@@ -66,11 +66,18 @@ if not re.fullmatch(r"[1-9][0-9]*(ms|s|m|h|d|w|y)", args.rate_interval):
 
 root = args.dashboard_dir
 found = {p.name for p in root.glob("*.json")}
-if found != EXPECTED:
-    raise SystemExit(f"Dashboard-Satz unvollständig: {sorted(found)}")
+missing = sorted(EXPECTED - found)
+if missing:
+    raise SystemExit(
+        f"Dashboard-Satz unvollständig; fehlend: {missing}; vorhanden: {sorted(found)}"
+    )
 
+# Nur die vier gepinnten Upstream-Dashboards normalisieren. Eigene/generated
+# Dashboards wie overview.json oder relay-connections.json dürfen bei einem
+# wiederholten Installer-Lauf bereits im Verzeichnis liegen.
 uids = set()
-for path in sorted(root.glob("*.json")):
+for name in sorted(EXPECTED):
+    path = root / name
     data = json.loads(path.read_text(encoding="utf-8"))
 
     if not data.get("title"):

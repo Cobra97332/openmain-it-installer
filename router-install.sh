@@ -16,6 +16,7 @@ ZABBIX_ENABLED="${NB_ZABBIX_ENABLED:-1}"
 ZABBIX_SERVER="${NB_ZABBIX_SERVER:-100.107.91.6}"
 METRICS_ENABLED="${NB_METRICS_ENABLED:-1}"
 METRICS_PORT="${NB_METRICS_PORT:-9191}"
+METRICS_DETAIL_PORT="${NB_METRICS_DETAIL_PORT:-9192}"
 METRICS_GROUP="${NB_METRICS_GROUP:-NetBird-Metrics}"
 MONITORING_GROUP="${NB_MONITORING_GROUP:-Monitoring}"
 PROMETHEUS_NETBIRD_IP="${NB_PROMETHEUS_NETBIRD_IP:-100.107.91.6}"
@@ -44,6 +45,7 @@ NetBird Kundenrouter
   --zabbix-server HOST
   --lan-interface IFACE
   --metrics-port PORT
+  --metrics-detail-port PORT
   --prometheus-netbird-ip IP
   --metrics-group NAME
   --monitoring-group NAME
@@ -63,6 +65,7 @@ while [[ $# -gt 0 ]]; do
     --zabbix-server) ZABBIX_SERVER="$2"; shift 2;;
     --lan-interface) LAN_IF_OVERRIDE="$2"; shift 2;;
     --metrics-port) METRICS_PORT="$2"; shift 2;;
+    --metrics-detail-port) METRICS_DETAIL_PORT="$2"; shift 2;;
     --prometheus-netbird-ip) PROMETHEUS_NETBIRD_IP="$2"; shift 2;;
     --metrics-group) METRICS_GROUP="$2"; shift 2;;
     --monitoring-group) MONITORING_GROUP="$2"; shift 2;;
@@ -78,6 +81,9 @@ done
 [[ "$METRICS_ENABLED" == 0 || "$METRICS_ENABLED" == 1 ]] || die "NB_METRICS_ENABLED muss 0 oder 1 sein."
 [[ "$METRICS_PORT" =~ ^[0-9]+$ ]] || die "Ungültiger Metrics-Port: $METRICS_PORT"
 (( METRICS_PORT >= 1 && METRICS_PORT <= 65535 )) || die "Ungültiger Metrics-Port: $METRICS_PORT"
+[[ "$METRICS_DETAIL_PORT" =~ ^[0-9]+$ ]] || die "Ungültiger Metrics-Detail-Port: $METRICS_DETAIL_PORT"
+(( METRICS_DETAIL_PORT >= 1 && METRICS_DETAIL_PORT <= 65535 )) || die "Ungültiger Metrics-Detail-Port: $METRICS_DETAIL_PORT"
+[[ "$METRICS_DETAIL_PORT" != "$METRICS_PORT" ]] || die "Metrics-Port und Metrics-Detail-Port müssen verschieden sein."
 [[ -n "$CUSTOMER" ]] || read -r -p "Firmenname: " CUSTOMER
 [[ -n "$SETUP_KEY" ]] || { read -r -s -p "NetBird Setup Key: " SETUP_KEY; echo; }
 [[ -n "$API_TOKEN" ]] || { read -r -s -p "NetBird API Token: " API_TOKEN; echo; }
@@ -267,19 +273,19 @@ ensure_metrics_policy(){
   policies=$(api GET "/policies")
   policy_id=$(jq -r --arg n "$METRICS_POLICY_NAME"     '(if type=="array" then . else [] end)[] | select(.name==$n) | .id // empty'     <<<"$policies" | head -n1)
 
-  payload=$(jq -nc     --arg name "$METRICS_POLICY_NAME"     --arg src "$MONITORING_GROUP_ID"     --arg dst "$METRICS_GROUP_ID"     --arg port "$METRICS_PORT"     '{
+  payload=$(jq -nc     --arg name "$METRICS_POLICY_NAME"     --arg src "$MONITORING_GROUP_ID"     --arg dst "$METRICS_GROUP_ID"     --arg port "$METRICS_PORT"     --arg detail_port "$METRICS_DETAIL_PORT"     '{
       name:$name,
-      description:"Automatisch verwaltete OpenMain-Policy für NetBird Client Metrics",
+      description:"Automatisch verwaltete OpenMain-Policy für NetBird Client Metrics und Relay/Peer-Details",
       enabled:true,
       source_posture_checks:[],
       rules:[{
-        name:("Prometheus TCP " + $port),
-        description:"Prometheus Zugriff auf NetBird Client Metrics",
+        name:("Prometheus TCP " + $port + "," + $detail_port),
+        description:"Prometheus Zugriff auf NetBird Client Metrics und Relay/Peer-Details",
         enabled:true,
         action:"accept",
         bidirectional:false,
         protocol:"tcp",
-        ports:[$port],
+        ports:[$port,$detail_port],
         sources:[$src],
         destinations:[$dst]
       }]
@@ -359,7 +365,9 @@ setup_metrics(){
   curl -fsSL "$METRICS_HELPER_URL" -o "$helper"     || die "Metrics-Helper konnte nicht geladen werden: $METRICS_HELPER_URL"
   chmod 0755 "$helper"
 
-  NETBIRD_CLIENT_METRICS_PORT="$METRICS_PORT" "$helper"
+  NETBIRD_CLIENT_METRICS_PORT="$METRICS_PORT" \
+  NETBIRD_CLIENT_DETAIL_PORT="$METRICS_DETAIL_PORT" \
+  "$helper"
 
   netbird_ip=$(netbird status --ipv4 2>/dev/null | awk 'NF {sub(/\/.*/, "", $1); print $1; exit}')
   [[ -n "$netbird_ip" ]] || die "NetBird-IP nach Metrics-Aktivierung nicht ermittelbar."
@@ -501,7 +509,7 @@ setup_zabbix(){
 
 save_state(){
   install -d -m 0700 "$(dirname "$STATE_FILE")"
-  jq -nc     --arg customer "$CUSTOMER"     --arg role "$ROLE"     --arg lan "$LAN_NET"     --arg virtual "$VIRTUAL_NET"     --arg peer "$PEER_ID"     --arg network "$NETWORK_ID"     --arg resource "$RESOURCE_ID"     --arg router "$ROUTER_ID"     --arg metrics_target "${METRICS_TARGET:-}"     --arg metrics_group "$METRICS_GROUP"     --argjson metric "$ROUTER_METRIC"     --argjson metrics_enabled "$METRICS_ENABLED"     '{
+  jq -nc     --arg customer "$CUSTOMER"     --arg role "$ROLE"     --arg lan "$LAN_NET"     --arg virtual "$VIRTUAL_NET"     --arg peer "$PEER_ID"     --arg network "$NETWORK_ID"     --arg resource "$RESOURCE_ID"     --arg router "$ROUTER_ID"     --arg metrics_target "${METRICS_TARGET:-}"     --arg metrics_group "$METRICS_GROUP"     --arg metrics_detail_port "$METRICS_DETAIL_PORT"     --argjson metric "$ROUTER_METRIC"     --argjson metrics_enabled "$METRICS_ENABLED"     '{
       customer:$customer,
       role:$role,
       lan:$lan,
@@ -513,7 +521,8 @@ save_state(){
       metric:$metric,
       metrics_enabled:($metrics_enabled == 1),
       metrics_target:$metrics_target,
-      metrics_group:$metrics_group
+      metrics_group:$metrics_group,
+      metrics_detail_port:$metrics_detail_port
     }' > "$STATE_FILE"
   chmod 600 "$STATE_FILE"
 }
@@ -537,7 +546,7 @@ main(){
     log "Zabbix Proxy aktiv -> $ZABBIX_SERVER"
   fi
   if [[ "$METRICS_ENABLED" == 1 ]]; then
-    log "NetBird Metrics: ${METRICS_TARGET:-unbekannt} / Gruppe: $METRICS_GROUP"
+    log "NetBird Metrics: ${METRICS_TARGET:-unbekannt} / Details: TCP/$METRICS_DETAIL_PORT / Gruppe: $METRICS_GROUP"
   fi
   return 0
 }

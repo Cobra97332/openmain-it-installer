@@ -334,23 +334,40 @@ def load_existing_targets(path):
 
 
 def merge_targets(existing, automatic):
-    manual = [
-        item
-        for item in existing
-        if (item.get("labels") or {}).get("managed_by") != "netbird-api"
-    ]
-    manual_targets = {
+    auto_targets = {
         target
-        for item in manual
+        for item in automatic
         for target in (item.get("targets") or [])
         if isinstance(target, str)
     }
-
-    automatic = [
-        item
+    auto_hosts = {
+        str((item.get("labels") or {}).get("host") or "").casefold()
         for item in automatic
-        if not any(target in manual_targets for target in item.get("targets") or [])
-    ]
+        if (item.get("labels") or {}).get("host")
+    }
+
+    manual = []
+    for item in existing:
+        labels = item.get("labels") or {}
+        if labels.get("managed_by") == "netbird-api":
+            continue
+
+        targets = {
+            target
+            for target in (item.get("targets") or [])
+            if isinstance(target, str)
+        }
+        host = str(labels.get("host") or "").casefold()
+
+        # Sobald ein bisher manueller Eintrag eindeutig durch NetBird API
+        # entdeckt wird, wird er in einen automatisch verwalteten Eintrag
+        # überführt. Das verhindert veraltete Targets nach IP-Wechseln.
+        if targets & auto_targets:
+            continue
+        if host and host in auto_hosts:
+            continue
+
+        manual.append(item)
 
     combined = manual + automatic
     combined.sort(

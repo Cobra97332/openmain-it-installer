@@ -148,13 +148,14 @@ def policy_is_correct(policy, monitoring_group_id, metrics_group_id, ports):
         return False
 
     rule = rules[0]
-    ports = {str(p) for p in (rule.get("ports") or [])}
+    expected_ports = {str(port) for port in ports}
+    rule_ports = {str(port) for port in (rule.get("ports") or [])}
     return (
         rule.get("enabled") is True
         and rule.get("action") == "accept"
         and rule.get("protocol") == "tcp"
         and rule.get("bidirectional") is False
-        and ports == {str(port) for port in ports}
+        and rule_ports == expected_ports
         and ids_from_rule_side(rule.get("sources")) == {monitoring_group_id}
         and ids_from_rule_side(rule.get("destinations")) == {metrics_group_id}
     )

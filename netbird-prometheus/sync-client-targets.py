@@ -3,7 +3,6 @@ import argparse
 import ipaddress
 import json
 import os
-import re
 import sys
 import tempfile
 import urllib.error
@@ -16,6 +15,8 @@ DEFAULT_MONITORING_GROUP = "Monitoring"
 DEFAULT_POLICY_NAME = "OpenMain Prometheus -> NetBird Client Metrics"
 DEFAULT_TARGET_FILE = "/opt/openmain-netbird-prometheus/targets/netbird-clients.json"
 DEFAULT_CUSTOMER = "intern"
+DEFAULT_CUSTOMER_ROOT_GROUP = "Kunden"
+DEFAULT_UNASSIGNED_CUSTOMER = "Unzugeordnet"
 DEFAULT_IGNORE_GROUPS = {
     "All",
     "Kunden",
@@ -236,112 +237,26 @@ def peer_group_names(peer):
     return result
 
 
-def _slug(value):
-    return re.sub(r"[^a-z0-9]+", "-", str(value or "").casefold()).strip("-")
-
-
-def _known_customer_groups(groups, metrics_group, monitoring_group, ignore_groups):
-    ignored = {name.casefold() for name in ignore_groups}
-    ignored.update({metrics_group.casefold(), monitoring_group.casefold()})
-
-    result = []
-    for group in groups or []:
-        if not isinstance(group, dict):
-            continue
-        name = str(group.get("name") or "").strip()
-        if not name:
-            continue
-        lowered = name.casefold()
-        if lowered in ignored:
-            continue
-        if lowered.startswith(("auto:", "role:", "rolle:")):
-            continue
-        result.append(name)
-    return sorted(set(result), key=str.casefold)
-
-
-def _customer_from_host(peer, known_customer_groups):
-    host_candidates = [
-        str(peer.get("hostname") or "").strip(),
-        str(peer.get("name") or "").strip(),
-        str(peer.get("dns_label") or "").strip(),
-    ]
-    host_slugs = {_slug(value) for value in host_candidates if value}
-    host_slugs.discard("")
-
-    matches = []
-    for group_name in known_customer_groups:
-        group_slug = _slug(group_name)
-        if not group_slug:
-            continue
-        pattern = rf"(?:^|-){re.escape(group_slug)}(?:-|$)"
-        if any(re.search(pattern, host_slug) for host_slug in host_slugs):
-            matches.append(group_name)
-
-    matches = sorted(set(matches), key=lambda value: (-len(_slug(value)), value.casefold()))
-    if len(matches) == 1:
-        return matches[0]
-
-    if matches:
-        # Prefer a more specific customer name only when every other match is
-        # itself a complete token sequence inside that longest name.
-        # Example: Bauer + Bauer-Beispielkunde -> Bauer-Beispielkunde.
-        # Unrelated matches remain ambiguous and fall back safely.
-        longest = matches[0]
-        longest_slug = _slug(longest)
-        nested = True
-        for other in matches[1:]:
-            other_slug = _slug(other)
-            pattern = rf"(?:^|-){re.escape(other_slug)}(?:-|$)"
-            if not re.search(pattern, longest_slug):
-                nested = False
-                break
-        if nested:
-            return longest
-
-    return None
-
-
-def _customer_from_nb_hostname(peer):
-    """Infer customer from the OpenMain router naming convention.
-
-    Legacy/customer routers are commonly named like:
-      nb-Bauer-1
-      nb-Bauer-2
-      nb-Muster-GmbH-1
-
-    Only this explicit nb-<customer>-<number> pattern is accepted so generic
-    internal hosts such as docker, pve or pbsterramaster are never reclassified.
-    """
-    for field in ("hostname", "name", "dns_label"):
-        value = str(peer.get(field) or "").strip()
-        if not value:
-            continue
-
-        short = value.split(".", 1)[0]
-        match = re.fullmatch(r"(?i)nb-(.+)-([0-9]+)", short)
-        if not match:
-            continue
-
-        customer = match.group(1).strip("-_ ")
-        if customer:
-            return customer
-
-    return None
-
-
 def infer_customer(
     peer,
     metrics_group,
     monitoring_group,
     fallback,
     ignore_groups,
-    known_customer_groups=None,
+    customer_root_group=DEFAULT_CUSTOMER_ROOT_GROUP,
+    unassigned_customer=DEFAULT_UNASSIGNED_CUSTOMER,
 ):
+    """Resolve the Prometheus customer label from NetBird group membership only.
+
+    NetBird groups are authoritative. Hostnames are deliberately ignored:
+    names such as nb-Bauer-2 are operational labels and must never silently
+    change customer ownership in monitoring.
+    """
     names = peer_group_names(peer)
 
+    # Explicit prefixed groups are the strongest signal.
     for name in names:
-        lowered = name.lower()
+        lowered = name.casefold()
         for prefix in ("kunde:", "customer:"):
             if lowered.startswith(prefix):
                 customer = name.split(":", 1)[1].strip()
@@ -349,38 +264,34 @@ def infer_customer(
                     return customer
 
     ignored = {name.casefold() for name in ignore_groups}
-    ignored.update({metrics_group.casefold(), monitoring_group.casefold()})
+    ignored.update(
+        {
+            metrics_group.casefold(),
+            monitoring_group.casefold(),
+            customer_root_group.casefold(),
+        }
+    )
+
     candidates = sorted(
         {
             name
             for name in names
             if name.casefold() not in ignored
-            and not name.lower().startswith(("auto:", "role:", "rolle:"))
+            and not name.casefold().startswith(("auto:", "role:", "rolle:"))
         },
         key=str.casefold,
     )
 
+    # A single non-technical group is treated as the customer group.
     if len(candidates) == 1:
         return candidates[0]
 
-    # Fallback for older peers that were enrolled before customer group
-    # assignment was made consistent. If a single existing customer group
-    # appears as a full hostname token (for example nb-Bauer-2 -> Bauer),
-    # use it only as the Prometheus customer label. We intentionally do not
-    # mutate NetBird group membership here because groups may carry policies.
-    inferred = _customer_from_host(peer, known_customer_groups or [])
-    if inferred:
-        return inferred
-
-    # Last-resort compatibility for older OpenMain customer routers whose
-    # NetBird customer group is missing or not returned by the API. This uses
-    # only the explicit nb-<customer>-<number> rollout naming convention.
-    inferred = _customer_from_nb_hostname(peer)
-    if inferred:
-        return inferred
+    # A peer marked as a customer but without one unique customer group must
+    # never silently fall back to "intern". Surface it for cleanup instead.
+    if any(name.casefold() == customer_root_group.casefold() for name in names):
+        return unassigned_customer
 
     return fallback
-
 
 def make_auto_targets(
     peers,
@@ -389,7 +300,8 @@ def make_auto_targets(
     port,
     customer_fallback,
     ignore_groups,
-    known_customer_groups=None,
+    customer_root_group=DEFAULT_CUSTOMER_ROOT_GROUP,
+    unassigned_customer=DEFAULT_UNASSIGNED_CUSTOMER,
 ):
     result = []
     for peer in peers:
@@ -414,7 +326,8 @@ def make_auto_targets(
             monitoring_group,
             customer_fallback,
             ignore_groups,
-            known_customer_groups=known_customer_groups,
+            customer_root_group=customer_root_group,
+            unassigned_customer=unassigned_customer,
         )
 
         labels = {
@@ -570,6 +483,14 @@ def parse_args():
         default=os.getenv("NETBIRD_CUSTOMER_FALLBACK", DEFAULT_CUSTOMER),
     )
     parser.add_argument(
+        "--customer-root-group",
+        default=os.getenv("NETBIRD_CUSTOMER_ROOT_GROUP", DEFAULT_CUSTOMER_ROOT_GROUP),
+    )
+    parser.add_argument(
+        "--unassigned-customer",
+        default=os.getenv("NETBIRD_UNASSIGNED_CUSTOMER", DEFAULT_UNASSIGNED_CUSTOMER),
+    )
+    parser.add_argument(
         "--ignore-groups",
         default=os.getenv("NETBIRD_CUSTOMER_IGNORE_GROUPS", ""),
         help="Zusätzliche technische Gruppennamen, Komma-separiert",
@@ -688,12 +609,6 @@ def main():
 
     # Gruppenmitgliedschaften können sich durch ensure_peer_in_group geändert haben.
     peers = api_request(args.management_url, args.api_token, "GET", "/peers")
-    known_customer_groups = _known_customer_groups(
-        groups,
-        args.metrics_group,
-        args.monitoring_group,
-        ignore_groups,
-    )
     automatic = make_auto_targets(
         peers,
         args.metrics_group,
@@ -701,7 +616,8 @@ def main():
         args.port,
         args.customer_fallback,
         ignore_groups,
-        known_customer_groups=known_customer_groups,
+        customer_root_group=args.customer_root_group,
+        unassigned_customer=args.unassigned_customer,
     )
     merged = merge_targets(existing, automatic)
     changed = atomic_write_json(target_path, merged)

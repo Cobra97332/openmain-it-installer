@@ -281,6 +281,24 @@ def _customer_from_host(peer, known_customer_groups):
     matches = sorted(set(matches), key=lambda value: (-len(_slug(value)), value.casefold()))
     if len(matches) == 1:
         return matches[0]
+
+    if matches:
+        # Prefer a more specific customer name only when every other match is
+        # itself a complete token sequence inside that longest name.
+        # Example: Bauer + Bauer-Beispielkunde -> Bauer-Beispielkunde.
+        # Unrelated matches remain ambiguous and fall back safely.
+        longest = matches[0]
+        longest_slug = _slug(longest)
+        nested = True
+        for other in matches[1:]:
+            other_slug = _slug(other)
+            pattern = rf"(?:^|-){re.escape(other_slug)}(?:-|$)"
+            if not re.search(pattern, longest_slug):
+                nested = False
+                break
+        if nested:
+            return longest
+
     return None
 
 

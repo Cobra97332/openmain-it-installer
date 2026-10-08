@@ -119,6 +119,19 @@ scrape_configs:
           environment: "$ENVIRONMENT_LABEL"
           host: "$NETBIRD_HOST_LABEL"
     metric_relabel_configs:
+      # The Combined NetBird server exports Management, Signal and Relay from
+      # one target. Upstream dashboards were authored for separate services
+      # and expect an application label on Management/Signal metrics.
+      - source_labels: [__name__]
+        regex: 'management_.*'
+        target_label: application
+        replacement: 'management'
+
+      - source_labels: [__name__]
+        regex: 'signal_.*'
+        target_label: application
+        replacement: 'signal'
+
       # Combined NetBird prefixes Signal application metrics with "signal_".
       # The upstream Signal dashboard expects standalone metric names.
       - source_labels: [__name__]

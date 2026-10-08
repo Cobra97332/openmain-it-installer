@@ -25,6 +25,7 @@ METRICS_HELPER_URL="${NB_METRICS_HELPER_URL:-https://raw.githubusercontent.com/C
 LAN_IF_OVERRIDE="${NB_LAN_INTERFACE:-}"
 SSH_PUBLIC_KEY="${NB_SSH_PUBLIC_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJc8VZvZ7o/8emKoGC7UXPiOMP8PSxch6P2rUGNio8Vi Stefan}"
 GLOBAL_GROUP="Kunden"
+CUSTOMER_LABEL_PREFIX="${NB_CUSTOMER_LABEL_PREFIX:-Kunde:}"
 JSON_SOCKET="/var/run/netbird-http.sock"
 STATE_FILE="/var/lib/netbird-kundenrouter/state.json"
 NFT_FILE="/etc/nftables.d/netbird-kundenrouter.nft"
@@ -259,12 +260,22 @@ ensure_peer_in_group(){
 }
 
 setup_groups(){
+  local customer_label_group customer_label_group_id
+
   GLOBAL_GROUP_ID=$(ensure_group "$GLOBAL_GROUP")
   COMPANY_GROUP_ID=$(ensure_group "$CUSTOMER")
+  customer_label_group="${CUSTOMER_LABEL_PREFIX}${CUSTOMER}"
+  customer_label_group_id=$(ensure_group "$customer_label_group")
+
   ensure_peer_in_group "$GLOBAL_GROUP_ID"
   ensure_peer_in_group "$COMPANY_GROUP_ID"
+  ensure_peer_in_group "$customer_label_group_id"
+
+  # Nur die bestehenden Funktionsgruppen werden für Netzwerkressourcen
+  # verwendet. "Kunde:<Name>" dient ausschließlich als eindeutige Metadaten-
+  # Kennzeichnung für Monitoring/Prometheus und erweitert keine Zugriffsrechte.
   GROUP_IDS=$(jq -nc --arg a "$GLOBAL_GROUP_ID" --arg b "$COMPANY_GROUP_ID" '[$a,$b]')
-  log "Gruppen: $GLOBAL_GROUP + $CUSTOMER"
+  log "Gruppen: $GLOBAL_GROUP + $CUSTOMER + $customer_label_group"
 }
 
 ensure_metrics_policy(){

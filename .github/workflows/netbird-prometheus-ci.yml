@@ -491,6 +491,12 @@ jobs:
                   assert set(variables_by_name) == {"datasource", "customer", "host"}
                   assert variables_by_name["customer"]["label"] == "Kunde"
                   assert variables_by_name["host"]["label"] == "Host"
+                  assert variables_by_name["customer"]["query"]["qryType"] == 3
+                  assert variables_by_name["customer"]["query"]["query"] == 'query_result(up{job="netbird-client"} >= 0)'
+                  assert variables_by_name["customer"]["regex"] == '/customer="([^"]+)"/'
+                  assert variables_by_name["host"]["query"]["qryType"] == 3
+                  assert 'query_result(up{job="netbird-client",customer="$customer"} >= 0)' == variables_by_name["host"]["query"]["query"]
+                  assert variables_by_name["host"]["regex"] == '/host="([^"]+)"/'
                   client_repr = repr(data)
                   assert 'customer=~"$customer"' in client_repr
                   assert 'host=~"$host"' in client_repr
@@ -547,6 +553,12 @@ jobs:
                   assert set(variables_by_name) == {"datasource", "customer", "host"}
                   assert variables_by_name["customer"]["includeAll"] is True
                   assert variables_by_name["host"]["includeAll"] is True
+                  assert variables_by_name["customer"]["query"]["qryType"] == 3
+                  assert variables_by_name["customer"]["query"]["query"] == 'query_result(up{job="netbird-client"} >= 0)'
+                  assert variables_by_name["customer"]["regex"] == '/customer="([^"]+)"/'
+                  assert variables_by_name["host"]["query"]["qryType"] == 3
+                  assert 'query_result(up{job="netbird-client",customer=~"$customer"} >= 0)' == variables_by_name["host"]["query"]["query"]
+                  assert variables_by_name["host"]["regex"] == '/host="([^"]+)"/'
 
                   overview_panels = {}
                   def index_overview_panels(value):
@@ -594,6 +606,12 @@ jobs:
                       for v in data.get("templating", {}).get("list", [])
                   }
                   assert set(variables_by_name) == {"datasource", "customer", "source"}
+                  assert variables_by_name["customer"]["query"]["qryType"] == 3
+                  assert variables_by_name["customer"]["query"]["query"] == 'query_result(up{job="netbird-client-detail"} >= 0)'
+                  assert variables_by_name["customer"]["regex"] == '/customer="([^"]+)"/'
+                  assert variables_by_name["source"]["query"]["qryType"] == 3
+                  assert 'query_result(up{job="netbird-client-detail",customer=~"$customer"} >= 0)' == variables_by_name["source"]["query"]["query"]
+                  assert variables_by_name["source"]["regex"] == '/host="([^"]+)"/'
 
                   relay_panels = {}
                   def index_relay_panels(value):
@@ -642,6 +660,7 @@ jobs:
                   source_query = repr(variables_by_name["source"])
                   assert 'customer=~"$customer"' in source_query
                   assert 'connection_type="relay"' not in source_query
+                  assert "query_result" in source_query
               if path.name == "management.json":
                   for stale in (
                       "management_grpc_sync_request_counter_ratio_total",

@@ -53,6 +53,7 @@ jobs:
         run: |
           foreach ($file in @(
             "netbird-prometheus/enable-client-metrics.ps1",
+            "netbird-prometheus/enable-client-detail-metrics.ps1",
             "netbird-prometheus/netbird-status-exporter.ps1"
           )) {
             $tokens = $null
@@ -75,8 +76,11 @@ jobs:
           grep -F -- '-LocalAddress $ListenAddress' netbird-prometheus/enable-client-metrics.ps1
           grep -F -- '-RemoteAddress $RemoteAddress' netbird-prometheus/enable-client-metrics.ps1
           grep -F 'Monitoring -> NetBird-Metrics TCP/$MetricsPort,$DetailPort' netbird-prometheus/enable-client-metrics.ps1
-          grep -F 'OpenMain NetBird Status Exporter' netbird-prometheus/enable-client-metrics.ps1
-          grep -F '127.0.0.1:$DetailPort' netbird-prometheus/enable-client-metrics.ps1
+          grep -F 'enable-client-detail-metrics.ps1' netbird-prometheus/enable-client-metrics.ps1
+          grep -F 'netbird-status-exporter.ps1' netbird-prometheus/enable-client-detail-metrics.ps1
+          grep -F '127.0.0.1:$DetailPort' netbird-prometheus/enable-client-detail-metrics.ps1
+          grep -F 'netsh interface portproxy add v4tov4' netbird-prometheus/enable-client-detail-metrics.ps1
+          grep -F 'RemoteAddress = $PrometheusIp' netbird-prometheus/enable-client-detail-metrics.ps1
           ! grep -F -- '--local-metrics-address "$netBirdIp' netbird-prometheus/enable-client-metrics.ps1
 
       - name: Validate client metrics safety model

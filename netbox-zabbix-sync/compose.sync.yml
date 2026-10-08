@@ -1,0 +1,17 @@
+services:
+  netbox-sync:
+    image: python:3.12-alpine
+    restart: unless-stopped
+    network_mode: "service:netbird"
+    depends_on:
+      netbird:
+        condition: service_started
+      netbox:
+        condition: service_healthy
+    env_file:
+      - ./env/sync.env
+    command: ["python", "-u", "/app/sync.py"]
+    volumes:
+      - ./netbox-sync/sync.py:/app/sync.py:ro
+    security_opt:
+      - no-new-privileges:true

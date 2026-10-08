@@ -24,7 +24,8 @@ jobs:
         run: |
           python3 -m py_compile \
             grafana-zabbix/generate-dashboards.py \
-            grafana-zabbix/sync-zabbix-groups.py
+            grafana-zabbix/sync-zabbix-groups.py \
+            grafana-zabbix/inspect-zabbix-host.py
 
       - name: Bash syntax
         run: |
@@ -53,11 +54,14 @@ jobs:
               "nas.json",
               "qnap.json",
               "synology.json",
+              "netbird.json",
+              "customers.json",
               "problems.json",
               "tv.json",
           }
 
           assert {p.name for p in files} == expected, [p.name for p in files]
+          assert len(files) == 10, [p.name for p in files]
 
           uids = set()
           for path in files:
@@ -69,6 +73,19 @@ jobs:
 
               encoded = json.dumps(data)
               assert "ci-zabbix" in encoded, f"Datasource UID fehlt in {path}"
+
+          opn = json.loads((root / "opnsense.json").read_text(encoding="utf-8"))
+          variable_names = [v.get("name") for v in opn.get("templating", {}).get("list", [])]
+          assert variable_names == ["group", "host", "interface"], variable_names
+          panel_titles = {p.get("title") for p in opn.get("panels", [])}
+          for title in {
+              "Packet Filter",
+              "State Table - Auslastung",
+              "Interface - Traffic RX / TX",
+              "Interface - IPv4/IPv6 Traffic blocked",
+              "Interface - Errors / Discards",
+          }:
+              assert title in panel_titles, (title, sorted(panel_titles))
 
           print(f"OK: {len(files)} Dashboards, {len(uids)} eindeutige UIDs")
           PY

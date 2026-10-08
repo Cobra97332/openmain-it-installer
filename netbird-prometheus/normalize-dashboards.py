@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import copy
 import json
 import re
 from pathlib import Path
@@ -98,6 +99,12 @@ for path in sorted(root.glob("*.json")):
                     if count:
                         metric_rewrites[0] += count
                         value = value.replace(old, new)
+
+            if path.name == "client.json":
+                value = value.replace(
+                    'job=~"$job",instance=~"$instance"',
+                    'job="netbird-client",customer=~"$customer",host=~"$host"',
+                )
             return value
         if isinstance(value, list):
             return [walk(item) for item in value]
@@ -251,6 +258,151 @@ for path in sorted(root.glob("*.json")):
                 tune_panels(item)
 
         tune_panels(data)
+
+    if path.name == "client.json":
+        data["title"] = "NetBird / Client"
+
+        datasource_var = None
+        for variable in data.get("templating", {}).get("list", []):
+            if variable.get("name") == "datasource":
+                datasource_var = variable
+                break
+        if datasource_var is None:
+            raise SystemExit("client.json: Datasource-Variable fehlt")
+
+        data.setdefault("templating", {})["list"] = [
+            datasource_var,
+            {
+                "name": "customer",
+                "type": "query",
+                "label": "Kunde",
+                "datasource": {"type": "prometheus", "uid": "${datasource}"},
+                "definition": 'label_values(netbird_management_connected{job="netbird-client"},customer)',
+                "query": {
+                    "qryType": 1,
+                    "query": 'label_values(netbird_management_connected{job="netbird-client"},customer)',
+                    "refId": "PrometheusVariableQueryEditor-Customer",
+                },
+                "refresh": 1,
+                "sort": 1,
+                "multi": False,
+                "includeAll": False,
+                "hide": 0,
+                "current": {},
+            },
+            {
+                "name": "host",
+                "type": "query",
+                "label": "Host",
+                "datasource": {"type": "prometheus", "uid": "${datasource}"},
+                "definition": (
+                    'label_values(netbird_management_connected{job="netbird-client",'
+                    'customer=~"$customer"},host)'
+                ),
+                "query": {
+                    "qryType": 1,
+                    "query": (
+                        'label_values(netbird_management_connected{job="netbird-client",'
+                        'customer=~"$customer"},host)'
+                    ),
+                    "refId": "PrometheusVariableQueryEditor-Host",
+                },
+                "refresh": 1,
+                "sort": 1,
+                "multi": False,
+                "includeAll": False,
+                "hide": 0,
+                "current": {},
+            },
+        ]
+
+        top_positions = {
+            "Management connected": 0,
+            "Signal connected": 4,
+            "Known peers": 8,
+            "Connected peers": 12,
+        }
+        top_panels = {}
+
+        def collect_client_panels(value):
+            if isinstance(value, list):
+                for item in value:
+                    collect_client_panels(item)
+                return
+            if not isinstance(value, dict):
+                return
+
+            title = value.get("title")
+            if title in top_positions and value.get("type") == "stat":
+                top_panels[title] = value
+                value["gridPos"] = {"h": 4, "w": 4, "x": top_positions[title], "y": 1}
+                defaults = value.setdefault("fieldConfig", {}).setdefault("defaults", {})
+                defaults["decimals"] = 0
+                defaults["unit"] = "none"
+                value.setdefault("options", {})["showPercentChange"] = False
+
+                if title in ("Management connected", "Signal connected"):
+                    defaults["mappings"] = [{
+                        "options": {
+                            "0": {"color": "red", "index": 0, "text": "Disconnected"},
+                            "1": {"color": "green", "index": 1, "text": "Connected"},
+                        },
+                        "type": "value",
+                    }]
+                    defaults["thresholds"] = {
+                        "mode": "absolute",
+                        "steps": [
+                            {"color": "red", "value": None},
+                            {"color": "green", "value": 1},
+                        ],
+                    }
+
+            if title == "Peer latency":
+                value["description"] = (
+                    "Round-trip latency for directly connected P2P peers. "
+                    "Relay connections do not expose a peer RTT in this metric."
+                )
+
+            for item in value.values():
+                collect_client_panels(item)
+
+        collect_client_panels(data)
+
+        missing = sorted(set(top_positions) - set(top_panels))
+        if missing:
+            raise SystemExit(f"client.json: Top-Stat-Panels fehlen: {missing}")
+
+        connected = top_panels["Connected peers"]
+        max_id = [0]
+
+        def scan_ids(value):
+            if isinstance(value, list):
+                for item in value:
+                    scan_ids(item)
+            elif isinstance(value, dict):
+                panel_id = value.get("id")
+                if isinstance(panel_id, int):
+                    max_id[0] = max(max_id[0], panel_id)
+                for item in value.values():
+                    scan_ids(item)
+
+        scan_ids(data)
+
+        for offset, (title, connection_type, x_pos) in enumerate(
+            (("P2P peers", "p2p", 16), ("Relay peers", "relay", 20)),
+            start=1,
+        ):
+            panel = copy.deepcopy(connected)
+            panel["id"] = max_id[0] + offset
+            panel["title"] = title
+            panel["gridPos"] = {"h": 4, "w": 4, "x": x_pos, "y": 1}
+            panel["targets"][0]["expr"] = (
+                'netbird_peers_connected{job="netbird-client",'
+                'customer=~"$customer",host=~"$host",'
+                f'connection_type="{connection_type}"}}'
+            )
+            panel["targets"][0]["legendFormat"] = title
+            data.setdefault("panels", []).append(panel)
 
     rendered = json.dumps(data, indent=2) + "\n"
     leftovers = [token for token in ("$__rate_interval", "$interval") if token in rendered]

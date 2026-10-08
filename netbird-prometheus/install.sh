@@ -246,7 +246,7 @@ scrape_configs:
       - source_labels: [__address__]
         regex: '(.+):[0-9]+'
         target_label: __address__
-        replacement: '${1}:$NETBIRD_CLIENT_DETAIL_PORT'
+        replacement: "$PROM_RELABEL_CAPTURE:$NETBIRD_CLIENT_DETAIL_PORT"
 EOF
 
 if [[ ! -f "$HOST_TARGETS/netbird-clients.json" ]]; then
@@ -263,6 +263,7 @@ if [[ "$NETBIRD_AUTO_DISCOVERY" == 1 ]]; then
     printf 'NETBIRD_METRICS_POLICY_NAME=%q\n' "$NETBIRD_METRICS_POLICY_NAME"
     printf 'NETBIRD_PROMETHEUS_PEER_IP=%q\n' "$NETBIRD_PROMETHEUS_PEER_IP"
     printf 'NETBIRD_CLIENT_METRICS_PORT=%q\n' "$NETBIRD_CLIENT_METRICS_PORT"
+    printf 'NETBIRD_CLIENT_DETAIL_PORT=%q\n' "$NETBIRD_CLIENT_DETAIL_PORT"
     printf 'NETBIRD_CLIENT_TARGET_FILE=%q\n' "$HOST_TARGETS/netbird-clients.json"
     printf 'NETBIRD_CUSTOMER_FALLBACK=%q\n' "$NETBIRD_CUSTOMER_FALLBACK"
     printf 'NETBIRD_CUSTOMER_IGNORE_GROUPS=%q\n' "$NETBIRD_CUSTOMER_IGNORE_GROUPS"

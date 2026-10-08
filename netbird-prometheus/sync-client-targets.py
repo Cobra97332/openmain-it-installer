@@ -3,6 +3,7 @@ import argparse
 import ipaddress
 import json
 import os
+import re
 import sys
 import tempfile
 import urllib.error
@@ -235,7 +236,62 @@ def peer_group_names(peer):
     return result
 
 
-def infer_customer(peer, metrics_group, monitoring_group, fallback, ignore_groups):
+def _slug(value):
+    return re.sub(r"[^a-z0-9]+", "-", str(value or "").casefold()).strip("-")
+
+
+def _known_customer_groups(groups, metrics_group, monitoring_group, ignore_groups):
+    ignored = {name.casefold() for name in ignore_groups}
+    ignored.update({metrics_group.casefold(), monitoring_group.casefold()})
+
+    result = []
+    for group in groups or []:
+        if not isinstance(group, dict):
+            continue
+        name = str(group.get("name") or "").strip()
+        if not name:
+            continue
+        lowered = name.casefold()
+        if lowered in ignored:
+            continue
+        if lowered.startswith(("auto:", "role:", "rolle:")):
+            continue
+        result.append(name)
+    return sorted(set(result), key=str.casefold)
+
+
+def _customer_from_host(peer, known_customer_groups):
+    host_candidates = [
+        str(peer.get("hostname") or "").strip(),
+        str(peer.get("name") or "").strip(),
+        str(peer.get("dns_label") or "").strip(),
+    ]
+    host_slugs = {_slug(value) for value in host_candidates if value}
+    host_slugs.discard("")
+
+    matches = []
+    for group_name in known_customer_groups:
+        group_slug = _slug(group_name)
+        if not group_slug:
+            continue
+        pattern = rf"(?:^|-){re.escape(group_slug)}(?:-|$)"
+        if any(re.search(pattern, host_slug) for host_slug in host_slugs):
+            matches.append(group_name)
+
+    matches = sorted(set(matches), key=lambda value: (-len(_slug(value)), value.casefold()))
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def infer_customer(
+    peer,
+    metrics_group,
+    monitoring_group,
+    fallback,
+    ignore_groups,
+    known_customer_groups=None,
+):
     names = peer_group_names(peer)
 
     for name in names:
@@ -246,13 +302,13 @@ def infer_customer(peer, metrics_group, monitoring_group, fallback, ignore_group
                 if customer:
                     return customer
 
-    ignored = set(ignore_groups)
-    ignored.update({metrics_group, monitoring_group})
+    ignored = {name.casefold() for name in ignore_groups}
+    ignored.update({metrics_group.casefold(), monitoring_group.casefold()})
     candidates = sorted(
         {
             name
             for name in names
-            if name not in ignored
+            if name.casefold() not in ignored
             and not name.lower().startswith(("auto:", "role:", "rolle:"))
         },
         key=str.casefold,
@@ -260,6 +316,15 @@ def infer_customer(peer, metrics_group, monitoring_group, fallback, ignore_group
 
     if len(candidates) == 1:
         return candidates[0]
+
+    # Fallback for older peers that were enrolled before customer group
+    # assignment was made consistent. If a single existing customer group
+    # appears as a full hostname token (for example nb-Bauer-2 -> Bauer),
+    # use it only as the Prometheus customer label. We intentionally do not
+    # mutate NetBird group membership here because groups may carry policies.
+    inferred = _customer_from_host(peer, known_customer_groups or [])
+    if inferred:
+        return inferred
 
     return fallback
 
@@ -271,6 +336,7 @@ def make_auto_targets(
     port,
     customer_fallback,
     ignore_groups,
+    known_customer_groups=None,
 ):
     result = []
     for peer in peers:
@@ -295,6 +361,7 @@ def make_auto_targets(
             monitoring_group,
             customer_fallback,
             ignore_groups,
+            known_customer_groups=known_customer_groups,
         )
 
         labels = {
@@ -568,6 +635,12 @@ def main():
 
     # Gruppenmitgliedschaften können sich durch ensure_peer_in_group geändert haben.
     peers = api_request(args.management_url, args.api_token, "GET", "/peers")
+    known_customer_groups = _known_customer_groups(
+        groups,
+        args.metrics_group,
+        args.monitoring_group,
+        ignore_groups,
+    )
     automatic = make_auto_targets(
         peers,
         args.metrics_group,
@@ -575,6 +648,7 @@ def main():
         args.port,
         args.customer_fallback,
         ignore_groups,
+        known_customer_groups=known_customer_groups,
     )
     merged = merge_targets(existing, automatic)
     changed = atomic_write_json(target_path, merged)

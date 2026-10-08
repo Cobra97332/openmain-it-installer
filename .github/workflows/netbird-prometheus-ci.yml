@@ -43,16 +43,27 @@ jobs:
       - name: Test client target helper
         run: |
           printf '[]\n' > /tmp/netbird-clients.json
-          python3 netbird-prometheus/add-client-target.py             --file /tmp/netbird-clients.json             100.64.10.20 test-gateway customer-a
+          python3 netbird-prometheus/add-client-target.py \
+            --file /tmp/netbird-clients.json \
+            100.64.10.20 test-gateway customer-a
+          python3 netbird-prometheus/add-client-target.py \
+            --file /tmp/netbird-clients.json \
+            100.64.10.21 internal-host
           python3 - <<'PY'
           import json
           from pathlib import Path
 
           data = json.loads(Path("/tmp/netbird-clients.json").read_text())
-          assert data == [{
-              "targets": ["100.64.10.20:9191"],
-              "labels": {"host": "test-gateway", "customer": "customer-a"},
-          }], data
+          assert data == [
+              {
+                  "targets": ["100.64.10.20:9191"],
+                  "labels": {"host": "test-gateway", "customer": "customer-a"},
+              },
+              {
+                  "targets": ["100.64.10.21:9191"],
+                  "labels": {"host": "internal-host", "customer": "intern"},
+              },
+          ], data
           print("client target helper OK")
           PY
 
@@ -85,6 +96,48 @@ jobs:
               assert data.get("uid"), path
               assert "$__rate_interval" not in text, path
               assert "$interval" not in text, path
+
+              if path.name == "client.json":
+                  variables_by_name = {
+                      v.get("name"): v
+                      for v in data.get("templating", {}).get("list", [])
+                  }
+                  assert set(variables_by_name) == {"datasource", "customer", "host"}
+                  assert variables_by_name["customer"]["label"] == "Kunde"
+                  assert variables_by_name["host"]["label"] == "Host"
+                  assert 'customer=~"$customer"' in json.dumps(data)
+                  assert 'host=~"$host"' in json.dumps(data)
+                  assert 'instance=~"$instance"' not in json.dumps(data)
+                  assert 'job=~"$job"' not in json.dumps(data)
+
+                  client_panels = {}
+                  def index_client_panels(value):
+                      if isinstance(value, list):
+                          for item in value:
+                              index_client_panels(item)
+                      elif isinstance(value, dict):
+                          title = value.get("title")
+                          if title:
+                              client_panels[title] = value
+                          for item in value.values():
+                              index_client_panels(item)
+                  index_client_panels(data)
+
+                  for title in (
+                      "Management connected",
+                      "Signal connected",
+                      "Known peers",
+                      "Connected peers",
+                      "P2P peers",
+                      "Relay peers",
+                  ):
+                      assert title in client_panels, title
+                      assert client_panels[title]["gridPos"]["w"] == 4, title
+
+                  assert 'connection_type="p2p"' in client_panels["P2P peers"]["targets"][0]["expr"]
+                  assert 'connection_type="relay"' in client_panels["Relay peers"]["targets"][0]["expr"]
+                  assert client_panels["Management connected"]["fieldConfig"]["defaults"]["mappings"]
+                  assert "directly connected P2P peers" in client_panels["Peer latency"]["description"]
 
               if path.name == "management.json":
                   for stale in (

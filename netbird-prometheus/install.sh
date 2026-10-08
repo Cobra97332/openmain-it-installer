@@ -13,6 +13,7 @@ ENVIRONMENT_LABEL="${NETBIRD_ENVIRONMENT:-prod}"
 NETBIRD_HOST_LABEL="${NETBIRD_HOST_LABEL:-netbird-server}"
 GRAFANA_CONTAINER="${GRAFANA_CONTAINER:-}"
 NETBIRD_METRICS_TARGET="${NETBIRD_METRICS_TARGET:-}"
+NETBIRD_RATE_INTERVAL="${NETBIRD_RATE_INTERVAL:-2m}"
 
 die() { echo "[FEHLER] $*" >&2; exit 1; }
 log() { echo "[+] $*"; }
@@ -92,12 +93,17 @@ for dashboard in management signal relay client; do
     -o "$HOST_DASHBOARDS/$dashboard.json"
 done
 
-python3 - "$HOST_DASHBOARDS" <<'PY'
+python3 - "$HOST_DASHBOARDS" "$NETBIRD_RATE_INTERVAL" <<'PY'
 import json
+import re
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
+rate_interval = sys.argv[2]
+
+if not re.fullmatch(r"[1-9][0-9]*(ms|s|m|h|d|w|y)", rate_interval):
+    raise SystemExit(f"Ungültiges NETBIRD_RATE_INTERVAL: {rate_interval}")
 expected = {"management.json", "signal.json", "relay.json", "client.json"}
 found = {p.name for p in root.glob("*.json")}
 if found != expected:
@@ -113,7 +119,32 @@ for path in root.glob("*.json"):
         raise SystemExit(f"Fehlende/doppelte Dashboard-UID: {path}")
     uids.add(uid)
     data["id"] = None
+
+    # Grafana 13.2.x can pass $__rate_interval literally to Prometheus for these
+    # upstream NetBird dashboards, causing PromQL parse errors. NetBird is
+    # scraped every 30s, so 2m provides the required four-sample rate window.
+    replacements = 0
+
+    def walk(value):
+        nonlocal replacements
+        if isinstance(value, str):
+            count = value.count("$__rate_interval")
+            if count:
+                replacements += count
+                return value.replace("$__rate_interval", rate_interval)
+            return value
+        if isinstance(value, list):
+            return [walk(item) for item in value]
+        if isinstance(value, dict):
+            return {key: walk(item) for key, item in value.items()}
+        return value
+
+    data = walk(data)
+    if "$__rate_interval" in json.dumps(data):
+        raise SystemExit(f"Unersetztes $__rate_interval in {path}")
+
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    print(f"{path.name}: {replacements} $__rate_interval ersetzt durch {rate_interval}")
 PY
 
 cat > "$HOST_CONFIG" <<EOF

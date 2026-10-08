@@ -21,7 +21,11 @@ log "Aktiviere lokale NetBird-Metriken auf $BIND_IP:$METRICS_PORT ..."
 netbird up   --enable-local-metrics   --local-metrics-address "$BIND_IP:$METRICS_PORT"
 
 sleep 2
-curl -fsS --max-time 5 "http://$BIND_IP:$METRICS_PORT/metrics" | grep -m1 '^netbird_' >/dev/null   || die "Metrics-Endpunkt liefert keine NetBird-Metriken."
+metrics_output="$(curl -fsS --max-time 5 "http://$BIND_IP:$METRICS_PORT/metrics")" \
+  || die "Metrics-Endpunkt ist nicht erreichbar."
+
+grep -q '^netbird_' <<<"$metrics_output" \
+  || die "Metrics-Endpunkt liefert keine NetBird-Metriken."
 
 echo
 echo "Client Metrics aktiv:"

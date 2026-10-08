@@ -383,6 +383,13 @@ log "Starte Prometheus..."
 log "Prüfe Prometheus-Konfiguration..."
 docker exec "$PROM_CONTAINER" promtool check config /etc/prometheus/prometheus.yml
 
+# docker compose erkennt Änderungen am Inhalt einer bind-gemounteten
+# prometheus.yml nicht als Container-Änderung. Ohne expliziten Reload würde
+# Prometheus bei einem Installer-Update deshalb mit der alten Konfiguration
+# weiterlaufen (z. B. ohne den später hinzugefügten netbird-client-detail Job).
+log "Lade Prometheus-Konfiguration neu..."
+docker kill --signal HUP "$PROM_CONTAINER" >/dev/null
+
 log "Recreate nur des Grafana-Service für Provisioning-Mounts..."
 (
   cd "$COMPOSE_WORKDIR"
@@ -395,6 +402,35 @@ sleep 3
 
 log "Prüfe Prometheus API..."
 docker exec "$PROM_CONTAINER" promtool query instant http://127.0.0.1:9090 'up' >/dev/null
+
+if python3 - "$HOST_TARGETS/netbird-clients.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+raise SystemExit(0 if any(item.get("targets") for item in data if isinstance(item, dict)) else 1)
+PY
+then
+  log "Prüfe geladenen netbird-client-detail Job..."
+  detail_query=""
+  for attempt in {1..20}; do
+    detail_query="$(docker exec "$PROM_CONTAINER" \
+      promtool query instant \
+      http://127.0.0.1:9090 \
+      'up{job="netbird-client-detail"}' 2>&1 || true)"
+
+    if grep -Eq '=>[[:space:]]+[01]([[:space:]]|@|$)' <<<"$detail_query"; then
+      log "netbird-client-detail Job ist geladen."
+      break
+    fi
+    sleep 1
+  done
+
+  if ! grep -Eq '=>[[:space:]]+[01]([[:space:]]|@|$)' <<<"$detail_query"; then
+    echo "$detail_query" >&2
+    die "Prometheus hat den netbird-client-detail Job nach dem Reload nicht geladen."
+  fi
+fi
 
 log "Warte auf ersten erfolgreichen NetBird-Scrape..."
 target_query=""

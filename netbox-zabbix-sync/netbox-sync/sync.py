@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Conservative Zabbix -> NetBox host importer. Only standard-library dependencies."""
 import json
+import http.client
+import socket
 import logging
 import os
 import ssl
@@ -13,6 +15,7 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(
 LOG = logging.getLogger("netbox-zabbix-sync")
 ZABBIX_URL = os.environ["ZABBIX_URL"].rstrip("/")
 ZABBIX_TOKEN = os.environ["ZABBIX_TOKEN"]
+ZABBIX_CONNECT_IP = os.getenv("ZABBIX_CONNECT_IP", "").strip()
 NETBOX_URL = os.getenv("NETBOX_URL", "http://127.0.0.1:8080").rstrip("/")
 NETBOX_TOKEN = os.environ["NETBOX_TOKEN"]
 SITE_SLUG = os.getenv("NETBOX_SITE_SLUG", "zabbix-import")
@@ -38,15 +41,54 @@ def call(url, payload=None, token=None, auth="Bearer"):
         detail = exc.read(400).decode("utf-8", "replace")
         raise RuntimeError(f"HTTP {exc.code} {url}: {detail}") from exc
 
+def zabbix_request(payload):
+    """Connect over the NetBird proxy peer, retain HTTPS Host/SNI and TLS verification."""
+    parsed = urllib.parse.urlsplit(ZABBIX_URL)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("ZABBIX_URL must be an HTTPS URL")
+    hostname = parsed.hostname
+    port = parsed.port or 443
+    proxy_ip = ZABBIX_CONNECT_IP
+    if not proxy_ip:
+        raise ValueError("Set ZABBIX_CONNECT_IP to the NetBird reverse-proxy peer IP")
+    # Guard against accidentally using a management/LAN address.
+    socket.inet_pton(socket.AF_INET, proxy_ip)
+
+    class PeerHTTPS(http.client.HTTPSConnection):
+        def connect(self):
+            raw = socket.create_connection((proxy_ip, port), timeout=self.timeout)
+            try:
+                self.sock = self._context.wrap_socket(raw, server_hostname=hostname)
+            except BaseException:
+                raw.close()
+                raise
+
+    context = ssl.create_default_context() if VERIFY_TLS else ssl._create_unverified_context()
+    conn = PeerHTTPS(hostname, port=port, timeout=25, context=context)
+    endpoint = (parsed.path.rstrip("/") + "/api_jsonrpc.php") or "/api_jsonrpc.php"
+    try:
+        conn.request(
+            "POST", endpoint, body=json.dumps(payload),
+            headers={"Host": hostname, "Content-Type": "application/json-rpc",
+                     "Authorization": f"Bearer {ZABBIX_TOKEN}", "Accept": "application/json"}
+        )
+        response = conn.getresponse()
+        data = response.read()
+        if response.status != 200:
+            raise RuntimeError(f"Zabbix proxy HTTP {response.status}: {data[:300]!r}")
+        return json.loads(data)
+    finally:
+        conn.close()
+
 def zabbix_hosts():
-    response = call(f"{ZABBIX_URL}/api_jsonrpc.php", {
+    response = zabbix_request({
         "jsonrpc": "2.0", "method": "host.get",
         "params": {
             "output": ["hostid", "host", "name", "status", "description"],
             "selectInterfaces": ["ip", "dns", "useip", "main"],
             "selectHostGroups": ["name"],
         }, "id": 1,
-    }, ZABBIX_TOKEN, "Bearer")
+    })
     if "error" in response:
         raise RuntimeError(f"Zabbix API error: {response['error']}")
     return response["result"]

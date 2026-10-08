@@ -16,14 +16,12 @@ NETBIRD_METRICS_TARGET="${NETBIRD_METRICS_TARGET:-}"
 
 die() { echo "[FEHLER] $*" >&2; exit 1; }
 log() { echo "[+] $*"; }
-warn() { echo "[!] $*" >&2; }
 
 [[ $EUID -eq 0 ]] || die "Bitte als root ausführen."
 
 for cmd in docker curl python3; do
   command -v "$cmd" >/dev/null 2>&1 || die "$cmd fehlt."
 done
-
 docker compose version >/dev/null 2>&1 || die "Docker Compose Plugin fehlt."
 
 if [[ -z "$GRAFANA_CONTAINER" ]]; then
@@ -35,7 +33,7 @@ if [[ -z "$GRAFANA_CONTAINER" ]]; then
     0) die "Kein laufender Grafana-Container gefunden." ;;
     1) GRAFANA_CONTAINER="${candidates[0]}" ;;
     *)
-      printf 'Mehrere Grafana-Container gefunden:\n' >&2
+      echo "Mehrere Grafana-Container gefunden:" >&2
       printf '  %s\n' "${candidates[@]}" >&2
       die "GRAFANA_CONTAINER=<Name> setzen und erneut ausführen."
       ;;
@@ -76,9 +74,21 @@ OVERRIDE_FILE="$COMPOSE_WORKDIR/compose.openmain-netbird-prometheus.yaml"
 
 install -d -m 0755 "$INSTALL_DIR" "$HOST_BASE" "$HOST_TARGETS" "$HOST_DASHBOARDS"
 
+log "Installiere Target-Helper..."
+curl -fsSL "$BASE_URL/add-client-target.py" -o "$INSTALL_DIR/add-client-target.py"
+chmod 0755 "$INSTALL_DIR/add-client-target.py"
+
+cat > /usr/local/sbin/openmain-netbird-add-client <<EOF
+#!/usr/bin/env bash
+exec "$INSTALL_DIR/add-client-target.py" --file "$HOST_TARGETS/netbird-clients.json" "\$@"
+EOF
+chmod 0755 /usr/local/sbin/openmain-netbird-add-client
+
 log "Lade offizielle NetBird-Grafana-Dashboards (Ref: $NETBIRD_REF)..."
 for dashboard in management signal relay client; do
-  curl -fsSL     "https://raw.githubusercontent.com/netbirdio/netbird/$NETBIRD_REF/infrastructure_files/observability/grafana/dashboards/$dashboard.json"     -o "$HOST_DASHBOARDS/$dashboard.json"
+  curl -fsSL \
+    "https://raw.githubusercontent.com/netbirdio/netbird/$NETBIRD_REF/infrastructure_files/observability/grafana/dashboards/$dashboard.json" \
+    -o "$HOST_DASHBOARDS/$dashboard.json"
 done
 
 python3 - "$HOST_DASHBOARDS" <<'PY'
@@ -92,10 +102,15 @@ found = {p.name for p in root.glob("*.json")}
 if found != expected:
     raise SystemExit(f"Dashboard-Satz unvollständig: {sorted(found)}")
 
+uids = set()
 for path in root.glob("*.json"):
     data = json.loads(path.read_text(encoding="utf-8"))
     if not data.get("title"):
         raise SystemExit(f"Dashboard ohne Titel: {path}")
+    uid = data.get("uid")
+    if not uid or uid in uids:
+        raise SystemExit(f"Fehlende/doppelte Dashboard-UID: {path}")
+    uids.add(uid)
     data["id"] = None
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
@@ -116,8 +131,8 @@ scrape_configs:
           environment: "$ENVIRONMENT_LABEL"
           host: "$NETBIRD_HOST_LABEL"
     metric_relabel_configs:
-      # Der NetBird Combined Server versieht Signal-App-Metriken mit "signal_".
-      # Das offizielle Signal-Dashboard erwartet die Standalone-Namen.
+      # Combined NetBird prefixes Signal application metrics with "signal_".
+      # The upstream Signal dashboard expects standalone metric names.
       - source_labels: [__name__]
         regex: 'signal_(.*)'
         target_label: __name__
@@ -133,6 +148,7 @@ EOF
 if [[ ! -f "$HOST_TARGETS/netbird-clients.json" ]]; then
   printf '[]\n' > "$HOST_TARGETS/netbird-clients.json"
 fi
+python3 -m json.tool "$HOST_TARGETS/netbird-clients.json" >/dev/null
 
 cat > "$HOST_DATASOURCE" <<EOF
 apiVersion: 1
@@ -196,6 +212,9 @@ services:
 volumes:
   openmain_netbird_prometheus_data:
 EOF
+chmod 0644 "$HOST_CONFIG" "$HOST_DATASOURCE" "$HOST_PROVIDER" "$OVERRIDE_FILE"
+chmod 0755 "$HOST_TARGETS"
+chmod 0644 "$HOST_TARGETS/netbird-clients.json"
 
 IFS=',' read -r -a compose_files <<< "$COMPOSE_FILES_RAW"
 compose_cmd=(docker compose)
@@ -212,7 +231,7 @@ for file in "${compose_files[@]}"; do
 done
 compose_cmd+=(-f "$OVERRIDE_FILE")
 
-log "Prüfe Compose-Konfiguration..."
+log "Prüfe zusammengeführte Compose-Konfiguration..."
 (
   cd "$COMPOSE_WORKDIR"
   "${compose_cmd[@]}" config >/dev/null
@@ -238,51 +257,14 @@ sleep 3
 [[ "$(docker inspect "$PROM_CONTAINER" --format '{{.State.Status}}' 2>/dev/null || true)" == "running" ]] || die "Prometheus läuft nicht."
 [[ "$(docker inspect "$GRAFANA_CONTAINER" --format '{{.State.Status}}' 2>/dev/null || true)" == "running" ]] || die "Grafana läuft nicht."
 
-cat > "$INSTALL_DIR/add-client-target.py" <<PY
-#!/usr/bin/env python3
-import json
-import sys
-from pathlib import Path
-
-path = Path("$HOST_TARGETS/netbird-clients.json")
-if len(sys.argv) < 3:
-    raise SystemExit("Verwendung: add-client-target.py <NetBird-IP[:Port]> <Host> [Kunde]")
-
-target = sys.argv[1]
-if ":" not in target:
-    target += ":9191"
-host = sys.argv[2]
-customer = sys.argv[3] if len(sys.argv) > 3 else ""
-
-data = json.loads(path.read_text(encoding="utf-8"))
-labels = {"host": host}
-if customer:
-    labels["customer"] = customer
-entry = {"targets": [target], "labels": labels}
-
-for idx, current in enumerate(data):
-    if target in current.get("targets", []):
-        data[idx] = entry
-        break
-else:
-    data.append(entry)
-
-data.sort(key=lambda x: (x.get("labels", {}).get("customer", ""), x.get("labels", {}).get("host", "")))
-path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-print(f"Target gespeichert: {target} -> {host}")
-PY
-chmod 0755 "$INSTALL_DIR/add-client-target.py"
-
-cat > /usr/local/sbin/openmain-netbird-add-client <<EOF
-#!/usr/bin/env bash
-exec "$INSTALL_DIR/add-client-target.py" "\$@"
-EOF
-chmod 0755 /usr/local/sbin/openmain-netbird-add-client
+log "Prüfe Prometheus API..."
+docker exec "$PROM_CONTAINER" promtool query instant http://127.0.0.1:9090 'up' >/dev/null
 
 echo
 echo "============================================================"
 echo " OpenMain NetBird Prometheus"
 echo "============================================================"
+printf '%-24s %s\n' "Compose-Projekt:" "$COMPOSE_PROJECT"
 printf '%-24s %s\n' "Grafana:" "$GRAFANA_CONTAINER"
 printf '%-24s %s\n' "Prometheus:" "$PROM_CONTAINER"
 printf '%-24s %s\n' "NetBird Server:" "$NETBIRD_METRICS_TARGET"
@@ -294,7 +276,7 @@ echo
 echo "Dashboards:"
 printf '  %s\n' "Netbird / Management" "Netbird / Signal" "Netbird / Relay" "Netbird / Client"
 echo
-echo "Prometheus-Targetstatus:"
+echo "NetBird-Server Target:"
 docker exec "$PROM_CONTAINER" promtool query instant http://127.0.0.1:9090 'up{job="netbird-server"}' || true
 echo
 echo "Client hinzufügen:"

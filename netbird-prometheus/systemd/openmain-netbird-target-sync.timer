@@ -1,0 +1,12 @@
+[Unit]
+Description=Synchronize NetBird client metrics targets every minute
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=60s
+AccuracySec=10s
+Persistent=true
+Unit=openmain-netbird-target-sync.service
+
+[Install]
+WantedBy=timers.target

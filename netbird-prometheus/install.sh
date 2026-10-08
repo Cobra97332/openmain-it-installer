@@ -261,6 +261,31 @@ sleep 3
 log "Prüfe Prometheus API..."
 docker exec "$PROM_CONTAINER" promtool query instant http://127.0.0.1:9090 'up' >/dev/null
 
+log "Warte auf ersten erfolgreichen NetBird-Scrape..."
+target_query=""
+for attempt in {1..45}; do
+  target_query="$(docker exec "$PROM_CONTAINER" \
+    promtool query instant \
+    http://127.0.0.1:9090 \
+    'up{job="netbird-server"}' 2>&1 || true)"
+
+  if grep -Eq '=>[[:space:]]+1([[:space:]]|@|$)' <<<"$target_query"; then
+    log "NetBird-Server Target ist UP."
+    break
+  fi
+
+  if (( attempt == 45 )); then
+    echo >&2
+    warn "NetBird-Server Target wurde innerhalb von 90 Sekunden nicht UP."
+    [[ -n "$target_query" ]] && echo "$target_query" >&2
+    warn "Letzte Prometheus-Logs:"
+    docker logs --tail=100 "$PROM_CONTAINER" >&2 || true
+    die "Prometheus kann $NETBIRD_METRICS_TARGET nicht erfolgreich scrapen."
+  fi
+
+  sleep 2
+done
+
 echo
 echo "============================================================"
 echo " OpenMain NetBird Prometheus"
@@ -278,7 +303,7 @@ echo "Dashboards:"
 printf '  %s\n' "Netbird / Management" "Netbird / Signal" "Netbird / Relay" "Netbird / Client"
 echo
 echo "NetBird-Server Target:"
-docker exec "$PROM_CONTAINER" promtool query instant http://127.0.0.1:9090 'up{job="netbird-server"}' || true
+printf '%s\n' "$target_query"
 echo
 echo "Client hinzufügen:"
 echo "  openmain-netbird-add-client <NETBIRD-IP:9191> <HOSTNAME> [KUNDE]"

@@ -25,6 +25,7 @@ jobs:
           bash -n netbird-prometheus/install.sh
           bash -n netbird-prometheus/enable-server-metrics.sh
           bash -n netbird-prometheus/enable-client-metrics.sh
+          bash -n netbird-prometheus/inspect-metrics.sh
 
       - name: Python syntax
         run: |
@@ -76,6 +77,50 @@ jobs:
               assert data.get("uid"), path
               assert "$__rate_interval" not in text, path
               assert "$interval" not in text, path
+
+              if path.name == "management.json":
+                  for stale in (
+                      "management_grpc_sync_request_counter_ratio_total",
+                      "management_grpc_login_request_counter_ratio_total",
+                      "management_grpc_key_request_counter_ratio_total",
+                      "management_grpc_sync_request_duration_ms_bucket",
+                      "management_grpc_login_request_duration_ms_bucket",
+                      "management_http_request_duration_ms_bucket",
+                      "management_updatechannel_create_duration_micro_bucket",
+                      "management_account_network_map_object_count_bucket",
+                  ):
+                      assert stale not in text, stale
+
+                  for expected_metric in (
+                      "management_grpc_sync_request_counter_total",
+                      "management_grpc_login_request_counter_total",
+                      "management_grpc_key_request_counter_total",
+                      "management_grpc_sync_request_duration_ms_milliseconds_bucket",
+                      "management_grpc_login_request_duration_ms_milliseconds_bucket",
+                      "management_http_request_duration_ms_milliseconds_bucket",
+                      "management_updatechannel_create_duration_micro_microseconds_bucket",
+                      "management_account_network_map_object_count_objects_bucket",
+                  ):
+                      assert expected_metric in text, expected_metric
+
+                  connected = []
+                  def walk(value):
+                      if isinstance(value, list):
+                          for item in value:
+                              walk(item)
+                      elif isinstance(value, dict):
+                          if value.get("title") == "Connected peers":
+                              connected.append(value)
+                          for item in value.values():
+                              walk(item)
+                  walk(data)
+                  assert len(connected) == 1, len(connected)
+                  panel = connected[0]
+                  defaults = panel["fieldConfig"]["defaults"]
+                  assert defaults["unit"] == "none"
+                  assert defaults["decimals"] == 0
+                  assert panel["options"]["showPercentChange"] is False
+
               variables = data.get("templating", {}).get("list", [])
               assert any(v.get("type") == "datasource" and v.get("query") == "prometheus" for v in variables), path
 

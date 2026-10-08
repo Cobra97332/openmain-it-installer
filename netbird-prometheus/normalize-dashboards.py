@@ -129,6 +129,124 @@ for path in sorted(root.glob("*.json")):
                 }
                 value.setdefault("options", {})["showPercentChange"] = False
 
+            if value.get("title") == "Update Channel operations":
+                # Grafana 13 rejects the upstream barchart frame shape
+                # ("Bar charts require a string or time field"). A time-series
+                # panel with bar rendering keeps the same intent and accepts
+                # Prometheus range vectors natively.
+                value["type"] = "timeseries"
+                defaults = value.setdefault("fieldConfig", {}).setdefault("defaults", {})
+                custom = defaults.setdefault("custom", {})
+                custom["drawStyle"] = "bars"
+                custom["barAlignment"] = 0
+                custom["fillOpacity"] = 70
+                custom["lineWidth"] = 0
+                custom["showPoints"] = "never"
+                value["options"] = {
+                    "legend": {
+                        "calcs": ["lastNotNull", "min", "mean", "max"],
+                        "displayMode": "table",
+                        "placement": "bottom",
+                        "showLegend": True,
+                    },
+                    "tooltip": {
+                        "hideZeros": False,
+                        "mode": "multi",
+                        "sort": "desc",
+                    },
+                }
+
+            if value.get("title") == "Percentage of Recreated channels":
+                # Avoid Grafana server-side expression label joins. The
+                # 'closed=true' label means an existing channel was closed
+                # before a new channel was created, i.e. a recreation.
+                selector = (
+                    'cluster=~"$cluster",environment=~"$environment",'
+                    'job=~"$job",host=~"$host"'
+                )
+                metric = (
+                    "management_updatechannel_create_duration_"
+                    "micro_microseconds_count"
+                )
+                value["targets"] = [{
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${datasource}",
+                    },
+                    "editorMode": "code",
+                    "expr": (
+                        f'100 * sum(increase({metric}{{{selector},closed="true"}}'
+                        f'[{args.rate_interval}])) / '
+                        f'clamp_min(sum(increase({metric}{{{selector}}}'
+                        f'[{args.rate_interval}])), 1)'
+                    ),
+                    "instant": False,
+                    "legendFormat": "Recreated",
+                    "range": True,
+                    "refId": "A",
+                }]
+                defaults = value.setdefault("fieldConfig", {}).setdefault("defaults", {})
+                defaults["unit"] = "percent"
+                defaults["min"] = 0
+                defaults["max"] = 100
+                value["fieldConfig"]["overrides"] = []
+
+            if value.get("title") == "Update Channel heat map":
+                # Sparse installations often have no new queue observations
+                # inside a short rate window, which makes the upstream heatmap
+                # look broken. Show a useful 1h activity stat instead.
+                value["title"] = "Update Channel queue observations (1h)"
+                value["description"] = (
+                    "Number of update-channel queue observations in the last hour. "
+                    "0 means there was no new queue activity."
+                )
+                value["type"] = "stat"
+                value["targets"] = [{
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${datasource}",
+                    },
+                    "editorMode": "code",
+                    "expr": (
+                        'sum(increase(management_grpc_updatechannel_queue_'
+                        'length_count{cluster=~"$cluster",'
+                        'environment=~"$environment",job=~"$job",'
+                        'host=~"$host"}[1h])) or vector(0)'
+                    ),
+                    "instant": False,
+                    "legendFormat": "Observations",
+                    "range": True,
+                    "refId": "A",
+                }]
+                value["fieldConfig"] = {
+                    "defaults": {
+                        "decimals": 0,
+                        "unit": "short",
+                        "color": {"mode": "thresholds"},
+                        "thresholds": {
+                            "mode": "absolute",
+                            "steps": [
+                                {"color": "green", "value": None},
+                            ],
+                        },
+                    },
+                    "overrides": [],
+                }
+                value["options"] = {
+                    "colorMode": "value",
+                    "graphMode": "area",
+                    "justifyMode": "auto",
+                    "orientation": "auto",
+                    "reduceOptions": {
+                        "calcs": ["lastNotNull"],
+                        "fields": "",
+                        "values": False,
+                    },
+                    "showPercentChange": False,
+                    "textMode": "auto",
+                    "wideLayout": True,
+                }
+
             for item in value.values():
                 tune_panels(item)
 

@@ -47,6 +47,7 @@ jobs:
           python3 -m py_compile netbird-prometheus/generate-relay-connections-dashboard.py
           python3 -m py_compile netbird-prometheus/netbird-status-exporter.py
           python3 -m py_compile netbird-prometheus/sync-client-targets.py
+          python3 -m py_compile netbird-prometheus/mark-customer-group.py
 
       - name: PowerShell syntax
         shell: pwsh
@@ -101,6 +102,9 @@ jobs:
           grep -F -- '--local-metrics-address "127.0.0.1:$METRICS_PORT"' router-install.sh
           grep -F 'METRICS_GROUP="${NB_METRICS_GROUP:-NetBird-Metrics}"' router-install.sh
           grep -F 'METRICS_DETAIL_PORT="${NB_METRICS_DETAIL_PORT:-9192}"' router-install.sh
+          grep -F 'CUSTOMER_MARKER_PREFIX="${NB_CUSTOMER_MARKER_PREFIX:-Kunde:}"' router-install.sh
+          grep -F 'CUSTOMER_MARKER_GROUP_ID=$(ensure_group "$marker_group")' router-install.sh
+          grep -F 'ensure_peer_in_group "$CUSTOMER_MARKER_GROUP_ID"' router-install.sh
           grep -F 'ensure_setup_key_metrics_group' router-install.sh
           grep -F 'ensure_metrics_policy' router-install.sh
           grep -F 'openmain-netbird-client-metrics' router-install.sh
@@ -130,6 +134,7 @@ jobs:
                       {"name": "All"},
                       {"name": "Kunden"},
                       {"name": "Bauer"},
+                      {"name": "Kunde:Bauer"},
                       {"name": "NetBird-Metrics"},
                   ],
               },
@@ -165,7 +170,7 @@ jobs:
                   "groups": [
                       {"name": "All"},
                       {"name": "Kunden"},
-                      {"name": "Kunde: Meier"},
+                      {"name": "Kunde:Meier"},
                       {"name": "NetBird-Metrics"},
                   ],
               },
@@ -242,7 +247,7 @@ jobs:
               for item in merged
           )
 
-          # Customer ownership must come from NetBird groups, never hostnames.
+          # Customer ownership must come only from explicit customer marker groups.
           assert mod.infer_customer(
               {
                   "hostname": "nb-Bauer-2",
@@ -250,6 +255,7 @@ jobs:
                       {"name": "NetBird-Metrics"},
                       {"name": "Kunden"},
                       {"name": "Bauer"},
+                      {"name": "Kunde:Bauer"},
                   ],
               },
               "NetBird-Metrics",
@@ -298,6 +304,39 @@ jobs:
               "intern",
               mod.DEFAULT_IGNORE_GROUPS,
           ) == "Unzugeordnet"
+
+          assert mod.infer_customer(
+              {
+                  "hostname": "weird-name",
+                  "groups": [
+                      {"name": "NetBird-Metrics"},
+                      {"name": "Kunden"},
+                      {"name": "Monitoring-NetbirdClient"},
+                      {"name": "Zabbix-Kunden-Proxies"},
+                      {"name": "Bauer"},
+                  ],
+              },
+              "NetBird-Metrics",
+              "Monitoring",
+              "intern",
+              mod.DEFAULT_IGNORE_GROUPS,
+          ) == "Unzugeordnet"
+
+          assert mod.infer_customer(
+              {
+                  "hostname": "docker",
+                  "groups": [
+                      {"name": "NetBird-Metrics"},
+                      {"name": "Monitoring-NetbirdClient"},
+                      {"name": "Server"},
+                      {"name": "Daheim"},
+                  ],
+              },
+              "NetBird-Metrics",
+              "Monitoring",
+              "intern",
+              mod.DEFAULT_IGNORE_GROUPS,
+          ) == "intern"
 
           print("NetBird target rendering OK")
           PY
@@ -361,6 +400,13 @@ jobs:
           grep -F 'docker kill --signal HUP "$PROM_CONTAINER"' netbird-prometheus/install.sh
           grep -F 'netbird-client-detail Job ist geladen.' netbird-prometheus/install.sh
           grep -F 'up{job="netbird-client-detail"}' netbird-prometheus/install.sh
+      - name: Validate customer marker helper
+        run: |
+          grep -F 'Kunde:' netbird-prometheus/mark-customer-group.py
+          grep -F 'Bestehende Gruppen/Policies wurden nicht verändert.' netbird-prometheus/mark-customer-group.py
+          grep -F 'openmain-netbird-mark-customer' netbird-prometheus/install.sh
+          grep -F 'NETBIRD_CUSTOMER_MARKER_PREFIX' netbird-prometheus/install.sh
+
       - name: Validate auto-discovery systemd units
         run: |
           grep -F 'EnvironmentFile=/etc/openmain-netbird-prometheus.env' netbird-prometheus/systemd/openmain-netbird-target-sync.service

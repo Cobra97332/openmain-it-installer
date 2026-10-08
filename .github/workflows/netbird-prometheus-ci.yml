@@ -234,6 +234,39 @@ jobs:
           ) == "Bauer"
           assert mod.infer_customer(
               {
+                  "hostname": "nb-Bauer-2",
+                  "groups": [{"name": "NetBird-Metrics"}, {"name": "Kunden"}],
+              },
+              "NetBird-Metrics",
+              "Monitoring",
+              "intern",
+              mod.DEFAULT_IGNORE_GROUPS,
+              known_customer_groups=[],
+          ) == "Bauer"
+          assert mod.infer_customer(
+              {
+                  "hostname": "nb-Muster-GmbH-12",
+                  "groups": [{"name": "NetBird-Metrics"}, {"name": "Kunden"}],
+              },
+              "NetBird-Metrics",
+              "Monitoring",
+              "intern",
+              mod.DEFAULT_IGNORE_GROUPS,
+              known_customer_groups=[],
+          ) == "Muster-GmbH"
+          assert mod.infer_customer(
+              {
+                  "hostname": "docker",
+                  "groups": [{"name": "NetBird-Metrics"}],
+              },
+              "NetBird-Metrics",
+              "Monitoring",
+              "intern",
+              mod.DEFAULT_IGNORE_GROUPS,
+              known_customer_groups=[],
+          ) == "intern"
+          assert mod.infer_customer(
+              {
                   "hostname": "nb-Bauer-Beispielkunde-2",
                   "groups": [{"name": "NetBird-Metrics"}],
               },

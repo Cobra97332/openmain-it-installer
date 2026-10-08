@@ -31,6 +31,7 @@ jobs:
           bash -n netbird-prometheus/install.sh
           bash -n netbird-prometheus/enable-server-metrics.sh
           bash -n netbird-prometheus/enable-client-metrics.sh
+          bash -n netbird-prometheus/enable-client-detail-metrics.sh
           bash -n netbird-prometheus/inspect-metrics.sh
           bash -n router-install.sh
           bash -n firstboot-router.sh
@@ -84,9 +85,10 @@ jobs:
           grep -F 'systemd-socket-proxyd' netbird-prometheus/enable-client-metrics.sh
           grep -F 'FreeBind=yes' netbird-prometheus/enable-client-metrics.sh
           grep -F 'ListenStream=$NETBIRD_IP:$METRICS_PORT' netbird-prometheus/enable-client-metrics.sh
-          grep -F 'ListenStream=$NETBIRD_IP:$DETAIL_PORT' netbird-prometheus/enable-client-metrics.sh
-          grep -F 'netbird-status-exporter.py' netbird-prometheus/enable-client-metrics.sh
-          grep -F '127.0.0.1:$DETAIL_PORT' netbird-prometheus/enable-client-metrics.sh
+          grep -F 'enable-client-detail-metrics.sh' netbird-prometheus/enable-client-metrics.sh
+          grep -F 'ListenStream=$NETBIRD_IP:$DETAIL_PORT' netbird-prometheus/enable-client-detail-metrics.sh
+          grep -F 'netbird-status-exporter.py' netbird-prometheus/enable-client-detail-metrics.sh
+          grep -F '127.0.0.1' netbird-prometheus/enable-client-detail-metrics.sh
           ! grep -F -- '--local-metrics-address "$NETBIRD_IP:$METRICS_PORT"' netbird-prometheus/enable-client-metrics.sh
 
       - name: Validate automatic rollout integration

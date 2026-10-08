@@ -168,14 +168,19 @@ for dashboard in management signal relay client; do
     -o "$HOST_DASHBOARDS/$dashboard.json"
 done
 
-log "Installiere Dashboard-Normalizer..."
+log "Installiere Dashboard-Tools..."
 curl -fsSL "$BASE_URL/normalize-dashboards.py" -o "$INSTALL_DIR/normalize-dashboards.py"
-chmod 0755 "$INSTALL_DIR/normalize-dashboards.py"
+curl -fsSL "$BASE_URL/generate-overview-dashboard.py" -o "$INSTALL_DIR/generate-overview-dashboard.py"
+chmod 0755 "$INSTALL_DIR/normalize-dashboards.py" "$INSTALL_DIR/generate-overview-dashboard.py"
 
 log "Passe NetBird-Dashboards an Grafana 13 an (Rate-Intervall: $NETBIRD_RATE_INTERVAL)..."
 python3 "$INSTALL_DIR/normalize-dashboards.py" \
   "$HOST_DASHBOARDS" \
   --rate-interval "$NETBIRD_RATE_INTERVAL"
+
+log "Erzeuge OpenMain NetBird Statistics Overview..."
+python3 "$INSTALL_DIR/generate-overview-dashboard.py" \
+  "$HOST_DASHBOARDS/overview.json"
 
 
 cat > "$HOST_CONFIG" <<EOF
@@ -409,7 +414,7 @@ if [[ "$NETBIRD_AUTO_DISCOVERY" == 1 ]]; then
 fi
 echo
 echo "Dashboards:"
-printf '  %s\n' "Netbird / Management" "Netbird / Signal" "Netbird / Relay" "Netbird / Client"
+printf '  %s\n' "NetBird / Overview" "Netbird / Management" "Netbird / Signal" "Netbird / Relay" "Netbird / Client"
 echo
 echo "NetBird-Server Target:"
 printf '%s\n' "$target_query"

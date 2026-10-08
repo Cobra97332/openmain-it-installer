@@ -1,0 +1,18 @@
+[Unit]
+Description=OpenMain NetBird Prometheus client target sync
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/openmain-netbird-prometheus.env
+ExecStart=/usr/local/sbin/openmain-netbird-sync-targets
+User=root
+Group=root
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

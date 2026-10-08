@@ -4,10 +4,16 @@ on:
   push:
     paths:
       - 'netbird-prometheus/**'
+      - 'router-install.sh'
+      - 'firstboot-router.sh'
+      - 'netbird-router/**'
       - '.github/workflows/netbird-prometheus-ci.yml'
   pull_request:
     paths:
       - 'netbird-prometheus/**'
+      - 'router-install.sh'
+      - 'firstboot-router.sh'
+      - 'netbird-router/**'
       - '.github/workflows/netbird-prometheus-ci.yml'
 
 permissions:
@@ -26,11 +32,17 @@ jobs:
           bash -n netbird-prometheus/enable-server-metrics.sh
           bash -n netbird-prometheus/enable-client-metrics.sh
           bash -n netbird-prometheus/inspect-metrics.sh
+          bash -n router-install.sh
+          bash -n firstboot-router.sh
+          bash -n netbird-router/pve/install.sh
+          bash -n netbird-router/pve/install-no-zabbix.sh
+          bash -n netbird-router/raspberry-pi/install-router.sh
 
       - name: Python syntax
         run: |
           python3 -m py_compile netbird-prometheus/add-client-target.py
           python3 -m py_compile netbird-prometheus/normalize-dashboards.py
+          python3 -m py_compile netbird-prometheus/sync-client-targets.py
 
       - name: PowerShell syntax
         shell: pwsh
@@ -64,6 +76,111 @@ jobs:
           grep -F 'ListenStream=$NETBIRD_IP:$METRICS_PORT' netbird-prometheus/enable-client-metrics.sh
           ! grep -F -- '--local-metrics-address "$NETBIRD_IP:$METRICS_PORT"'             netbird-prometheus/enable-client-metrics.sh
 
+      - name: Validate automatic rollout integration
+        run: |
+          grep -F -- '--enable-local-metrics' router-install.sh
+          grep -F -- '--local-metrics-address "127.0.0.1:$METRICS_PORT"' router-install.sh
+          grep -F 'METRICS_GROUP="${NB_METRICS_GROUP:-NetBird-Metrics}"' router-install.sh
+          grep -F 'ensure_setup_key_metrics_group' router-install.sh
+          grep -F 'ensure_metrics_policy' router-install.sh
+          grep -F 'openmain-netbird-client-metrics' router-install.sh
+          grep -F 'NB_METRICS_ENABLED' firstboot-router.sh
+          grep -F 'NB_METRICS_ENABLED' netbird-router/pve/install.sh
+          grep -F 'NB_METRICS_ENABLED' netbird-router/pve/install-no-zabbix.sh
+          grep -F 'NB_METRICS_ENABLED' netbird-router/raspberry-pi/install-router.sh
+
+      - name: Test NetBird API target rendering
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+
+          path = Path("netbird-prometheus/sync-client-targets.py")
+          spec = importlib.util.spec_from_file_location("sync_client_targets", path)
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          peers = [
+              {
+                  "id": "peer-a",
+                  "ip": "100.64.10.20",
+                  "hostname": "pbsterramaster",
+                  "groups": [
+                      {"name": "All"},
+                      {"name": "Kunden"},
+                      {"name": "Bauer"},
+                      {"name": "NetBird-Metrics"},
+                  ],
+              },
+              {
+                  "id": "peer-b",
+                  "ip": "100.64.10.21",
+                  "hostname": "pc-intern",
+                  "groups": [
+                      {"name": "All"},
+                      {"name": "NetBird-Metrics"},
+                  ],
+              },
+              {
+                  "id": "peer-c",
+                  "ip": "100.64.10.22",
+                  "hostname": "not-monitored",
+                  "groups": [{"name": "All"}],
+              },
+          ]
+
+          targets = mod.make_auto_targets(
+              peers,
+              "NetBird-Metrics",
+              "Monitoring",
+              9191,
+              "intern",
+              mod.DEFAULT_IGNORE_GROUPS,
+          )
+
+          assert targets == [
+              {
+                  "targets": ["100.64.10.20:9191"],
+                  "labels": {
+                      "host": "pbsterramaster",
+                      "customer": "Bauer",
+                      "managed_by": "netbird-api",
+                      "peer_id": "peer-a",
+                  },
+              },
+              {
+                  "targets": ["100.64.10.21:9191"],
+                  "labels": {
+                      "host": "pc-intern",
+                      "customer": "intern",
+                      "managed_by": "netbird-api",
+                      "peer_id": "peer-b",
+                  },
+              },
+          ], targets
+
+          existing = [{
+              "targets": ["100.64.10.20:9191"],
+              "labels": {"host": "manual-pbs", "customer": "intern"},
+          }]
+          merged = mod.merge_targets(existing, targets)
+          assert len(merged) == 2, merged
+          assert not any(item["labels"].get("host") == "manual-pbs" for item in merged)
+          assert any(
+              item["labels"].get("host") == "pbsterramaster"
+              and item["labels"].get("managed_by") == "netbird-api"
+              for item in merged
+          )
+          assert any(item["labels"].get("host") == "pc-intern" for item in merged)
+          print("NetBird target rendering OK")
+          PY
+
+      - name: Validate auto-discovery systemd units
+        run: |
+          grep -F 'EnvironmentFile=/etc/openmain-netbird-prometheus.env' netbird-prometheus/systemd/openmain-netbird-target-sync.service
+          grep -F 'ExecStart=/usr/local/sbin/openmain-netbird-sync-targets' netbird-prometheus/systemd/openmain-netbird-target-sync.service
+          grep -F 'OnUnitActiveSec=60s' netbird-prometheus/systemd/openmain-netbird-target-sync.timer
+          grep -F 'openmain-netbird-target-sync.timer' netbird-prometheus/install.sh
       - name: Test client target helper
         run: |
           printf '[]\n' > /tmp/netbird-clients.json

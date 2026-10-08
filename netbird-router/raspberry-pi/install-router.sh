@@ -17,6 +17,11 @@ ZABBIX_API_ENDPOINT="${NB_ZABBIX_API_URL:-https://zabbix.openmain-it.de/api_json
 LAN_IF="${NB_LAN_INTERFACE:-}"
 HOSTNAME_LOCAL="${NB_HOSTNAME:-$(hostname -s)}"
 ZABBIX_ENABLED="${NB_ZABBIX_ENABLED:-1}"
+METRICS_ENABLED="${NB_METRICS_ENABLED:-1}"
+METRICS_PORT="${NB_METRICS_PORT:-9191}"
+METRICS_GROUP="${NB_METRICS_GROUP:-NetBird-Metrics}"
+MONITORING_GROUP="${NB_MONITORING_GROUP:-Monitoring}"
+PROMETHEUS_NETBIRD_IP="${NB_PROMETHEUS_NETBIRD_IP:-100.107.91.6}"
 SSH_PUBLIC_KEY="${NB_SSH_PUBLIC_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJc8VZvZ7o/8emKoGC7UXPiOMP8PSxch6P2rUGNio8Vi Stefan}"
 
 BASE_DIR="/etc/openmain-netbird-router"
@@ -50,6 +55,11 @@ Optionen:
   --zabbix-api-url URL
   --zabbix-server IP
   --lan-interface IFACE
+  --metrics-port PORT
+  --prometheus-netbird-ip IP
+  --metrics-group NAME
+  --monitoring-group NAME
+  --no-metrics
   --no-zabbix
 
 Oeffentliches Repository:
@@ -69,6 +79,11 @@ while [[ $# -gt 0 ]]; do
     --zabbix-api-url) ZABBIX_API_ENDPOINT="$2"; shift 2;;
     --zabbix-server) ZABBIX_SERVER="$2"; shift 2;;
     --lan-interface) LAN_IF="$2"; shift 2;;
+    --metrics-port) METRICS_PORT="$2"; shift 2;;
+    --prometheus-netbird-ip) PROMETHEUS_NETBIRD_IP="$2"; shift 2;;
+    --metrics-group) METRICS_GROUP="$2"; shift 2;;
+    --monitoring-group) MONITORING_GROUP="$2"; shift 2;;
+    --no-metrics) METRICS_ENABLED=0; shift;;
     --no-zabbix) ZABBIX_ENABLED=0; shift;;
     -h|--help) usage; exit 0;;
     *) die "Unbekannte Option: $1";;
@@ -77,6 +92,9 @@ done
 
 [[ $EUID -eq 0 ]] || die "Bitte als root ausfuehren."
 [[ "$ROLE" == "primary" || "$ROLE" == "backup" ]] || die "--role muss primary oder backup sein."
+[[ "$METRICS_ENABLED" == 0 || "$METRICS_ENABLED" == 1 ]] || die "NB_METRICS_ENABLED muss 0 oder 1 sein."
+[[ "$METRICS_PORT" =~ ^[0-9]+$ ]] || die "Ungueltiger Metrics-Port: $METRICS_PORT"
+(( METRICS_PORT >= 1 && METRICS_PORT <= 65535 )) || die "Ungueltiger Metrics-Port: $METRICS_PORT"
 
 MODEL="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || true)"
 [[ "$MODEL" == *"Raspberry Pi"* ]] || die "Kein Raspberry Pi erkannt: $MODEL"
@@ -200,6 +218,11 @@ write_var NB_ZABBIX_SERVER "$ZABBIX_SERVER" "$ENV_FILE"
 write_var NB_ZABBIX_API_URL "$ZABBIX_API_ENDPOINT" "$ENV_FILE"
 write_var NB_ZABBIX_API_TOKEN "$ZABBIX_API_TOKEN" "$ENV_FILE"
 write_var NB_ZABBIX_ENABLED "$ZABBIX_ENABLED" "$ENV_FILE"
+write_var NB_METRICS_ENABLED "$METRICS_ENABLED" "$ENV_FILE"
+write_var NB_METRICS_PORT "$METRICS_PORT" "$ENV_FILE"
+write_var NB_METRICS_GROUP "$METRICS_GROUP" "$ENV_FILE"
+write_var NB_MONITORING_GROUP "$MONITORING_GROUP" "$ENV_FILE"
+write_var NB_PROMETHEUS_NETBIRD_IP "$PROMETHEUS_NETBIRD_IP" "$ENV_FILE"
 write_var NB_HOSTNAME "$HOSTNAME_LOCAL" "$ENV_FILE"
 chmod 0600 "$ENV_FILE"
 
@@ -292,6 +315,7 @@ args=(
   --lan-interface "$NB_LAN_INTERFACE"
 )
 [[ "${NB_ZABBIX_ENABLED:-1}" == "1" ]] || args+=(--no-zabbix)
+[[ "${NB_METRICS_ENABLED:-1}" == "1" ]] || args+=(--no-metrics)
 
 "$INSTALLER" "${args[@]}"
 
@@ -339,6 +363,7 @@ echo "Hostname    : $HOSTNAME_LOCAL"
 echo "Bueronetz   : $OFFICE_LAN"
 echo "Gateway     : $OFFICE_GW"
 echo "Gateway-MAC : ${OFFICE_GW_MAC:-nicht ermittelt}"
+echo "Metrics     : $([[ "$METRICS_ENABLED" == 1 ]] && echo "aktiv / TCP $METRICS_PORT" || echo "deaktiviert")"
 echo
 echo "Naechster Schritt:"
 echo "  1. Pi sauber herunterfahren: shutdown -h now"

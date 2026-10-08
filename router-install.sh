@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="2.1"
+VERSION="3.0"
 MGMT_URL="${NB_MANAGEMENT_URL:-https://netbird.openmain-it.de}"
 API_TOKEN="${NB_API_TOKEN:-}"
 SETUP_KEY="${NB_SETUP_KEY:-}"
@@ -14,6 +14,13 @@ PRIMARY_METRIC="${NB_PRIMARY_METRIC:-100}"
 BACKUP_METRIC="${NB_BACKUP_METRIC:-200}"
 ZABBIX_ENABLED="${NB_ZABBIX_ENABLED:-1}"
 ZABBIX_SERVER="${NB_ZABBIX_SERVER:-100.107.91.6}"
+METRICS_ENABLED="${NB_METRICS_ENABLED:-1}"
+METRICS_PORT="${NB_METRICS_PORT:-9191}"
+METRICS_GROUP="${NB_METRICS_GROUP:-NetBird-Metrics}"
+MONITORING_GROUP="${NB_MONITORING_GROUP:-Monitoring}"
+PROMETHEUS_NETBIRD_IP="${NB_PROMETHEUS_NETBIRD_IP:-100.107.91.6}"
+METRICS_POLICY_NAME="${NB_METRICS_POLICY_NAME:-OpenMain Prometheus -> NetBird Client Metrics}"
+METRICS_HELPER_URL="${NB_METRICS_HELPER_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-prometheus/enable-client-metrics.sh}"
 LAN_IF_OVERRIDE="${NB_LAN_INTERFACE:-}"
 SSH_PUBLIC_KEY="${NB_SSH_PUBLIC_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJc8VZvZ7o/8emKoGC7UXPiOMP8PSxch6P2rUGNio8Vi Stefan}"
 GLOBAL_GROUP="Kunden"
@@ -36,6 +43,11 @@ NetBird Kundenrouter
   --api-token TOKEN
   --zabbix-server HOST
   --lan-interface IFACE
+  --metrics-port PORT
+  --prometheus-netbird-ip IP
+  --metrics-group NAME
+  --monitoring-group NAME
+  --no-metrics
   --no-zabbix
 EOF
 }
@@ -50,6 +62,11 @@ while [[ $# -gt 0 ]]; do
     --api-token) API_TOKEN="$2"; shift 2;;
     --zabbix-server) ZABBIX_SERVER="$2"; shift 2;;
     --lan-interface) LAN_IF_OVERRIDE="$2"; shift 2;;
+    --metrics-port) METRICS_PORT="$2"; shift 2;;
+    --prometheus-netbird-ip) PROMETHEUS_NETBIRD_IP="$2"; shift 2;;
+    --metrics-group) METRICS_GROUP="$2"; shift 2;;
+    --monitoring-group) MONITORING_GROUP="$2"; shift 2;;
+    --no-metrics) METRICS_ENABLED=0; shift;;
     --no-zabbix) ZABBIX_ENABLED=0; shift;;
     -h|--help) usage; exit 0;;
     *) die "Unbekannte Option: $1";;
@@ -58,6 +75,9 @@ done
 
 [[ $EUID -eq 0 ]] || die "Bitte als root ausführen."
 [[ "$ROLE" == primary || "$ROLE" == backup ]] || die "--role muss primary oder backup sein."
+[[ "$METRICS_ENABLED" == 0 || "$METRICS_ENABLED" == 1 ]] || die "NB_METRICS_ENABLED muss 0 oder 1 sein."
+[[ "$METRICS_PORT" =~ ^[0-9]+$ ]] || die "Ungültiger Metrics-Port: $METRICS_PORT"
+(( METRICS_PORT >= 1 && METRICS_PORT <= 65535 )) || die "Ungültiger Metrics-Port: $METRICS_PORT"
 [[ -n "$CUSTOMER" ]] || read -r -p "Firmenname: " CUSTOMER
 [[ -n "$SETUP_KEY" ]] || { read -r -s -p "NetBird Setup Key: " SETUP_KEY; echo; }
 [[ -n "$API_TOKEN" ]] || { read -r -s -p "NetBird API Token: " API_TOKEN; echo; }
@@ -162,12 +182,32 @@ wait_netbird(){
 }
 
 connect_netbird(){
+  local up_args
   systemctl enable --now netbird >/dev/null 2>&1 || true
   wait_netbird
   netbird service reconfigure --enable-json-socket >/dev/null 2>&1 || true
   systemctl restart netbird
   wait_netbird
-  netbird up --setup-key "$SETUP_KEY" --management-url "$MGMT_URL" --disable-firewall
+
+  # Bei einem Retry können bereits aktive Verbindungen sonst neue "netbird up"
+  # Flags ignorieren. Ein kontrolliertes down/up macht die Konfiguration
+  # deterministisch und aktiviert Metrics bereits beim ersten Enrollment.
+  netbird down >/dev/null 2>&1 || true
+
+  up_args=(
+    up
+    --setup-key "$SETUP_KEY"
+    --management-url "$MGMT_URL"
+    --disable-firewall
+  )
+  if [[ "$METRICS_ENABLED" == 1 ]]; then
+    up_args+=(
+      --enable-local-metrics
+      --local-metrics-address "127.0.0.1:$METRICS_PORT"
+    )
+  fi
+
+  netbird "${up_args[@]}"
   netbird service reconfigure --enable-json-socket >/dev/null 2>&1 || true
   systemctl restart netbird
   wait_netbird
@@ -219,6 +259,113 @@ setup_groups(){
   ensure_peer_in_group "$COMPANY_GROUP_ID"
   GROUP_IDS=$(jq -nc --arg a "$GLOBAL_GROUP_ID" --arg b "$COMPANY_GROUP_ID" '[$a,$b]')
   log "Gruppen: $GLOBAL_GROUP + $CUSTOMER"
+}
+
+ensure_metrics_policy(){
+  local policies policy_id payload
+
+  policies=$(api GET "/policies")
+  policy_id=$(jq -r --arg n "$METRICS_POLICY_NAME"     '(if type=="array" then . else [] end)[] | select(.name==$n) | .id // empty'     <<<"$policies" | head -n1)
+
+  payload=$(jq -nc     --arg name "$METRICS_POLICY_NAME"     --arg src "$MONITORING_GROUP_ID"     --arg dst "$METRICS_GROUP_ID"     --arg port "$METRICS_PORT"     '{
+      name:$name,
+      description:"Automatisch verwaltete OpenMain-Policy für NetBird Client Metrics",
+      enabled:true,
+      source_posture_checks:[],
+      rules:[{
+        name:("Prometheus TCP " + $port),
+        description:"Prometheus Zugriff auf NetBird Client Metrics",
+        enabled:true,
+        action:"accept",
+        bidirectional:false,
+        protocol:"tcp",
+        ports:[$port],
+        sources:[$src],
+        destinations:[$dst]
+      }]
+    }')
+
+  if [[ -n "$policy_id" ]]; then
+    api PUT "/policies/$policy_id" "$payload" >/dev/null
+    log "Metrics-Policy aktualisiert: $METRICS_POLICY_NAME"
+  else
+    api POST "/policies" "$payload" >/dev/null
+    log "Metrics-Policy erstellt: $METRICS_POLICY_NAME"
+  fi
+}
+
+ensure_setup_key_metrics_group(){
+  local keys key_id current revoked payload
+
+  keys=$(api GET "/setup-keys")
+  key_id=$(jq -r --arg key "$SETUP_KEY"     '(if type=="array" then . else [] end)[] | select(.key==$key) | .id // empty'     <<<"$keys" | head -n1)
+
+  if [[ -z "$key_id" ]]; then
+    warn "Verwendeter Setup-Key konnte per API nicht eindeutig gefunden werden."
+    warn "Neue Peers mit diesem Key ggf. manuell/über die NetBird-UI der Gruppe '$METRICS_GROUP' zuordnen."
+    return 0
+  fi
+
+  current=$(jq -c --arg id "$key_id"     '(if type=="array" then . else [] end)[] | select(.id==$id)'     <<<"$keys" | head -n1)
+  revoked=$(jq -r '.revoked // false' <<<"$current")
+
+  if jq -e --arg gid "$METRICS_GROUP_ID"       '(.auto_groups // []) | index($gid) != null' <<<"$current" >/dev/null; then
+    log "Setup-Key weist neue Peers bereits automatisch '$METRICS_GROUP' zu."
+    return 0
+  fi
+
+  payload=$(jq -nc     --argjson groups "$(jq -c --arg gid "$METRICS_GROUP_ID"       '((.auto_groups // []) + [$gid] | unique)' <<<"$current")"     --argjson revoked "$revoked"     '{auto_groups:$groups,revoked:$revoked}')
+
+  api PUT "/setup-keys/$key_id" "$payload" >/dev/null
+  log "Setup-Key erweitert: neue Peers erhalten automatisch Gruppe '$METRICS_GROUP'."
+}
+
+setup_metrics(){
+  [[ "$METRICS_ENABLED" == 1 ]] || {
+    log "NetBird Client Metrics deaktiviert."
+    return 0
+  }
+
+  local peers prometheus_peer_id helper netbird_ip
+
+  METRICS_GROUP_ID=$(ensure_group "$METRICS_GROUP")
+  MONITORING_GROUP_ID=$(ensure_group "$MONITORING_GROUP")
+
+  ensure_peer_in_group "$METRICS_GROUP_ID"
+  log "Metrics-Gruppe: $METRICS_GROUP"
+
+  # Der gerade verwendete Setup-Key wird für zukünftige Rollouts vorbereitet.
+  # Dadurch landen weitere Windows-/Linux-/Router-Peers, die denselben Key
+  # verwenden, automatisch in der Metrics-Gruppe.
+  ensure_setup_key_metrics_group
+
+  peers=$(api GET "/peers")
+  prometheus_peer_id=$(jq -r --arg ip "$PROMETHEUS_NETBIRD_IP"     '(if type=="array" then . else [] end)[] | select(.ip==$ip) | .id // empty'     <<<"$peers" | head -n1)
+
+  if [[ -n "$prometheus_peer_id" ]]; then
+    local saved_peer_id="$PEER_ID"
+    PEER_ID="$prometheus_peer_id"
+    ensure_peer_in_group "$MONITORING_GROUP_ID"
+    PEER_ID="$saved_peer_id"
+    log "Prometheus-Peer $PROMETHEUS_NETBIRD_IP in Gruppe $MONITORING_GROUP."
+  else
+    warn "Prometheus-Peer mit NetBird-IP $PROMETHEUS_NETBIRD_IP nicht gefunden."
+    warn "Gruppe/Policy werden trotzdem angelegt; Prometheus-Peer ggf. einmalig der Gruppe '$MONITORING_GROUP' zuordnen."
+  fi
+
+  ensure_metrics_policy
+
+  helper="/usr/local/sbin/openmain-netbird-client-metrics"
+  curl -fsSL "$METRICS_HELPER_URL" -o "$helper"     || die "Metrics-Helper konnte nicht geladen werden: $METRICS_HELPER_URL"
+  chmod 0755 "$helper"
+
+  NETBIRD_CLIENT_METRICS_PORT="$METRICS_PORT" "$helper"
+
+  netbird_ip=$(netbird status --ipv4 2>/dev/null | awk 'NF {sub(/\/.*/, "", $1); print $1; exit}')
+  [[ -n "$netbird_ip" ]] || die "NetBird-IP nach Metrics-Aktivierung nicht ermittelbar."
+  METRICS_TARGET="$netbird_ip:$METRICS_PORT"
+
+  log "NetBird Client Metrics aktiv: $METRICS_TARGET"
 }
 
 allocate_mapping(){
@@ -354,7 +501,20 @@ setup_zabbix(){
 
 save_state(){
   install -d -m 0700 "$(dirname "$STATE_FILE")"
-  jq -nc --arg customer "$CUSTOMER" --arg role "$ROLE" --arg lan "$LAN_NET" --arg virtual "$VIRTUAL_NET" --arg peer "$PEER_ID" --arg network "$NETWORK_ID" --arg resource "$RESOURCE_ID" --arg router "$ROUTER_ID" --argjson metric "$ROUTER_METRIC"     '{customer:$customer,role:$role,lan:$lan,virtual:$virtual,peer_id:$peer,network_id:$network,resource_id:$resource,router_id:$router,metric:$metric}' > "$STATE_FILE"
+  jq -nc     --arg customer "$CUSTOMER"     --arg role "$ROLE"     --arg lan "$LAN_NET"     --arg virtual "$VIRTUAL_NET"     --arg peer "$PEER_ID"     --arg network "$NETWORK_ID"     --arg resource "$RESOURCE_ID"     --arg router "$ROUTER_ID"     --arg metrics_target "${METRICS_TARGET:-}"     --arg metrics_group "$METRICS_GROUP"     --argjson metric "$ROUTER_METRIC"     --argjson metrics_enabled "$METRICS_ENABLED"     '{
+      customer:$customer,
+      role:$role,
+      lan:$lan,
+      virtual:$virtual,
+      peer_id:$peer,
+      network_id:$network,
+      resource_id:$resource,
+      router_id:$router,
+      metric:$metric,
+      metrics_enabled:($metrics_enabled == 1),
+      metrics_target:$metrics_target,
+      metrics_group:$metrics_group
+    }' > "$STATE_FILE"
   chmod 600 "$STATE_FILE"
 }
 
@@ -366,6 +526,7 @@ main(){
   connect_netbird
   find_peer
   setup_groups
+  setup_metrics
   allocate_mapping
   ensure_network
   write_nft
@@ -374,6 +535,9 @@ main(){
   log "Fertig: $CUSTOMER / $ROLE / Metric $ROUTER_METRIC / $VIRTUAL_NET -> $LAN_NET"
   if [[ "$ZABBIX_ENABLED" == 1 ]]; then
     log "Zabbix Proxy aktiv -> $ZABBIX_SERVER"
+  fi
+  if [[ "$METRICS_ENABLED" == 1 ]]; then
+    log "NetBird Metrics: ${METRICS_TARGET:-unbekannt} / Gruppe: $METRICS_GROUP"
   fi
   return 0
 }

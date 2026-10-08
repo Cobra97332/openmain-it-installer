@@ -28,6 +28,11 @@ install -m 0755 /tmp/zabbix-api-register.sh /usr/local/sbin/zabbix-api-register
 
 export NB_MANAGEMENT_URL="https://netbird.openmain-it.de"
 export NB_ZABBIX_SERVER="100.107.91.6"
+export NB_METRICS_ENABLED="1"
+export NB_METRICS_PORT="9191"
+export NB_METRICS_GROUP="NetBird-Metrics"
+export NB_MONITORING_GROUP="Monitoring"
+export NB_PROMETHEUS_NETBIRD_IP="100.107.91.6"
 export NB_ZABBIX_API_URL="https://zabbix.openmain-it.de/api_jsonrpc.php"
 export NB_ZABBIX_API_TOKEN
 /tmp/router-install.sh --customer "$CUSTOMER" --role "$ROLE" --hostname "$HOSTNAME_LOCAL" --management-url "$NB_MANAGEMENT_URL" --setup-key "$NB_SETUP_KEY" --api-token "$NB_API_TOKEN" --zabbix-server "$NB_ZABBIX_SERVER"
@@ -36,3 +41,6 @@ touch "$DONE"
 chmod 600 "$DONE"
 echo "Router-Einrichtung abgeschlossen."
 echo "IPv4 Forwarding: $(cat /proc/sys/net/ipv4/ip_forward)"
+echo "NetBird Metrics:"
+curl -fsS http://127.0.0.1:9191/metrics 2>/dev/null | grep '^netbird_' | head -n 5 || true
+systemctl status openmain-netbird-metrics-proxy.socket --no-pager 2>/dev/null || true

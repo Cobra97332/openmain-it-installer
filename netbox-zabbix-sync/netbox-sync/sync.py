@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Conservative Zabbix -> NetBox host importer. Only standard-library dependencies."""
 import json
+from inventory_report import report_inventory
 import http.client
 import socket
 import logging
@@ -22,6 +23,7 @@ SITE_SLUG = os.getenv("NETBOX_SITE_SLUG", "zabbix-import")
 SITE_NAME = os.getenv("NETBOX_SITE_NAME", "Zabbix Import (Unclassified)")
 INTERVAL = max(60, int(os.getenv("SYNC_INTERVAL_SECONDS", "900")))
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
+DISCOVERY_ONLY = os.getenv("DISCOVERY_ONLY", "true").lower() == "true"
 VERIFY_TLS = os.getenv("VERIFY_TLS", "true").lower() == "true"
 
 def authorization_value(token, default_scheme):
@@ -105,6 +107,9 @@ def zabbix_hosts():
             "output": ["hostid", "host", "name", "status", "description"],
             "selectInterfaces": ["ip", "dns", "useip", "main"],
             "selectHostGroups": ["name"],
+            "selectParentTemplates": ["name"],
+            "selectTags": ["tag", "value"],
+            "selectInventory": ["type"],
         }, "id": 1,
     })
     if "error" in response:
@@ -185,7 +190,10 @@ if __name__ == "__main__":
     LOG.info("Starting (dry_run=%s, interval=%ds)", DRY_RUN, INTERVAL)
     while True:
         try:
-            run()
+            if DISCOVERY_ONLY:
+                report_inventory(zabbix_hosts())
+            else:
+                run()
         except Exception:
             LOG.exception("Synchronization iteration failed")
         time.sleep(INTERVAL)

@@ -63,14 +63,26 @@ install -d -m 0755 "$DASHBOARD_DIR"
 install -d -m 0755 "$PROVISIONING_DIR/dashboards"
 
 curl -fsSL "$BASE_URL/generate-dashboards.py" -o "$INSTALL_DIR/generate-dashboards.py"
-curl -fsSL "$BASE_URL/sync-zabbix-groups.py" -o "$INSTALL_DIR/sync-zabbix-groups.py"
+curl -fsSL "$BASE_URL/sync-zabbix-groups.py" -o "$INSTALL_DIR/sync-zabbix-groups.py"\ncurl -fsSL "$BASE_URL/inspect-zabbix-host.py" -o "$INSTALL_DIR/inspect-zabbix-host.py"
 curl -fsSL "$BASE_URL/provisioning/dashboards/openmain.yaml" -o "$PROVISIONING_DIR/dashboards/openmain.yaml"
 curl -fsSL "$BASE_URL/openmain-zabbix-metadata.env.example" -o "$INSTALL_DIR/openmain-zabbix-metadata.env.example"
 
-chmod 0755 "$INSTALL_DIR/generate-dashboards.py" "$INSTALL_DIR/sync-zabbix-groups.py"
+chmod 0755 "$INSTALL_DIR/generate-dashboards.py" "$INSTALL_DIR/sync-zabbix-groups.py" "$INSTALL_DIR/inspect-zabbix-host.py"
 
 if [[ ! -e "$ENV_FILE" ]]; then
   install -m 0600 "$INSTALL_DIR/openmain-zabbix-metadata.env.example" "$ENV_FILE"
+fi
+chmod 0600 "$ENV_FILE"
+
+# Migration: NetBird ist Teil der kritischen OpenMain-Plattformen.
+if grep -q '^OPENMAIN_CRITICAL_PLATFORMS=' "$ENV_FILE"; then
+  current_platforms="$(sed -n 's/^OPENMAIN_CRITICAL_PLATFORMS=//p' "$ENV_FILE" | head -1)"
+  case ",$current_platforms," in
+    *,netbird,*) ;;
+    *) sed -i "s/^OPENMAIN_CRITICAL_PLATFORMS=.*/OPENMAIN_CRITICAL_PLATFORMS=$current_platforms,netbird/" "$ENV_FILE" ;;
+  esac
+else
+  echo 'OPENMAIN_CRITICAL_PLATFORMS=opnsense,pve,idrac,nas,qnap,synology,netbird' >> "$ENV_FILE"
 fi
 
 python3 "$INSTALL_DIR/generate-dashboards.py" \

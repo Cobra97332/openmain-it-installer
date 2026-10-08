@@ -473,10 +473,14 @@ jobs:
                   assert relay_panels["Alle aktuellen Verbindungen"]["type"] == "table"
                   assert relay_panels["Aktuelle Relay-Verbindungen – wer mit wem"]["type"] == "table"
 
-                  all_connections_repr = repr(relay_panels["Alle aktuellen Verbindungen"])
+                  all_connections = relay_panels["Alle aktuellen Verbindungen"]
+                  all_connections_repr = repr(all_connections)
                   assert 'connection_type="relay"' not in all_connections_repr
-                  assert '"connection_type": 4' in all_connections_repr
-                  assert '"relay_address": 5' in all_connections_repr
+                  organize = all_connections["transformations"][0]["options"]
+                  assert organize["indexByName"]["connection_type"] == 4
+                  assert organize["indexByName"]["relay_address"] == 5
+                  assert organize["renameByName"]["connection_type"] == "Verbindung"
+                  assert organize["renameByName"]["relay_address"] == "Relay Server"
 
                   source_query = repr(variables_by_name["source"])
                   assert 'customer=~"$customer"' in source_query

@@ -373,17 +373,16 @@ for path in sorted(root.glob("*.json")):
             raise SystemExit(f"client.json: Top-Stat-Panels fehlen: {missing}")
 
         connected = top_panels["Connected peers"]
-        max_id = 0
+        max_id = [0]
 
         def scan_ids(value):
-            nonlocal max_id
             if isinstance(value, list):
                 for item in value:
                     scan_ids(item)
             elif isinstance(value, dict):
                 panel_id = value.get("id")
                 if isinstance(panel_id, int):
-                    max_id = max(max_id, panel_id)
+                    max_id[0] = max(max_id[0], panel_id)
                 for item in value.values():
                     scan_ids(item)
 
@@ -394,7 +393,7 @@ for path in sorted(root.glob("*.json")):
             start=1,
         ):
             panel = copy.deepcopy(connected)
-            panel["id"] = max_id + offset
+            panel["id"] = max_id[0] + offset
             panel["title"] = title
             panel["gridPos"] = {"h": 4, "w": 4, "x": x_pos, "y": 1}
             panel["targets"][0]["expr"] = (

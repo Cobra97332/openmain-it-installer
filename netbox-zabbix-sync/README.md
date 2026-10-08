@@ -70,3 +70,29 @@ docker compose -f docker-compose.yml -f compose.sync.yml logs --tail=120 netbox-
 ```
 
 Review the resulting reports before enabling any write operations.
+
+## Improved classification and customer mapping
+
+Classification now ignores generic Zabbix server-health templates for role detection. Physical-vs-VM type is only inferred from explicit matching tags/groups, never a hostname. In particular, Dell iDRAC indicates a hardware management interface, not an extra physical server. Proxmox node inventory and VM/LXC mappings require subsequent Proxmox API integration.
+
+An **optional private** `/opt/netbox/netbox-sync/tenant-map.json` can map exact Zabbix group names to tenant hints. Do not commit customer associations or tokens to the public repository. Example (replace with verified assignments):
+
+```json
+{
+  "KUNDENGRUPPE_A": "KUNDENNAME_A"
+}
+```
+
+The compose service mounts the whole `./netbox-sync` directory read-only under `/app` so the optional mapping is accessible. If absent, no mapping is applied. Conflicting customer hints are left unresolved. No tenants or other NetBox objects are written in discovery-only mode.
+
+### Upgrade after classification improvements
+
+```bash
+cd /opt/netbox
+git -C /tmp/openmain-it-installer pull --ff-only
+cp /tmp/openmain-it-installer/netbox-zabbix-sync/netbox-sync/inventory_report.py ./netbox-sync/inventory_report.py
+cp /tmp/openmain-it-installer/netbox-zabbix-sync/compose.sync.yml ./compose.sync.yml
+docker compose -f docker-compose.yml -f compose.sync.yml config -q
+docker compose -f docker-compose.yml -f compose.sync.yml up -d --no-deps --force-recreate netbox-sync
+docker compose -f docker-compose.yml -f compose.sync.yml logs --tail=150 netbox-sync
+```

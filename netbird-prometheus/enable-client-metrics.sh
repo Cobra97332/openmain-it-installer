@@ -108,7 +108,10 @@ netbird down
 sleep 2
 netbird up --enable-local-metrics --local-metrics-address "$BIND_IP:$METRICS_PORT"
 
-for attempt in \$(seq 1 $(( WAIT_SECONDS / 2 ))); do
+max_attempts=$(( WAIT_SECONDS / 2 ))
+(( max_attempts < 1 )) && max_attempts=1
+
+for (( attempt=1; attempt<=max_attempts; attempt++ )); do
   output="\$(curl -fsS --max-time 5 "http://$BIND_IP:$METRICS_PORT/metrics" 2>/dev/null || true)"
   if grep -q '^netbird_' <<<"\$output"; then
     echo "SUCCESS: NetBird Client Metrics aktiv auf $BIND_IP:$METRICS_PORT"

@@ -101,11 +101,16 @@ function Get-NetBirdStatusMetrics {
         if (-not $peerName) { $peerName = [string]$peer.netbirdIp }
         if (-not $peerName) { $peerName = "unknown" }
 
+        $relayAddress = ""
+        if ($connectionType -eq "relay") {
+            $relayAddress = [string]$peer.relayAddress
+        }
+
         $labelText = @(
             'peer="' + (Escape-PrometheusLabel $peerName) + '"'
             'peer_ip="' + (Escape-PrometheusLabel $peer.netbirdIp) + '"'
             'connection_type="' + (Escape-PrometheusLabel $connectionType) + '"'
-            'relay_address="' + (Escape-PrometheusLabel $peer.relayAddress) + '"'
+            'relay_address="' + (Escape-PrometheusLabel $relayAddress) + '"'
         ) -join ","
 
         $received = 0

@@ -89,6 +89,20 @@ def safe_ips(host):
     return sorted(valid)
 
 
+GENERIC_GROUPS = {
+    "zabbix servers", "linux servers", "workstation",
+}
+GENERIC_PREFIXES = ("openmain/", "interne it/")
+
+
+def possible_customer_groups(groups):
+    """Unverified suggestions only; never used for tenancy automatically."""
+    return [group for group in groups if
+            group.casefold() not in GENERIC_GROUPS and
+            not group.casefold().startswith(GENERIC_PREFIXES) and
+            "/" not in group]
+
+
 def classify(host, tenant_map=None):
     groups = fields(host, "hostgroups", "name")
     templates = fields(host, "parentTemplates", "name")
@@ -146,25 +160,27 @@ def classify(host, tenant_map=None):
             role_evidence.append("role_tag:" + key)
             break
     if role == "unknown":
-        for group in groups:
-            matched = ROLE_GROUPS.get(group.casefold())
-            if matched:
-                role = matched
-                role_evidence.append("role_group:" + group)
-                break
-    if role == "unknown":
-        # Strong product-specific template/group matches only, not health checks.
+        # Specific product templates outrank generic Zabbix host groups such as
+        # "Workstation". For example, Dell iDRAC by SNMP is hardware management.
         evidence_text = " | ".join(
             template.lower() for template in templates
             if template.casefold() not in IGNORED_ROLE_TEMPLATES
         ) + " | " + " | ".join(
             group.lower() for group in groups
-            if group.casefold() not in {"linux servers", "zabbix servers"}
+            if group.casefold() not in
+            {"linux servers", "zabbix servers", "workstation"}
         )
         for candidate, needles in ROLE_PATTERNS:
             if any(needle in evidence_text for needle in needles):
                 role = candidate
-                role_evidence.append("role_template_or_group:" + candidate)
+                role_evidence.append("role_specific_template_or_group:" + candidate)
+                break
+    if role == "unknown":
+        for group in groups:
+            matched = ROLE_GROUPS.get(group.casefold())
+            if matched:
+                role = matched
+                role_evidence.append("role_generic_group:" + group)
                 break
 
     tenants = set()
@@ -193,6 +209,7 @@ def classify(host, tenant_map=None):
         "role_evidence": role_evidence,
         "tenant_hint": tenant_hint,  # NEVER automatically create a tenant from this
         "tenant_evidence": tenant_evidence,
+        "possible_customer_groups": possible_customer_groups(groups),
         "candidate_ips": safe_ips(host),  # NEVER automatically import these into IPAM
         "groups": groups,
         "templates": templates,

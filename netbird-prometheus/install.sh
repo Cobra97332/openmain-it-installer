@@ -93,58 +93,15 @@ for dashboard in management signal relay client; do
     -o "$HOST_DASHBOARDS/$dashboard.json"
 done
 
-python3 - "$HOST_DASHBOARDS" "$NETBIRD_RATE_INTERVAL" <<'PY'
-import json
-import re
-import sys
-from pathlib import Path
+log "Installiere Dashboard-Normalizer..."
+curl -fsSL "$BASE_URL/normalize-dashboards.py" -o "$INSTALL_DIR/normalize-dashboards.py"
+chmod 0755 "$INSTALL_DIR/normalize-dashboards.py"
 
-root = Path(sys.argv[1])
-rate_interval = sys.argv[2]
+log "Passe NetBird-Dashboards an Grafana 13 an (Rate-Intervall: $NETBIRD_RATE_INTERVAL)..."
+python3 "$INSTALL_DIR/normalize-dashboards.py" \
+  "$HOST_DASHBOARDS" \
+  --rate-interval "$NETBIRD_RATE_INTERVAL"
 
-if not re.fullmatch(r"[1-9][0-9]*(ms|s|m|h|d|w|y)", rate_interval):
-    raise SystemExit(f"Ungültiges NETBIRD_RATE_INTERVAL: {rate_interval}")
-expected = {"management.json", "signal.json", "relay.json", "client.json"}
-found = {p.name for p in root.glob("*.json")}
-if found != expected:
-    raise SystemExit(f"Dashboard-Satz unvollständig: {sorted(found)}")
-
-uids = set()
-for path in root.glob("*.json"):
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not data.get("title"):
-        raise SystemExit(f"Dashboard ohne Titel: {path}")
-    uid = data.get("uid")
-    if not uid or uid in uids:
-        raise SystemExit(f"Fehlende/doppelte Dashboard-UID: {path}")
-    uids.add(uid)
-    data["id"] = None
-
-    # Grafana 13.2.x can pass $__rate_interval literally to Prometheus for these
-    # upstream NetBird dashboards, causing PromQL parse errors. NetBird is
-    # scraped every 30s, so 2m provides the required four-sample rate window.
-    replacements = [0]
-
-    def walk(value):
-        if isinstance(value, str):
-            count = value.count("$__rate_interval")
-            if count:
-                replacements[0] += count
-                return value.replace("$__rate_interval", rate_interval)
-            return value
-        if isinstance(value, list):
-            return [walk(item) for item in value]
-        if isinstance(value, dict):
-            return {key: walk(item) for key, item in value.items()}
-        return value
-
-    data = walk(data)
-    if "$__rate_interval" in json.dumps(data):
-        raise SystemExit(f"Unersetztes $__rate_interval in {path}")
-
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    print(f"{path.name}: {replacements[0]} $__rate_interval ersetzt durch {rate_interval}")
-PY
 
 cat > "$HOST_CONFIG" <<EOF
 global:

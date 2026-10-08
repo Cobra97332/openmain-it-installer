@@ -284,12 +284,13 @@ for name in sorted(EXPECTED):
                 "type": "query",
                 "label": "Kunde",
                 "datasource": {"type": "prometheus", "uid": "${datasource}"},
-                "definition": 'label_values(netbird_management_connected{job="netbird-client"},customer)',
+                "definition": 'query_result(up{job="netbird-client"} >= 0)',
                 "query": {
-                    "qryType": 1,
-                    "query": 'label_values(netbird_management_connected{job="netbird-client"},customer)',
+                    "qryType": 3,
+                    "query": 'query_result(up{job="netbird-client"} >= 0)',
                     "refId": "PrometheusVariableQueryEditor-Customer",
                 },
+                "regex": '/customer="([^"]+)"/',
                 "refresh": 1,
                 "sort": 1,
                 "multi": False,
@@ -303,17 +304,16 @@ for name in sorted(EXPECTED):
                 "label": "Host",
                 "datasource": {"type": "prometheus", "uid": "${datasource}"},
                 "definition": (
-                    'label_values(netbird_management_connected{job="netbird-client",'
-                    'customer=~"$customer"},host)'
+                    'query_result(up{job="netbird-client",customer="$customer"} >= 0)'
                 ),
                 "query": {
-                    "qryType": 1,
+                    "qryType": 3,
                     "query": (
-                        'label_values(netbird_management_connected{job="netbird-client",'
-                        'customer=~"$customer"},host)'
+                        'query_result(up{job="netbird-client",customer="$customer"} >= 0)'
                     ),
                     "refId": "PrometheusVariableQueryEditor-Host",
                 },
+                "regex": '/host="([^"]+)"/',
                 "refresh": 1,
                 "sort": 1,
                 "multi": False,

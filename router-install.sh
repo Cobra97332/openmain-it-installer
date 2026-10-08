@@ -294,6 +294,32 @@ ensure_metrics_policy(){
   fi
 }
 
+ensure_setup_key_metrics_group(){
+  local keys key_id current revoked payload
+
+  keys=$(api GET "/setup-keys")
+  key_id=$(jq -r --arg key "$SETUP_KEY"     '(if type=="array" then . else [] end)[] | select(.key==$key) | .id // empty'     <<<"$keys" | head -n1)
+
+  if [[ -z "$key_id" ]]; then
+    warn "Verwendeter Setup-Key konnte per API nicht eindeutig gefunden werden."
+    warn "Neue Peers mit diesem Key ggf. manuell/über die NetBird-UI der Gruppe '$METRICS_GROUP' zuordnen."
+    return 0
+  fi
+
+  current=$(jq -c --arg id "$key_id"     '(if type=="array" then . else [] end)[] | select(.id==$id)'     <<<"$keys" | head -n1)
+  revoked=$(jq -r '.revoked // false' <<<"$current")
+
+  if jq -e --arg gid "$METRICS_GROUP_ID"       '(.auto_groups // []) | index($gid) != null' <<<"$current" >/dev/null; then
+    log "Setup-Key weist neue Peers bereits automatisch '$METRICS_GROUP' zu."
+    return 0
+  fi
+
+  payload=$(jq -nc     --argjson groups "$(jq -c --arg gid "$METRICS_GROUP_ID"       '((.auto_groups // []) + [$gid] | unique)' <<<"$current")"     --argjson revoked "$revoked"     '{auto_groups:$groups,revoked:$revoked}')
+
+  api PUT "/setup-keys/$key_id" "$payload" >/dev/null
+  log "Setup-Key erweitert: neue Peers erhalten automatisch Gruppe '$METRICS_GROUP'."
+}
+
 setup_metrics(){
   [[ "$METRICS_ENABLED" == 1 ]] || {
     log "NetBird Client Metrics deaktiviert."
@@ -307,6 +333,11 @@ setup_metrics(){
 
   ensure_peer_in_group "$METRICS_GROUP_ID"
   log "Metrics-Gruppe: $METRICS_GROUP"
+
+  # Der gerade verwendete Setup-Key wird für zukünftige Rollouts vorbereitet.
+  # Dadurch landen weitere Windows-/Linux-/Router-Peers, die denselben Key
+  # verwenden, automatisch in der Metrics-Gruppe.
+  ensure_setup_key_metrics_group
 
   peers=$(api GET "/peers")
   prometheus_peer_id=$(jq -r --arg ip "$PROMETHEUS_NETBIRD_IP"     '(if type=="array" then . else [] end)[] | select(.ip==$ip) | .id // empty'     <<<"$peers" | head -n1)

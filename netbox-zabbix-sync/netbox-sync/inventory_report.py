@@ -7,6 +7,7 @@ Only explicit Zabbix metadata can establish VM vs. device. No API writes.
 import ipaddress
 import json
 import logging
+import os
 import re
 from collections import Counter
 
@@ -21,8 +22,11 @@ DEVICE_TAGS = {"physical", "baremetal", "bare metal", "hardware", "physical serv
 TYPE_TAG_KEYS = {"asset_type", "host_type", "netbox_type", "netbox.kind", "inventory_type"}
 TENANT_TAG_KEYS = {"customer", "kunde", "tenant", "client"}
 ROLE_TAG_KEYS = {"role", "device_role", "service"}
+TENANT_MAP_PATH = os.getenv("TENANT_MAP_FILE", "/app/tenant-map.json")
 
-# Order from specific to general. Roles are advisory (firewalls/NAS may be VMs).
+
+# Role hints only: monitoring templates never establish physical vs virtual type.
+# Ignore Zabbix health templates that are attached to unrelated Docker/agent hosts.
 ROLE_PATTERNS = (
     ("firewall", ("opnsense", "pfsense", "fortigate", "firewall")),
     ("nas", ("synology", "qnap", "truenas", "nas by", "nas snmp")),
@@ -31,8 +35,33 @@ ROLE_PATTERNS = (
     ("network", ("cisco ios", "mikrotik", "routeros", "switch", "network device")),
     ("vpn", ("netbird",)),
     ("mail", ("mailcow", "postfix", "sogo")),
-    ("monitoring", ("zabbix server", "zabbix proxy")),
+    ("docker-host", ("docker by", "docker hosts")),
 )
+ROLE_GROUPS = {
+    "zabbix servers": "monitoring",
+    "workstation": "workstation",
+    "interne it/hypervisor": "hypervisor",
+}
+IGNORED_ROLE_TEMPLATES = {"zabbix server health", "zabbix proxy health"}
+VALID_ROLE_TAGS = {"firewall", "nas", "hypervisor", "vpn", "mail", "monitoring",
+                   "network", "hardware-management", "docker-host", "workstation"}
+
+
+def load_tenant_map():
+    """Map exact Zabbix group names to NetBox tenant hints, without any API writes."""
+    try:
+        with open(TENANT_MAP_PATH, "r", encoding="utf-8") as file:
+            mapping = json.load(file)
+    except FileNotFoundError:
+        return {}
+    if not isinstance(mapping, dict):
+        raise ValueError("tenant-map.json must be a JSON object")
+    result = {}
+    for group, tenant in mapping.items():
+        if not isinstance(group, str) or not group.strip() or not isinstance(tenant, str) or not tenant.strip():
+            raise ValueError("Invalid tenant-map.json: group/tenant names must be nonempty strings")
+        result[group.strip().casefold()] = bounded(tenant, 120)
+    return result
 
 
 def bounded(value, max_chars=120):
@@ -60,7 +89,7 @@ def safe_ips(host):
     return sorted(valid)
 
 
-def classify(host):
+def classify(host, tenant_map=None):
     groups = fields(host, "hostgroups", "name")
     templates = fields(host, "parentTemplates", "name")
     tags = {str(tag.get("tag") or "").strip().lower(): bounded(tag.get("value"))
@@ -109,27 +138,49 @@ def classify(host):
         evidence.append("conflicting_type_evidence")
 
     role = "unknown"
-    for key in ROLE_TAG_KEYS:
+    role_evidence = []
+    for key in sorted(ROLE_TAG_KEYS):
         explicit = tags.get(key, "").lower()
-        if explicit in {"firewall", "nas", "hypervisor", "vpn", "mail",
-                        "monitoring", "network", "hardware-management"}:
+        if explicit in VALID_ROLE_TAGS:
             role = explicit
+            role_evidence.append("role_tag:" + key)
             break
     if role == "unknown":
-        haystack = " | ".join(templates + groups).lower()
+        for group in groups:
+            matched = ROLE_GROUPS.get(group.casefold())
+            if matched:
+                role = matched
+                role_evidence.append("role_group:" + group)
+                break
+    if role == "unknown":
+        # Strong product-specific template/group matches only, not health checks.
+        evidence_text = " | ".join(
+            template.lower() for template in templates
+            if template.casefold() not in IGNORED_ROLE_TEMPLATES
+        ) + " | " + " | ".join(
+            group.lower() for group in groups
+            if group.casefold() not in {"linux servers", "zabbix servers"}
+        )
         for candidate, needles in ROLE_PATTERNS:
-            if any(needle in haystack for needle in needles):
+            if any(needle in evidence_text for needle in needles):
                 role = candidate
+                role_evidence.append("role_template_or_group:" + candidate)
                 break
 
     tenants = set()
-    for key in TENANT_TAG_KEYS:
+    tenant_evidence = []
+    for key in sorted(TENANT_TAG_KEYS):
         if tags.get(key):
             tenants.add(tags[key])
+            tenant_evidence.append("tenant_tag:" + key)
     for group in groups:
         match = re.match(r"^(?:customers|kunden|tenants|mandanten)/(.+)$", group, re.IGNORECASE)
         if match:
             tenants.add(bounded(match.group(1).split("/")[0]))
+            tenant_evidence.append("tenant_prefixed_group:" + group)
+        if tenant_map and group.casefold() in tenant_map:
+            tenants.add(tenant_map[group.casefold()])
+            tenant_evidence.append("tenant_mapped_group:" + group)
     tenant_hint = next(iter(tenants)) if len(tenants) == 1 else None
     if len(tenants) > 1:
         evidence.append("conflicting_tenant_evidence")
@@ -139,7 +190,9 @@ def classify(host):
         "name": bounded(host.get("name") or host.get("host")),
         "kind": kind,
         "role_hint": role,
+        "role_evidence": role_evidence,
         "tenant_hint": tenant_hint,  # NEVER automatically create a tenant from this
+        "tenant_evidence": tenant_evidence,
         "candidate_ips": safe_ips(host),  # NEVER automatically import these into IPAM
         "groups": groups,
         "templates": templates,
@@ -150,9 +203,10 @@ def classify(host):
 def report_inventory(hosts):
     summary = Counter()
     groups, templates = set(), set()
-    LOG.info("DISCOVERY START: read-only; no NetBox writes")
+    tenant_map = load_tenant_map()
+    LOG.info("DISCOVERY START: read-only; no NetBox writes; customer_mappings=%d", len(tenant_map))
     for host in sorted(hosts, key=lambda h: int(h.get("hostid") or 0)):
-        record = classify(host)
+        record = classify(host, tenant_map)
         summary[record["kind"]] += 1
         groups.update(record["groups"])
         templates.update(record["templates"])

@@ -13,18 +13,7 @@ PROFILES = {
         "title": "OpenMain - OPNsense",
         "group_regex": r"^OpenMain/OPNsense(?:/|$)",
         "group": "OpenMain/OPNsense",
-        "panels": [
-            ("Packet filter status", r"/(OPNsense: )?Packet filter running status/", "short", "stat"),
-            ("State table utilization", r"/(OPNsense: )?States table utilization in %/", "percent", "timeseries"),
-            ("State table current / limit", r"/(OPNsense: )?States table (current|limit)/", "short", "timeseries"),
-            ("Source tracking utilization", r"/(OPNsense: )?Source tracking table utilization in %/", "percent", "timeseries"),
-            ("Source tracking current / limit", r"/(OPNsense: )?Source tracking table (current|limit)/", "short", "timeseries"),
-            ("Firewall rules", r"/(OPNsense: )?Firewall rules count/", "short", "stat"),
-            ("Packet filter anomalies", r"/(OPNsense: )?(Packets with bad offset|Fragmented packets|Short packets|Normalized packets|Packets dropped due to memory limitation)/", "pps", "timeseries"),
-            ("Interface traffic", r"/(OPNsense: )?Interface $interface:.*(traffic|Traffic|bits|Bits|received|sent|RX|TX)/", "bps", "timeseries"),
-            ("Interface errors / drops", r"/(OPNsense: )?Interface $interface:.*(error|Error|discard|Discard|drop|Drop|blocked|Blocked)/", "short", "timeseries"),
-            ("Interface status / speed", r"/(OPNsense: )?Interface $interface:.*(status|Status|link|Link|speed|Speed)/", "short", "stat"),
-        ],
+        "panels": [],
     },
     "netbird": {
         "title": "OpenMain - NetBird",
@@ -304,7 +293,7 @@ def opnsense_variables(group_name):
         "allFormat": "regex values",
         "current": {},
         "datasource": ds(),
-        "definition": "Zabbix - interface items",
+        "definition": "Zabbix - OPNsense interfaces",
         "hide": 0,
         "includeAll": True,
         "allValue": ".*",
@@ -317,12 +306,12 @@ def opnsense_variables(group_name):
             "application": "",
             "group": group_name,
             "host": "$host",
-            "item": "/(OPNsense: )?Interface .*:.*/",
+            "item": "/Interface \\[.*\\]: Bits received/",
             "queryType": "item",
         },
         "refresh": 1,
         "refresh_on_load": True,
-        "regex": "/(?:OPNsense: )?Interface ([^:]+):.*/",
+        "regex": "/Interface \\[([^\\(\\]]+).*\\]: Bits received/",
         "skipUrlSync": False,
         "sort": 1,
         "tagValuesQuery": "",
@@ -509,13 +498,148 @@ def problem_stat(pid, title, min_severity, x, y, group="/.*/", w=6, h=5):
         "type": "stat",
     }
 
-def make_device_dashboard(key, profile):
-    d = base_dashboard(profile["title"], f"openmain-{key}", ["OpenMain", "Zabbix", key])
-    d["templating"]["list"] = (
-        opnsense_variables(profile["group"])
-        if key == "opnsense"
-        else variables(profile["group"])
+
+def make_opnsense_dashboard(profile):
+    d = base_dashboard(
+        profile["title"],
+        "openmain-opnsense",
+        ["OpenMain", "Zabbix", "opnsense"],
+        "30s",
+        "now-6h",
     )
+    d["templating"]["list"] = opnsense_variables(profile["group"])
+
+    # All item names below are taken from the actual Zabbix inventory of
+    # OpnsenseCobranet (438 items). Do not add guessed CPU/RAM/Gateway/VPN
+    # metrics here unless the Zabbix template starts exposing them.
+    d["panels"] = [
+        stat_panel(1, "Packet Filter", r"/^Packet filter running status$/", "short", 0, 0, 4, 5),
+        stat_panel(2, "SNMP", r"/^SNMP agent availability$/", "short", 4, 0, 4, 5),
+        stat_panel(3, "DHCP", r"/^DHCP server status$/", "short", 8, 0, 4, 5),
+        stat_panel(4, "DNS", r"/^DNS server status$/", "short", 12, 0, 4, 5),
+        stat_panel(5, "Webserver", r"/^Web server status$/", "short", 16, 0, 4, 5),
+        stat_panel(6, "Firewall-Regeln", r"/^Firewall rules count$/", "short", 20, 0, 4, 5),
+
+        problems_table(7, "Aktive Probleme", "$group", "$host", 0, 0, 5, 24, 7),
+
+        timeseries_panel(8, "State Table - Auslastung", r"/^States table utilization in %$/", "percent", 0, 12, 12, 7),
+        timeseries_panel(9, "State Table - Current / Limit", r"/^States table (current|limit)$/", "short", 12, 12, 12, 7),
+
+        timeseries_panel(10, "Source Tracking - Auslastung", r"/^Source tracking table utilization in %$/", "percent", 0, 19, 12, 7),
+        timeseries_panel(11, "Source Tracking - Current / Limit", r"/^Source tracking table (current|limit)$/", "short", 12, 19, 12, 7),
+
+        timeseries_panel(
+            12,
+            "Packet Filter - Raten",
+            r"/^(Fragmented packets|Normalized packets|Packets dropped due to memory limitation|Packets matched a filter rule|Packets with bad offset|Short packets)$/",
+            "pps",
+            0,
+            26,
+            24,
+            8,
+        ),
+
+        timeseries_panel(
+            13,
+            "Interface - Traffic RX / TX",
+            r"/^Interface \\[$interface(?:\\([^]]*\\))?\\]: Bits (received|sent)$/",
+            "bps",
+            0,
+            34,
+            12,
+            8,
+        ),
+        stat_panel(
+            14,
+            "Interface - Status",
+            r"/^Interface \\[$interface(?:\\([^]]*\\))?\\]: Operational status$/",
+            "short",
+            12,
+            34,
+            6,
+            8,
+        ),
+        stat_panel(
+            15,
+            "Interface - Speed",
+            r"/^Interface \\[$interface(?:\\([^]]*\\))?\\]: Speed$/",
+            "bps",
+            18,
+            34,
+            6,
+            8,
+        ),
+
+        timeseries_panel(
+            16,
+            "Interface - IPv4/IPv6 Traffic passed",
+            r"/^Interface \\[$interface(?:\\([^]]*\\))?\\]: (Inbound|Outbound) IPv[46] traffic passed$/",
+            "bps",
+            0,
+            42,
+            12,
+            8,
+        ),
+        timeseries_panel(
+            17,
+            "Interface - IPv4/IPv6 Traffic blocked",
+            r"/^Interface \\[$interface(?:\\([^]]*\\))?\\]: (Inbound|Outbound) IPv[46] traffic blocked$/",
+            "bps",
+            12,
+            42,
+            12,
+            8,
+        ),
+
+        timeseries_panel(
+            18,
+            "Interface - Pakete passed",
+            r"/^Interface \\[$interface(?:\\([^]]*\\))?\\]: (Inbound|Outbound) IPv[46] packets passed$/",
+            "pps",
+            0,
+            50,
+            12,
+            8,
+        ),
+        timeseries_panel(
+            19,
+            "Interface - Pakete blocked",
+            r"/^Interface \\[$interface(?:\\([^]]*\\))?\\]: (Inbound|Outbound) IPv[46] packets blocked$/",
+            "pps",
+            12,
+            50,
+            12,
+            8,
+        ),
+
+        timeseries_panel(
+            20,
+            "Interface - Errors / Discards",
+            r"/^Interface \\[$interface(?:\\([^]]*\\))?\\]: (Inbound|Outbound) packets (discarded|with errors)$/",
+            "short",
+            0,
+            58,
+            12,
+            8,
+        ),
+        stat_panel(
+            21,
+            "Interface - Regelreferenzen",
+            r"/^Interface \\[$interface(?:\\([^]]*\\))?\\]: Rules references count$/",
+            "short",
+            12,
+            58,
+            12,
+            8,
+        ),
+    ]
+    return d
+
+def make_device_dashboard(key, profile):
+    if key == "opnsense":
+        return make_opnsense_dashboard(profile)
+    d = base_dashboard(profile["title"], f"openmain-{key}", ["OpenMain", "Zabbix", key])
+    d["templating"]["list"] = variables(profile["group"])
     d["panels"].append(problems_table(1, "Aktive Probleme", y=0, h=8))
     pid = 2
     y = 8

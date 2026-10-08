@@ -3,6 +3,7 @@ import argparse
 import ipaddress
 import json
 import os
+import re
 import sys
 import tempfile
 import urllib.error
@@ -235,9 +236,15 @@ def peer_group_names(peer):
     return result
 
 
+def normalize_identity(value):
+    return re.sub(r"[^a-z0-9]+", "-", str(value or "").casefold()).strip("-")
+
+
 def infer_customer(peer, metrics_group, monitoring_group, fallback, ignore_groups):
     names = peer_group_names(peer)
 
+    # Bevorzugt explizite Metadaten-Gruppen. Diese werden von den aktuellen
+    # OpenMain-Router-Rollouts zusätzlich zur eigentlichen Kundengruppe gesetzt.
     for name in names:
         lowered = name.lower()
         for prefix in ("kunde:", "customer:"):
@@ -260,6 +267,42 @@ def infer_customer(peer, metrics_group, monitoring_group, fallback, ignore_group
 
     if len(candidates) == 1:
         return candidates[0]
+
+    # Bestehende Installationen besitzen teilweise mehrere zusätzliche
+    # technische Gruppen. In diesem Fall war der alte Code zu konservativ und
+    # fiel auf "intern" zurück. Wenn der Hostname eindeutig eine der Gruppen
+    # enthält (z. B. nb-Bauer-2 -> Bauer), verwenden wir diesen Match.
+    identities = [
+        normalize_identity(peer.get("hostname")),
+        normalize_identity(peer.get("name")),
+        normalize_identity(peer.get("dns_label")),
+    ]
+    identities = [identity for identity in identities if identity]
+
+    matching = []
+    for candidate in candidates:
+        normalized = normalize_identity(candidate)
+        if not normalized:
+            continue
+
+        pattern = re.compile(
+            rf"(?:^|-){re.escape(normalized)}(?:-|$)",
+            re.IGNORECASE,
+        )
+        if any(pattern.search(identity) for identity in identities):
+            matching.append(candidate)
+
+    if len(matching) == 1:
+        return matching[0]
+
+    if len(matching) > 1:
+        # Bei verschachtelten Namen (z. B. Kunde und Kunde-Standort) gewinnt
+        # der spezifischste/längste eindeutige Match.
+        matching.sort(key=lambda item: len(normalize_identity(item)), reverse=True)
+        if len(matching) == 1 or len(normalize_identity(matching[0])) > len(
+            normalize_identity(matching[1])
+        ):
+            return matching[0]
 
     return fallback
 

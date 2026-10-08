@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+AUTO_ENV_FILE="${OPENMAIN_NETBIRD_PROM_ENV:-/etc/openmain-netbird-prometheus.env}"
+if [[ -f "$AUTO_ENV_FILE" ]]; then
+  # Root-only Datei mit den Einstellungen für die API-basierte Target-Synchronisation.
+  set -a
+  # shellcheck disable=SC1090
+  source "$AUTO_ENV_FILE"
+  set +a
+fi
+
 BASE_URL="${OPENMAIN_GITHUB_RAW:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-prometheus}"
 INSTALL_DIR="${OPENMAIN_NETBIRD_PROM_DIR:-/opt/openmain-netbird-prometheus}"
 NETBIRD_REF="${NETBIRD_OBSERVABILITY_REF:-24cb7b75c2e1cce4fbc2e2b1d00a4db60f8bd122}"
@@ -15,8 +24,21 @@ GRAFANA_CONTAINER="${GRAFANA_CONTAINER:-}"
 NETBIRD_METRICS_TARGET="${NETBIRD_METRICS_TARGET:-}"
 NETBIRD_RATE_INTERVAL="${NETBIRD_RATE_INTERVAL:-2m}"
 
+NETBIRD_MANAGEMENT_URL="${NETBIRD_MANAGEMENT_URL:-https://netbird.openmain-it.de}"
+NETBIRD_API_TOKEN="${NETBIRD_API_TOKEN:-}"
+NETBIRD_AUTO_DISCOVERY="${NETBIRD_AUTO_DISCOVERY:-1}"
+NETBIRD_AUTO_POLICY="${NETBIRD_AUTO_POLICY:-1}"
+NETBIRD_METRICS_GROUP="${NETBIRD_METRICS_GROUP:-NetBird-Metrics}"
+NETBIRD_MONITORING_GROUP="${NETBIRD_MONITORING_GROUP:-Monitoring}"
+NETBIRD_METRICS_POLICY_NAME="${NETBIRD_METRICS_POLICY_NAME:-OpenMain Prometheus -> NetBird Client Metrics}"
+NETBIRD_PROMETHEUS_PEER_IP="${NETBIRD_PROMETHEUS_PEER_IP:-}"
+NETBIRD_CLIENT_METRICS_PORT="${NETBIRD_CLIENT_METRICS_PORT:-9191}"
+NETBIRD_CUSTOMER_FALLBACK="${NETBIRD_CUSTOMER_FALLBACK:-intern}"
+NETBIRD_CUSTOMER_IGNORE_GROUPS="${NETBIRD_CUSTOMER_IGNORE_GROUPS:-}"
+
 die() { echo "[FEHLER] $*" >&2; exit 1; }
 log() { echo "[+] $*"; }
+warn() { echo "[!] $*" >&2; }
 
 [[ $EUID -eq 0 ]] || die "Bitte als root ausführen."
 
@@ -65,6 +87,41 @@ NETBIRD_METRICS_TARGET="${NETBIRD_METRICS_TARGET#https://}"
 NETBIRD_METRICS_TARGET="${NETBIRD_METRICS_TARGET%%/*}"
 [[ "$NETBIRD_METRICS_TARGET" == *:* ]] || NETBIRD_METRICS_TARGET="${NETBIRD_METRICS_TARGET}:9090"
 
+case "$NETBIRD_AUTO_DISCOVERY" in
+  1|true|TRUE|yes|YES) NETBIRD_AUTO_DISCOVERY=1 ;;
+  0|false|FALSE|no|NO) NETBIRD_AUTO_DISCOVERY=0 ;;
+  *) die "NETBIRD_AUTO_DISCOVERY muss 0/1 bzw. true/false sein." ;;
+esac
+
+case "$NETBIRD_AUTO_POLICY" in
+  1|true|TRUE|yes|YES) NETBIRD_AUTO_POLICY=1 ;;
+  0|false|FALSE|no|NO) NETBIRD_AUTO_POLICY=0 ;;
+  *) die "NETBIRD_AUTO_POLICY muss 0/1 bzw. true/false sein." ;;
+esac
+
+if [[ "$NETBIRD_AUTO_DISCOVERY" == 1 && -z "$NETBIRD_API_TOKEN" ]]; then
+  if [[ -t 0 ]]; then
+    read -r -s -p "NetBird API Token für automatische Client-Erkennung (leer = deaktivieren): " NETBIRD_API_TOKEN
+    echo
+  fi
+  if [[ -z "$NETBIRD_API_TOKEN" ]]; then
+    warn "Kein NetBird API Token gesetzt. Automatische Client-Erkennung wird deaktiviert."
+    NETBIRD_AUTO_DISCOVERY=0
+  fi
+fi
+
+if [[ "$NETBIRD_AUTO_DISCOVERY" == 1 && -z "$NETBIRD_PROMETHEUS_PEER_IP" ]] && command -v netbird >/dev/null 2>&1; then
+  NETBIRD_PROMETHEUS_PEER_IP="$(
+    netbird status --ipv4 2>/dev/null |
+      awk 'NF {sub(/\/.*/, "", $1); print $1; exit}' || true
+  )"
+fi
+
+if [[ "$NETBIRD_AUTO_DISCOVERY" == 1 && -z "$NETBIRD_PROMETHEUS_PEER_IP" ]]; then
+  warn "Prometheus-NetBird-IP konnte nicht automatisch erkannt werden."
+  warn "Monitoring-Gruppe/Policy werden trotzdem verwaltet; den Prometheus-Peer ggf. einmalig der Gruppe '$NETBIRD_MONITORING_GROUP' zuordnen."
+fi
+
 HOST_BASE="$COMPOSE_WORKDIR/openmain-netbird-prometheus"
 HOST_CONFIG="$HOST_BASE/prometheus.yml"
 HOST_TARGETS="$HOST_BASE/targets"
@@ -85,6 +142,15 @@ cat > /usr/local/sbin/openmain-netbird-add-client <<EOF
 exec "$INSTALL_DIR/add-client-target.py" --file "$HOST_TARGETS/netbird-clients.json" "\$@"
 EOF
 chmod 0755 /usr/local/sbin/openmain-netbird-add-client
+
+log "Installiere automatische NetBird-Target-Synchronisation..."
+curl -fsSL "$BASE_URL/sync-client-targets.py" -o "$INSTALL_DIR/sync-client-targets.py"
+chmod 0755 "$INSTALL_DIR/sync-client-targets.py"
+ln -sfn "$INSTALL_DIR/sync-client-targets.py" /usr/local/sbin/openmain-netbird-sync-targets
+
+curl -fsSL   "$BASE_URL/systemd/openmain-netbird-target-sync.service"   -o /etc/systemd/system/openmain-netbird-target-sync.service
+curl -fsSL   "$BASE_URL/systemd/openmain-netbird-target-sync.timer"   -o /etc/systemd/system/openmain-netbird-target-sync.timer
+chmod 0644   /etc/systemd/system/openmain-netbird-target-sync.service   /etc/systemd/system/openmain-netbird-target-sync.timer
 
 log "Lade offizielle NetBird-Grafana-Dashboards (Ref: $NETBIRD_REF)..."
 for dashboard in management signal relay client; do
@@ -150,6 +216,32 @@ if [[ ! -f "$HOST_TARGETS/netbird-clients.json" ]]; then
   printf '[]\n' > "$HOST_TARGETS/netbird-clients.json"
 fi
 python3 -m json.tool "$HOST_TARGETS/netbird-clients.json" >/dev/null
+
+if [[ "$NETBIRD_AUTO_DISCOVERY" == 1 ]]; then
+  {
+    printf 'NETBIRD_MANAGEMENT_URL=%q\n' "$NETBIRD_MANAGEMENT_URL"
+    printf 'NETBIRD_API_TOKEN=%q\n' "$NETBIRD_API_TOKEN"
+    printf 'NETBIRD_METRICS_GROUP=%q\n' "$NETBIRD_METRICS_GROUP"
+    printf 'NETBIRD_MONITORING_GROUP=%q\n' "$NETBIRD_MONITORING_GROUP"
+    printf 'NETBIRD_METRICS_POLICY_NAME=%q\n' "$NETBIRD_METRICS_POLICY_NAME"
+    printf 'NETBIRD_PROMETHEUS_PEER_IP=%q\n' "$NETBIRD_PROMETHEUS_PEER_IP"
+    printf 'NETBIRD_CLIENT_METRICS_PORT=%q\n' "$NETBIRD_CLIENT_METRICS_PORT"
+    printf 'NETBIRD_CLIENT_TARGET_FILE=%q\n' "$HOST_TARGETS/netbird-clients.json"
+    printf 'NETBIRD_CUSTOMER_FALLBACK=%q\n' "$NETBIRD_CUSTOMER_FALLBACK"
+    printf 'NETBIRD_CUSTOMER_IGNORE_GROUPS=%q\n' "$NETBIRD_CUSTOMER_IGNORE_GROUPS"
+    printf 'NETBIRD_AUTO_POLICY=%q\n' "$NETBIRD_AUTO_POLICY"
+  } > "$AUTO_ENV_FILE"
+  chmod 0600 "$AUTO_ENV_FILE"
+
+  log "Synchronisiere vorhandene NetBird-Metrics-Peers..."
+  /usr/local/sbin/openmain-netbird-sync-targets
+
+  systemctl daemon-reload
+  systemctl enable --now openmain-netbird-target-sync.timer >/dev/null
+else
+  systemctl disable --now openmain-netbird-target-sync.timer >/dev/null 2>&1 || true
+  systemctl daemon-reload
+fi
 
 cat > "$HOST_DATASOURCE" <<EOF
 apiVersion: 1
@@ -298,6 +390,14 @@ printf '%-24s %s\n' "Datasource UID:" "$PROM_DS_UID"
 printf '%-24s %s\n' "Compose Override:" "$OVERRIDE_FILE"
 printf '%-24s %s\n' "Prometheus Config:" "$HOST_CONFIG"
 printf '%-24s %s\n' "Client Targets:" "$HOST_TARGETS/netbird-clients.json"
+printf '%-24s %s\n' "Auto Discovery:" "$([[ "$NETBIRD_AUTO_DISCOVERY" == 1 ]] && echo aktiv || echo deaktiviert)"
+if [[ "$NETBIRD_AUTO_DISCOVERY" == 1 ]]; then
+  printf '%-24s %s\n' "Metrics Gruppe:" "$NETBIRD_METRICS_GROUP"
+  printf '%-24s %s\n' "Monitoring Gruppe:" "$NETBIRD_MONITORING_GROUP"
+  printf '%-24s %s\n' "Client Metrics Port:" "$NETBIRD_CLIENT_METRICS_PORT"
+  printf '%-24s %s\n' "Prometheus Peer IP:" "${NETBIRD_PROMETHEUS_PEER_IP:-<nicht erkannt>}"
+  printf '%-24s %s\n' "Sync Timer:" "openmain-netbird-target-sync.timer"
+fi
 echo
 echo "Dashboards:"
 printf '  %s\n' "Netbird / Management" "Netbird / Signal" "Netbird / Relay" "Netbird / Client"
@@ -305,6 +405,13 @@ echo
 echo "NetBird-Server Target:"
 printf '%s\n' "$target_query"
 echo
-echo "Client hinzufügen:"
-echo "  openmain-netbird-add-client <NETBIRD-IP:9191> <HOSTNAME> [KUNDE]"
+if [[ "$NETBIRD_AUTO_DISCOVERY" == 1 ]]; then
+  echo "Client-Rollout:"
+  echo "  Peer in '$NETBIRD_METRICS_GROUP' + Metrics aktivieren -> Target wird automatisch übernommen."
+  echo "  Manueller Helper bleibt als Fallback verfügbar:"
+  echo "  openmain-netbird-add-client <NETBIRD-IP:9191> <HOSTNAME> [KUNDE]"
+else
+  echo "Client hinzufügen:"
+  echo "  openmain-netbird-add-client <NETBIRD-IP:9191> <HOSTNAME> [KUNDE]"
+fi
 echo "============================================================"

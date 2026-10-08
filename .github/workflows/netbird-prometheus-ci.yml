@@ -31,6 +31,7 @@ jobs:
           bash -n netbird-prometheus/install.sh
           bash -n netbird-prometheus/enable-server-metrics.sh
           bash -n netbird-prometheus/enable-client-metrics.sh
+          bash -n netbird-prometheus/enable-client-detail-metrics.sh
           bash -n netbird-prometheus/inspect-metrics.sh
           bash -n router-install.sh
           bash -n firstboot-router.sh
@@ -43,21 +44,29 @@ jobs:
           python3 -m py_compile netbird-prometheus/add-client-target.py
           python3 -m py_compile netbird-prometheus/normalize-dashboards.py
           python3 -m py_compile netbird-prometheus/generate-overview-dashboard.py
+          python3 -m py_compile netbird-prometheus/generate-relay-connections-dashboard.py
+          python3 -m py_compile netbird-prometheus/netbird-status-exporter.py
           python3 -m py_compile netbird-prometheus/sync-client-targets.py
 
       - name: PowerShell syntax
         shell: pwsh
         run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
+          foreach ($file in @(
             "netbird-prometheus/enable-client-metrics.ps1",
-            [ref]$tokens,
-            [ref]$errors
-          ) | Out-Null
-          if ($errors.Count -gt 0) {
-            $errors | ForEach-Object { Write-Error $_.Message }
-            exit 1
+            "netbird-prometheus/enable-client-detail-metrics.ps1",
+            "netbird-prometheus/netbird-status-exporter.ps1"
+          )) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $file,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error ($file + ": " + $_.Message) }
+              exit 1
+            }
           }
 
       - name: Validate Windows client metrics safety model
@@ -66,7 +75,12 @@ jobs:
           grep -F 'netsh interface portproxy add v4tov4' netbird-prometheus/enable-client-metrics.ps1
           grep -F -- '-LocalAddress $ListenAddress' netbird-prometheus/enable-client-metrics.ps1
           grep -F -- '-RemoteAddress $RemoteAddress' netbird-prometheus/enable-client-metrics.ps1
-          grep -F 'Monitoring -> NetBird-Metrics TCP/$MetricsPort' netbird-prometheus/enable-client-metrics.ps1
+          grep -F 'Monitoring -> NetBird-Metrics TCP/$MetricsPort,$DetailPort' netbird-prometheus/enable-client-metrics.ps1
+          grep -F 'enable-client-detail-metrics.ps1' netbird-prometheus/enable-client-metrics.ps1
+          grep -F 'netbird-status-exporter.ps1' netbird-prometheus/enable-client-detail-metrics.ps1
+          grep -F '127.0.0.1:$DetailPort' netbird-prometheus/enable-client-detail-metrics.ps1
+          grep -F 'netsh interface portproxy add v4tov4' netbird-prometheus/enable-client-detail-metrics.ps1
+          grep -F 'RemoteAddress = $PrometheusIp' netbird-prometheus/enable-client-detail-metrics.ps1
           ! grep -F -- '--local-metrics-address "$netBirdIp' netbird-prometheus/enable-client-metrics.ps1
 
       - name: Validate client metrics safety model
@@ -75,13 +89,18 @@ jobs:
           grep -F 'systemd-socket-proxyd' netbird-prometheus/enable-client-metrics.sh
           grep -F 'FreeBind=yes' netbird-prometheus/enable-client-metrics.sh
           grep -F 'ListenStream=$NETBIRD_IP:$METRICS_PORT' netbird-prometheus/enable-client-metrics.sh
-          ! grep -F -- '--local-metrics-address "$NETBIRD_IP:$METRICS_PORT"'             netbird-prometheus/enable-client-metrics.sh
+          grep -F 'enable-client-detail-metrics.sh' netbird-prometheus/enable-client-metrics.sh
+          grep -F 'ListenStream=$NETBIRD_IP:$DETAIL_PORT' netbird-prometheus/enable-client-detail-metrics.sh
+          grep -F 'netbird-status-exporter.py' netbird-prometheus/enable-client-detail-metrics.sh
+          grep -F '127.0.0.1' netbird-prometheus/enable-client-detail-metrics.sh
+          ! grep -F -- '--local-metrics-address "$NETBIRD_IP:$METRICS_PORT"' netbird-prometheus/enable-client-metrics.sh
 
       - name: Validate automatic rollout integration
         run: |
           grep -F -- '--enable-local-metrics' router-install.sh
           grep -F -- '--local-metrics-address "127.0.0.1:$METRICS_PORT"' router-install.sh
           grep -F 'METRICS_GROUP="${NB_METRICS_GROUP:-NetBird-Metrics}"' router-install.sh
+          grep -F 'METRICS_DETAIL_PORT="${NB_METRICS_DETAIL_PORT:-9192}"' router-install.sh
           grep -F 'ensure_setup_key_metrics_group' router-install.sh
           grep -F 'ensure_metrics_policy' router-install.sh
           grep -F 'openmain-netbird-client-metrics' router-install.sh
@@ -89,6 +108,7 @@ jobs:
           grep -F 'NB_METRICS_ENABLED' netbird-router/pve/install.sh
           grep -F 'NB_METRICS_ENABLED' netbird-router/pve/install-no-zabbix.sh
           grep -F 'NB_METRICS_ENABLED' netbird-router/raspberry-pi/install-router.sh
+          grep -F 'ports:[$port,$detail_port]' router-install.sh
 
       - name: Test NetBird API target rendering
         run: |
@@ -176,6 +196,54 @@ jobs:
           print("NetBird target rendering OK")
           PY
 
+      - name: Test detailed NetBird status exporter rendering
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+
+          path = Path("netbird-prometheus/netbird-status-exporter.py")
+          spec = importlib.util.spec_from_file_location("nb_status_exporter", path)
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          mod.netbird_status = lambda _: {
+              "peers": {
+                  "details": [
+                      {
+                          "fqdn": "peer-relay.example",
+                          "netbirdIp": "100.64.20.2",
+                          "status": "Connected",
+                          "connectionType": "Relayed",
+                          "relayAddress": "rels://relay.example:443",
+                          "transferReceived": 1234,
+                          "transferSent": 5678,
+                          "lastWireguardHandshake": "2026-10-08T10:00:00Z",
+                      },
+                      {
+                          "fqdn": "peer-p2p.example",
+                          "netbirdIp": "100.64.20.3",
+                          "status": "Connected",
+                          "connectionType": "P2P",
+                          "relayAddress": "",
+                          "transferReceived": 10,
+                          "transferSent": 20,
+                          "lastWireguardHandshake": "2026-10-08T10:00:00Z",
+                      },
+                  ]
+              }
+          }
+
+          text = mod.render_metrics("netbird")
+          assert 'peer="peer-relay.example"' in text
+          assert 'connection_type="relay"' in text
+          assert 'relay_address="rels://relay.example:443"' in text
+          assert 'peer="peer-p2p.example"' in text
+          assert 'connection_type="p2p"' in text
+          assert "openmain_netbird_relay_peer_relations 1" in text
+          assert "openmain_netbird_connected_peer_relations 2" in text
+          print("detailed status exporter rendering OK")
+          PY
       - name: Validate auto-discovery systemd units
         run: |
           grep -F 'EnvironmentFile=/etc/openmain-netbird-prometheus.env' netbird-prometheus/systemd/openmain-netbird-target-sync.service
@@ -225,12 +293,15 @@ jobs:
           python3 netbird-prometheus/generate-overview-dashboard.py \
             /tmp/netbird-dashboards/overview.json
 
+          python3 netbird-prometheus/generate-relay-connections-dashboard.py \
+            /tmp/netbird-dashboards/relay-connections.json
+
           python3 - <<'PY'
           import json
           from pathlib import Path
 
           root = Path("/tmp/netbird-dashboards")
-          expected = {"management.json", "signal.json", "relay.json", "client.json", "overview.json"}
+          expected = {"management.json", "signal.json", "relay.json", "client.json", "overview.json", "relay-connections.json"}
           files = {p.name for p in root.glob("*.json")}
           assert files == expected, files
 
@@ -283,6 +354,12 @@ jobs:
                   assert 'connection_type="p2p"' in client_panels["P2P peers"]["targets"][0]["expr"]
                   assert 'connection_type="relay"' in client_panels["Relay peers"]["targets"][0]["expr"]
                   assert client_panels["Management connected"]["fieldConfig"]["defaults"]["mappings"]
+                  assert client_panels["Management connected"]["targets"][0]["instant"] is True
+                  assert client_panels["Management connected"]["targets"][0]["range"] is False
+                  assert client_panels["Management connected"]["targets"][0]["expr"].startswith("max(")
+                  assert client_panels["Known peers"]["targets"][0]["expr"].startswith("max(")
+                  assert client_panels["P2P peers"]["targets"][0]["expr"].startswith("max(")
+                  assert client_panels["Relay peers"]["targets"][0]["expr"].startswith("max(")
                   assert "directly connected P2P peers" in client_panels["Peer latency"]["description"]
 
               if path.name == "overview.json":
@@ -338,6 +415,48 @@ jobs:
                   assert 'netbird_peer_latency_seconds' in repr(overview_panels["P2P Latenz"])
                   assert overview_panels["Client Status"]["type"] == "table"
 
+              if path.name == "relay-connections.json":
+                  assert data["uid"] == "openmain-netbird-relay-connections"
+                  assert data["title"] == "NetBird / Relay Connections"
+                  assert data["refresh"] == "30s"
+                  variables_by_name = {
+                      v.get("name"): v
+                      for v in data.get("templating", {}).get("list", [])
+                  }
+                  assert set(variables_by_name) == {"datasource", "customer", "source"}
+
+                  relay_panels = {}
+                  def index_relay_panels(value):
+                      if isinstance(value, list):
+                          for item in value:
+                              index_relay_panels(item)
+                      elif isinstance(value, dict):
+                          title = value.get("title")
+                          if title:
+                              relay_panels[title] = value
+                          for item in value.values():
+                              index_relay_panels(item)
+                  index_relay_panels(data)
+
+                  for title in (
+                      "Relay-Beziehungen",
+                      "Clients mit Relay",
+                      "Ziel-Peers über Relay",
+                      "Verwendete Relay-Server",
+                      "Aktuelle Relay-Verbindungen – wer mit wem",
+                      "Relay-Verbindungen nach Quelle",
+                      "Relay-Verbindungen nach Relay-Server",
+                      "Relay Traffic gesendet",
+                      "Relay Traffic empfangen",
+                  ):
+                      assert title in relay_panels, title
+
+                  relay_repr = repr(data)
+                  assert "openmain_netbird_peer_connection_info" in relay_repr
+                  assert 'connection_type="relay"' in relay_repr
+                  assert "relay_address" in relay_repr
+                  assert 'job="netbird-client-detail"' in relay_repr
+                  assert relay_panels["Aktuelle Relay-Verbindungen – wer mit wem"]["type"] == "table"
               if path.name == "management.json":
                   for stale in (
                       "management_grpc_sync_request_counter_ratio_total",
@@ -451,6 +570,17 @@ jobs:
                 - files:
                     - /etc/prometheus/targets/netbird-clients.json
                   refresh_interval: 30s
+
+            - job_name: netbird-client-detail
+              file_sd_configs:
+                - files:
+                    - /etc/prometheus/targets/netbird-clients.json
+                  refresh_interval: 30s
+              relabel_configs:
+                - source_labels: [__address__]
+                  regex: '(.+):[0-9]+'
+                  target_label: __address__
+                  replacement: '$1:9192'
           EOF
 
           docker run --rm             --entrypoint /bin/promtool             -v /tmp/prometheus.yml:/etc/prometheus/prometheus.yml:ro             prom/prometheus:v3.15.0             check config /etc/prometheus/prometheus.yml

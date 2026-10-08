@@ -139,7 +139,7 @@ def ids_from_rule_side(value):
     return result
 
 
-def policy_is_correct(policy, monitoring_group_id, metrics_group_id, port):
+def policy_is_correct(policy, monitoring_group_id, metrics_group_id, ports):
     if not policy.get("enabled"):
         return False
 
@@ -148,13 +148,14 @@ def policy_is_correct(policy, monitoring_group_id, metrics_group_id, port):
         return False
 
     rule = rules[0]
-    ports = {str(p) for p in (rule.get("ports") or [])}
+    expected_ports = {str(port) for port in ports}
+    rule_ports = {str(port) for port in (rule.get("ports") or [])}
     return (
         rule.get("enabled") is True
         and rule.get("action") == "accept"
         and rule.get("protocol") == "tcp"
         and rule.get("bidirectional") is False
-        and ports == {str(port)}
+        and rule_ports == expected_ports
         and ids_from_rule_side(rule.get("sources")) == {monitoring_group_id}
         and ids_from_rule_side(rule.get("destinations")) == {metrics_group_id}
     )
@@ -167,26 +168,29 @@ def ensure_policy(
     policy_name,
     monitoring_group_id,
     metrics_group_id,
-    port,
+    ports,
 ):
     existing = next((p for p in policies if p.get("name") == policy_name), None)
+
+    ports = [int(port) for port in ports]
+    port_text = ",".join(str(port) for port in ports)
 
     payload = {
         "name": policy_name,
         "description": (
             "Automatisch verwaltete OpenMain-Policy: nur Prometheus/Monitoring "
-            f"darf NetBird Client Metrics über TCP/{port} abfragen."
+            f"darf NetBird Client Metrics über TCP/{port_text} abfragen."
         ),
         "enabled": True,
         "rules": [
             {
-                "name": f"Prometheus TCP {port}",
-                "description": "Prometheus Zugriff auf NetBird Client Metrics",
+                "name": f"Prometheus TCP {port_text}",
+                "description": "Prometheus Zugriff auf NetBird Client Metrics und Peer-Details",
                 "enabled": True,
                 "action": "accept",
                 "bidirectional": False,
                 "protocol": "tcp",
-                "ports": [str(port)],
+                "ports": [str(port) for port in ports],
                 "sources": [monitoring_group_id],
                 "destinations": [metrics_group_id],
             }
@@ -195,7 +199,7 @@ def ensure_policy(
     }
 
     if existing and policy_is_correct(
-        existing, monitoring_group_id, metrics_group_id, port
+        existing, monitoring_group_id, metrics_group_id, ports
     ):
         return False
 
@@ -456,6 +460,11 @@ def parse_args():
         default=int(os.getenv("NETBIRD_CLIENT_METRICS_PORT", "9191")),
     )
     parser.add_argument(
+        "--detail-port",
+        type=int,
+        default=int(os.getenv("NETBIRD_CLIENT_DETAIL_PORT", "9192")),
+    )
+    parser.add_argument(
         "--no-policy",
         action="store_true",
         default=os.getenv("NETBIRD_AUTO_POLICY", "1") in {"0", "false", "False"},
@@ -470,6 +479,10 @@ def main():
 
     if args.port < 1 or args.port > 65535:
         raise SystemExit(f"Ungültiger Port: {args.port}")
+    if args.detail_port < 1 or args.detail_port > 65535:
+        raise SystemExit(f"Ungültiger Detail-Port: {args.detail_port}")
+    if args.detail_port == args.port:
+        raise SystemExit("Metrics- und Detail-Port müssen verschieden sein.")
 
     target_path = Path(args.target_file)
     ignore_groups = set(DEFAULT_IGNORE_GROUPS)
@@ -550,7 +563,7 @@ def main():
             args.policy_name,
             monitoring_gid,
             metrics_gid,
-            args.port,
+            [args.port, args.detail_port],
         )
 
     # Gruppenmitgliedschaften können sich durch ensure_peer_in_group geändert haben.

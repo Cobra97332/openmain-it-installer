@@ -10,6 +10,9 @@ param(
     [ValidateRange(1, 65535)]
     [int]$MetricsPort = 9191,
 
+    [ValidateRange(1, 65535)]
+    [int]$DetailPort = 9192,
+
     [ValidateRange(5, 180)]
     [int]$WaitSeconds = 60
 )
@@ -201,6 +204,10 @@ if (-not (Test-IPv4Address -Address $PrometheusIp)) {
     throw "PrometheusIp '$PrometheusIp' ist keine gültige IPv4-Adresse."
 }
 
+if ($DetailPort -eq $MetricsPort) {
+    throw "MetricsPort und DetailPort müssen verschieden sein."
+}
+
 $netBirdExe = Get-NetBirdExe
 $netBirdIp = Get-NetBirdIPv4 -NetBirdExe $netBirdExe
 $localUri = "http://127.0.0.1:$MetricsPort/metrics"
@@ -265,6 +272,23 @@ else {
     Write-Step "Portproxy lauscht auf $netBirdIp`:$MetricsPort."
 }
 
+Write-Step "Installiere Relay-/Peer-Detail-Exporter..."
+$detailHelper = Join-Path $env:TEMP "enable-netbird-client-detail-metrics.ps1"
+Invoke-WebRequest `
+    -Uri "https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-prometheus/enable-client-detail-metrics.ps1" `
+    -OutFile $detailHelper `
+    -UseBasicParsing
+
+& PowerShell.exe `
+    -NoProfile `
+    -ExecutionPolicy Bypass `
+    -File $detailHelper `
+    -PrometheusIp $PrometheusIp `
+    -DetailPort $DetailPort
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Relay-/Peer-Detail-Exporter konnte nicht eingerichtet werden."
+}
 Write-Host ""
 Write-Host "============================================================"
 Write-Host " OpenMain NetBird Client Metrics - Windows"
@@ -272,7 +296,8 @@ Write-Host "============================================================"
 Write-Host ("{0,-22} {1}" -f "Hostname:", $env:COMPUTERNAME)
 Write-Host ("{0,-22} {1}" -f "NetBird-IP:", $netBirdIp)
 Write-Host ("{0,-22} {1}" -f "Lokal:", $localUri)
-Write-Host ("{0,-22} {1}" -f "Prometheus Target:", "$netBirdIp`:$MetricsPort")
+Write-Host ("{0,-22} {1}" -f "Basis Target:", "$netBirdIp`:$MetricsPort")
+Write-Host ("{0,-22} {1}" -f "Detail Target:", "$netBirdIp`:$DetailPort")
 Write-Host ("{0,-22} {1}" -f "Erlaubte Quelle:", $PrometheusIp)
 Write-Host ""
 Write-Host "Prometheus-Server:"
@@ -280,7 +305,7 @@ Write-Host "  openmain-netbird-add-client $netBirdIp $($env:COMPUTERNAME.ToLower
 Write-Host ""
 Write-Host "Sicherheit:"
 Write-Host "  - NetBird selbst lauscht nur auf 127.0.0.1:$MetricsPort."
-Write-Host "  - Windows Portproxy veröffentlicht nur $netBirdIp`:$MetricsPort."
+Write-Host "  - Windows Portproxy veröffentlicht nur $netBirdIp`:$MetricsPort und $netBirdIp`:$DetailPort."
 Write-Host "  - Windows Firewall erlaubt nur $PrometheusIp als Quelle."
-Write-Host "  - Zusätzlich NetBird Policy Monitoring -> NetBird-Metrics TCP/$MetricsPort verwenden."
+Write-Host "  - Zusätzlich NetBird Policy Monitoring -> NetBird-Metrics TCP/$MetricsPort,$DetailPort verwenden."
 Write-Host "============================================================"

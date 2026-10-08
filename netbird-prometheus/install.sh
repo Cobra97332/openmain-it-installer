@@ -33,6 +33,7 @@ NETBIRD_MONITORING_GROUP="${NETBIRD_MONITORING_GROUP:-Monitoring}"
 NETBIRD_METRICS_POLICY_NAME="${NETBIRD_METRICS_POLICY_NAME:-OpenMain Prometheus -> NetBird Client Metrics}"
 NETBIRD_PROMETHEUS_PEER_IP="${NETBIRD_PROMETHEUS_PEER_IP:-}"
 NETBIRD_CLIENT_METRICS_PORT="${NETBIRD_CLIENT_METRICS_PORT:-9191}"
+NETBIRD_CLIENT_DETAIL_PORT="${NETBIRD_CLIENT_DETAIL_PORT:-9192}"
 NETBIRD_CUSTOMER_FALLBACK="${NETBIRD_CUSTOMER_FALLBACK:-intern}"
 NETBIRD_CUSTOMER_IGNORE_GROUPS="${NETBIRD_CUSTOMER_IGNORE_GROUPS:-}"
 
@@ -171,7 +172,11 @@ done
 log "Installiere Dashboard-Tools..."
 curl -fsSL "$BASE_URL/normalize-dashboards.py" -o "$INSTALL_DIR/normalize-dashboards.py"
 curl -fsSL "$BASE_URL/generate-overview-dashboard.py" -o "$INSTALL_DIR/generate-overview-dashboard.py"
-chmod 0755 "$INSTALL_DIR/normalize-dashboards.py" "$INSTALL_DIR/generate-overview-dashboard.py"
+curl -fsSL "$BASE_URL/generate-relay-connections-dashboard.py" -o "$INSTALL_DIR/generate-relay-connections-dashboard.py"
+chmod 0755 \
+  "$INSTALL_DIR/normalize-dashboards.py" \
+  "$INSTALL_DIR/generate-overview-dashboard.py" \
+  "$INSTALL_DIR/generate-relay-connections-dashboard.py"
 
 log "Passe NetBird-Dashboards an Grafana 13 an (Rate-Intervall: $NETBIRD_RATE_INTERVAL)..."
 python3 "$INSTALL_DIR/normalize-dashboards.py" \
@@ -181,6 +186,10 @@ python3 "$INSTALL_DIR/normalize-dashboards.py" \
 log "Erzeuge OpenMain NetBird Statistics Overview..."
 python3 "$INSTALL_DIR/generate-overview-dashboard.py" \
   "$HOST_DASHBOARDS/overview.json"
+
+log "Erzeuge OpenMain NetBird Relay Connections Dashboard..."
+python3 "$INSTALL_DIR/generate-relay-connections-dashboard.py" \
+  "$HOST_DASHBOARDS/relay-connections.json"
 
 
 cat > "$HOST_CONFIG" <<EOF
@@ -224,6 +233,20 @@ scrape_configs:
       - files:
           - /etc/prometheus/targets/netbird-clients.json
         refresh_interval: 30s
+
+  # Detailed per-peer status cannot be derived from NetBird's aggregate
+  # client metrics. The OpenMain status exporter exposes it on TCP/$NETBIRD_CLIENT_DETAIL_PORT.
+  # Reuse the same file_sd labels and only rewrite the target port.
+  - job_name: netbird-client-detail
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/netbird-clients.json
+        refresh_interval: 30s
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(.+):[0-9]+'
+        target_label: __address__
+        replacement: "$PROM_RELABEL_CAPTURE:$NETBIRD_CLIENT_DETAIL_PORT"
 EOF
 
 if [[ ! -f "$HOST_TARGETS/netbird-clients.json" ]]; then
@@ -240,6 +263,7 @@ if [[ "$NETBIRD_AUTO_DISCOVERY" == 1 ]]; then
     printf 'NETBIRD_METRICS_POLICY_NAME=%q\n' "$NETBIRD_METRICS_POLICY_NAME"
     printf 'NETBIRD_PROMETHEUS_PEER_IP=%q\n' "$NETBIRD_PROMETHEUS_PEER_IP"
     printf 'NETBIRD_CLIENT_METRICS_PORT=%q\n' "$NETBIRD_CLIENT_METRICS_PORT"
+    printf 'NETBIRD_CLIENT_DETAIL_PORT=%q\n' "$NETBIRD_CLIENT_DETAIL_PORT"
     printf 'NETBIRD_CLIENT_TARGET_FILE=%q\n' "$HOST_TARGETS/netbird-clients.json"
     printf 'NETBIRD_CUSTOMER_FALLBACK=%q\n' "$NETBIRD_CUSTOMER_FALLBACK"
     printf 'NETBIRD_CUSTOMER_IGNORE_GROUPS=%q\n' "$NETBIRD_CUSTOMER_IGNORE_GROUPS"
@@ -409,12 +433,13 @@ if [[ "$NETBIRD_AUTO_DISCOVERY" == 1 ]]; then
   printf '%-24s %s\n' "Metrics Gruppe:" "$NETBIRD_METRICS_GROUP"
   printf '%-24s %s\n' "Monitoring Gruppe:" "$NETBIRD_MONITORING_GROUP"
   printf '%-24s %s\n' "Client Metrics Port:" "$NETBIRD_CLIENT_METRICS_PORT"
+printf '%-24s %s\n' "Client Detail Port:" "$NETBIRD_CLIENT_DETAIL_PORT"
   printf '%-24s %s\n' "Prometheus Peer IP:" "${NETBIRD_PROMETHEUS_PEER_IP:-<nicht erkannt>}"
   printf '%-24s %s\n' "Sync Timer:" "openmain-netbird-target-sync.timer"
 fi
 echo
 echo "Dashboards:"
-printf '  %s\n' "NetBird / Overview" "Netbird / Management" "Netbird / Signal" "Netbird / Relay" "Netbird / Client"
+printf '  %s\n' "NetBird / Overview" "NetBird / Relay Connections" "Netbird / Management" "Netbird / Signal" "Netbird / Relay" "Netbird / Client"
 echo
 echo "NetBird-Server Target:"
 printf '%s\n' "$target_query"

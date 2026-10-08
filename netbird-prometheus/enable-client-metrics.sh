@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+BASE_URL="${OPENMAIN_GITHUB_RAW:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-prometheus}"
 METRICS_PORT="${NETBIRD_CLIENT_METRICS_PORT:-9191}"
+DETAIL_PORT="${NETBIRD_CLIENT_DETAIL_PORT:-9192}"
 WAIT_SECONDS="${NETBIRD_CLIENT_METRICS_WAIT_SECONDS:-60}"
 UNIT_BASE="${NETBIRD_CLIENT_METRICS_UNIT_BASE:-openmain-netbird-metrics-proxy}"
 
@@ -24,6 +26,9 @@ done
 
 [[ "$METRICS_PORT" =~ ^[0-9]+$ ]] || die "Ungültiger Port: $METRICS_PORT"
 (( METRICS_PORT >= 1 && METRICS_PORT <= 65535 )) || die "Ungültiger Port: $METRICS_PORT"
+[[ "$DETAIL_PORT" =~ ^[0-9]+$ ]] || die "Ungültiger Detail-Port: $DETAIL_PORT"
+(( DETAIL_PORT >= 1 && DETAIL_PORT <= 65535 )) || die "Ungültiger Detail-Port: $DETAIL_PORT"
+[[ "$DETAIL_PORT" != "$METRICS_PORT" ]] || die "Metrics- und Detail-Port müssen verschieden sein."
 
 find_socket_proxyd() {
   local candidate
@@ -117,6 +122,18 @@ apply_local_metrics() {
   wait_for_endpoint "$LOOPBACK_ENDPOINT"
 }
 
+install_detail_exporter() {
+  local helper="/usr/local/sbin/openmain-netbird-client-detail-metrics"
+
+  log "Installiere Relay-/Peer-Detail-Exporter..."
+  curl -fsSL "$BASE_URL/enable-client-detail-metrics.sh" -o "$helper" \
+    || die "Detail-Metrics-Helper konnte nicht geladen werden."
+  chmod 0755 "$helper"
+
+  NETBIRD_CLIENT_DETAIL_PORT="$DETAIL_PORT" \
+    "$helper"
+}
+
 finish_and_verify() {
   log "Starte NetBird-only Socket-Proxy auf $NETBIRD_IP:$METRICS_PORT ..."
   start_proxy
@@ -130,21 +147,24 @@ finish_and_verify() {
       die "NetBird-Endpunkt $REMOTE_ENDPOINT ist nicht erreichbar."
     }
 
+  install_detail_exporter
+
   echo
   echo "NetBird Client Metrics aktiv:"
   echo "  lokal:    $LOOPBACK_ENDPOINT"
   echo "  NetBird:  $REMOTE_ENDPOINT"
   echo
-  echo "Prometheus Target:"
-  echo "  $NETBIRD_IP:$METRICS_PORT"
+  echo "Prometheus Targets:"
+  echo "  Basis-Metrics:   $NETBIRD_IP:$METRICS_PORT"
+  echo "  Relay/Peer-Info: $NETBIRD_IP:$DETAIL_PORT"
   echo
   echo "Hostname:"
   echo "  $(hostname -s)"
   echo
   echo "Sicherheit:"
   echo "  - NetBird selbst lauscht nur auf Loopback."
-  echo "  - systemd-socket-proxyd veröffentlicht TCP/$METRICS_PORT nur auf der NetBird-IP."
-  echo "  - Der Endpoint hat keine Authentifizierung."
+  echo "  - systemd-socket-proxyd veröffentlicht TCP/$METRICS_PORT und TCP/$DETAIL_PORT nur auf der NetBird-IP."
+  echo "  - Die Endpoints haben keine Authentifizierung."
   echo "  - Zugriff zusätzlich per NetBird-Policy nur vom Prometheus-Peer erlauben."
 }
 

@@ -372,6 +372,36 @@ for path in sorted(root.glob("*.json")):
         if missing:
             raise SystemExit(f"client.json: Top-Stat-Panels fehlen: {missing}")
 
+        # Stat panels must show the current state, not historical series from
+        # previous/manual file_sd targets. During target migration Prometheus
+        # can retain an old series inside the dashboard time range, which made
+        # Grafana render the same client twice. Instant queries plus max()
+        # collapse those historical/duplicate label sets safely.
+        stat_queries = {
+            "Management connected": (
+                'max(netbird_management_connected{job="netbird-client",'
+                'customer=~"$customer",host=~"$host"}) or vector(0)'
+            ),
+            "Signal connected": (
+                'max(netbird_signal_connected{job="netbird-client",'
+                'customer=~"$customer",host=~"$host"}) or vector(0)'
+            ),
+            "Known peers": (
+                'max(netbird_peers{job="netbird-client",'
+                'customer=~"$customer",host=~"$host"}) or vector(0)'
+            ),
+            "Connected peers": (
+                'sum(max by (connection_type) ('
+                'netbird_peers_connected{job="netbird-client",'
+                'customer=~"$customer",host=~"$host"})) or vector(0)'
+            ),
+        }
+        for title, expr in stat_queries.items():
+            target = top_panels[title]["targets"][0]
+            target["expr"] = expr
+            target["instant"] = True
+            target["range"] = False
+
         connected = top_panels["Connected peers"]
         max_id = [0]
 
@@ -397,11 +427,13 @@ for path in sorted(root.glob("*.json")):
             panel["title"] = title
             panel["gridPos"] = {"h": 4, "w": 4, "x": x_pos, "y": 1}
             panel["targets"][0]["expr"] = (
-                'netbird_peers_connected{job="netbird-client",'
+                'max(netbird_peers_connected{job="netbird-client",'
                 'customer=~"$customer",host=~"$host",'
-                f'connection_type="{connection_type}"}}'
+                f'connection_type="{connection_type}"}}) or vector(0)'
             )
             panel["targets"][0]["legendFormat"] = title
+            panel["targets"][0]["instant"] = True
+            panel["targets"][0]["range"] = False
             data.setdefault("panels", []).append(panel)
 
     rendered = json.dumps(data, indent=2) + "\n"

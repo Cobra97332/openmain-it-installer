@@ -121,6 +121,34 @@ jobs:
                   assert defaults["decimals"] == 0
                   assert panel["options"]["showPercentChange"] is False
 
+                  panels = {}
+                  def index_panels(value):
+                      if isinstance(value, list):
+                          for item in value:
+                              index_panels(item)
+                      elif isinstance(value, dict):
+                          title = value.get("title")
+                          if title:
+                              panels[title] = value
+                          for item in value.values():
+                              index_panels(item)
+                  index_panels(data)
+
+                  operations = panels["Update Channel operations"]
+                  assert operations["type"] == "timeseries"
+                  assert operations["fieldConfig"]["defaults"]["custom"]["drawStyle"] == "bars"
+
+                  recreated = panels["Percentage of Recreated channels"]
+                  assert len(recreated["targets"]) == 1
+                  assert recreated["targets"][0]["datasource"]["type"] == "prometheus"
+                  assert "closed=\"true\"" in recreated["targets"][0]["expr"]
+                  assert "clamp_min" in recreated["targets"][0]["expr"]
+
+                  queue = panels["Update Channel queue observations (1h)"]
+                  assert queue["type"] == "stat"
+                  assert "management_grpc_updatechannel_queue_length_count" in queue["targets"][0]["expr"]
+                  assert "or vector(0)" in queue["targets"][0]["expr"]
+
               variables = data.get("templating", {}).get("list", [])
               assert any(v.get("type") == "datasource" and v.get("query") == "prometheus" for v in variables), path
 

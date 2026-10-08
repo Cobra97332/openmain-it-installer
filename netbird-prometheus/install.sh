@@ -136,7 +136,7 @@ scrape_configs:
       - source_labels: [__name__]
         regex: 'signal_(.*)'
         target_label: __name__
-        replacement: '$1'
+        replacement: '\$1'
 
   - job_name: netbird-client
     file_sd_configs:

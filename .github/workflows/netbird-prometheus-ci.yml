@@ -100,6 +100,8 @@ jobs:
           grep -F -- '--enable-local-metrics' router-install.sh
           grep -F -- '--local-metrics-address "127.0.0.1:$METRICS_PORT"' router-install.sh
           grep -F 'METRICS_GROUP="${NB_METRICS_GROUP:-NetBird-Metrics}"' router-install.sh
+          grep -F 'CUSTOMER_LABEL_PREFIX="${NB_CUSTOMER_LABEL_PREFIX:-Kunde:}"' router-install.sh
+          grep -F 'customer_label_group="${CUSTOMER_LABEL_PREFIX}${CUSTOMER}"' router-install.sh
           grep -F 'METRICS_DETAIL_PORT="${NB_METRICS_DETAIL_PORT:-9192}"' router-install.sh
           grep -F 'ensure_setup_key_metrics_group' router-install.sh
           grep -F 'ensure_metrics_policy' router-install.sh
@@ -120,6 +122,39 @@ jobs:
           spec = importlib.util.spec_from_file_location("sync_client_targets", path)
           mod = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(mod)
+
+          assert mod.infer_customer(
+              {
+                  "hostname": "nb-Bauer-2",
+                  "groups": [
+                      {"name": "All"},
+                      {"name": "Kunden"},
+                      {"name": "Bauer"},
+                      {"name": "SSH-Access"},
+                      {"name": "NetBird-Metrics"},
+                  ],
+              },
+              "NetBird-Metrics",
+              "Monitoring",
+              "intern",
+              mod.DEFAULT_IGNORE_GROUPS,
+          ) == "Bauer"
+
+          assert mod.infer_customer(
+              {
+                  "hostname": "router-4711",
+                  "groups": [
+                      {"name": "All"},
+                      {"name": "Kunde:Bauer"},
+                      {"name": "Other-Technical-Group"},
+                      {"name": "NetBird-Metrics"},
+                  ],
+              },
+              "NetBird-Metrics",
+              "Monitoring",
+              "intern",
+              mod.DEFAULT_IGNORE_GROUPS,
+          ) == "Bauer"
 
           peers = [
               {

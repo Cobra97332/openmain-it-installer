@@ -564,6 +564,17 @@ jobs:
                 - files:
                     - /etc/prometheus/targets/netbird-clients.json
                   refresh_interval: 30s
+
+            - job_name: netbird-client-detail
+              file_sd_configs:
+                - files:
+                    - /etc/prometheus/targets/netbird-clients.json
+                  refresh_interval: 30s
+              relabel_configs:
+                - source_labels: [__address__]
+                  regex: '(.+):[0-9]+'
+                  target_label: __address__
+                  replacement: '$1:9192'
           EOF
 
           docker run --rm             --entrypoint /bin/promtool             -v /tmp/prometheus.yml:/etc/prometheus/prometheus.yml:ro             prom/prometheus:v3.15.0             check config /etc/prometheus/prometheus.yml

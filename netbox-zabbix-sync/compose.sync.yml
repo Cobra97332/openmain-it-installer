@@ -10,11 +10,8 @@ services:
         condition: service_healthy
     env_file:
       - ./env/sync.env
-    # The embedded NetBird reverse-proxy peer, NOT the management server.
-    # /etc/hosts is container-specific even with network_mode: service:netbird.
-    # This preserves the HTTPS hostname for SNI and certificate validation.
-    extra_hosts:
-      - "zabbix.openmain-it.de:100.107.239.95"
+    # Connect to the reverse-proxy peer inside sync.py while preserving TLS SNI.
+    # Docker forbids extra_hosts with network_mode: service:netbird.
     command: ["python", "-u", "/app/sync.py"]
     volumes:
       - ./netbox-sync/sync.py:/app/sync.py:ro

@@ -105,10 +105,11 @@ jobs:
                   assert set(variables_by_name) == {"datasource", "customer", "host"}
                   assert variables_by_name["customer"]["label"] == "Kunde"
                   assert variables_by_name["host"]["label"] == "Host"
-                  assert 'customer=~"$customer"' in json.dumps(data)
-                  assert 'host=~"$host"' in json.dumps(data)
-                  assert 'instance=~"$instance"' not in json.dumps(data)
-                  assert 'job=~"$job"' not in json.dumps(data)
+                  client_repr = repr(data)
+                  assert 'customer=~"$customer"' in client_repr
+                  assert 'host=~"$host"' in client_repr
+                  assert 'instance=~"$instance"' not in client_repr
+                  assert 'job=~"$job"' not in client_repr
 
                   client_panels = {}
                   def index_client_panels(value):

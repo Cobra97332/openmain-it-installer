@@ -169,17 +169,24 @@ def bargauge(pid, title, expr, legend, x, y, w=12, h=8, unit="none"):
     }
 
 
-def relay_table():
-    return {
-        "id": 6,
-        "type": "table",
-        "title": "Aktuelle Relay-Verbindungen – wer mit wem",
-        "description": (
-            "Jede Zeile zeigt die Sicht eines überwachten Clients auf seinen Relay-Peer. "
+def connection_table(panel_id, title, expr, y, relay_only=False):
+    description = (
+        "Aktuelle Peer-Beziehungen aus Sicht der überwachten Clients. "
+        "Bei P2P bleibt 'Relay Server' leer; bei Relay zeigt die Spalte den tatsächlich verwendeten Relay-Endpunkt."
+    )
+    if relay_only:
+        description = (
+            "Nur aktuelle Relay-Beziehungen. Jede Zeile zeigt Quelle, Ziel und den tatsächlich verwendeten Relay-Server. "
             "Wenn beide Endpunkte überwacht werden, kann dieselbe Verbindung in beiden Richtungen erscheinen."
-        ),
+        )
+
+    return {
+        "id": panel_id,
+        "type": "table",
+        "title": title,
+        "description": description,
         "datasource": ds(),
-        "gridPos": {"h": 11, "w": 24, "x": 0, "y": 10},
+        "gridPos": {"h": 10, "w": 24, "x": 0, "y": y},
         "fieldConfig": {
             "defaults": {
                 "custom": {
@@ -190,7 +197,30 @@ def relay_table():
                 },
                 "mappings": [],
             },
-            "overrides": [],
+            "overrides": [
+                {
+                    "matcher": {"id": "byName", "options": "Verbindung"},
+                    "properties": [
+                        {
+                            "id": "mappings",
+                            "value": [
+                                {
+                                    "type": "value",
+                                    "options": {
+                                        "p2p": {"color": "green", "index": 0, "text": "P2P"},
+                                        "relay": {"color": "orange", "index": 1, "text": "Relay"},
+                                        "unknown": {"color": "yellow", "index": 2, "text": "Unknown"},
+                                    },
+                                }
+                            ],
+                        },
+                        {
+                            "id": "custom.cellOptions",
+                            "value": {"type": "color-text"},
+                        },
+                    ],
+                }
+            ],
         },
         "options": {
             "cellHeight": "sm",
@@ -205,8 +235,7 @@ def relay_table():
         },
         "targets": [
             target(
-                'openmain_netbird_peer_connection_info{job="netbird-client-detail",'
-                'customer=~"$customer",host=~"$source",connection_type="relay"}',
+                expr,
                 legend="{{host}} -> {{peer}}",
                 instant=True,
                 table=True,
@@ -223,7 +252,6 @@ def relay_table():
                         "job": True,
                         "managed_by": True,
                         "peer_id": True,
-                        "connection_type": True,
                         "Value": True,
                     },
                     "indexByName": {
@@ -231,13 +259,15 @@ def relay_table():
                         "host": 1,
                         "peer": 2,
                         "peer_ip": 3,
-                        "relay_address": 4,
+                        "connection_type": 4,
+                        "relay_address": 5,
                     },
                     "renameByName": {
                         "customer": "Kunde",
                         "host": "Quelle",
                         "peer": "Ziel",
                         "peer_ip": "Ziel NetBird-IP",
+                        "connection_type": "Verbindung",
                         "relay_address": "Relay Server",
                     },
                 },
@@ -245,6 +275,27 @@ def relay_table():
         ],
     }
 
+
+def relay_table():
+    return connection_table(
+        7,
+        "Aktuelle Relay-Verbindungen – wer mit wem",
+        'openmain_netbird_peer_connection_info{job="netbird-client-detail",'
+        'customer=~"$customer",host=~"$source",connection_type="relay"}',
+        20,
+        relay_only=True,
+    )
+
+
+def all_connections_table():
+    return connection_table(
+        6,
+        "Alle aktuellen Verbindungen",
+        'openmain_netbird_peer_connection_info{job="netbird-client-detail",'
+        'customer=~"$customer",host=~"$source"}',
+        10,
+        relay_only=False,
+    )
 
 def build():
     relay_filter = (
@@ -283,60 +334,61 @@ def build():
             18,
             1,
         ),
+        all_connections_table(),
         relay_table(),
-        row(7, "Verteilung & Verlauf", 21),
+        row(8, "Verteilung & Verlauf", 25),
         timeseries(
-            8,
+            9,
             "Relay-Verbindungen nach Quelle",
             f'sum by (host) (openmain_netbird_peer_connection_info{{{relay_filter}}})',
             "{{host}}",
             0,
-            22,
+            26,
             w=12,
             h=8,
             unit="none",
         ),
         timeseries(
-            9,
+            10,
             "Relay-Verbindungen nach Relay-Server",
             f'sum by (relay_address) (openmain_netbird_peer_connection_info{{{relay_filter},relay_address!=""}})',
             "{{relay_address}}",
             12,
-            22,
+            26,
             w=12,
             h=8,
             unit="none",
         ),
-        row(10, "Traffic & Handshake", 30),
+        row(11, "Traffic & Handshake", 34),
         bargauge(
-            11,
+            12,
             "Relay Traffic gesendet",
             f'topk(15, rate(openmain_netbird_peer_transfer_sent_bytes{{{relay_filter}}}[2m]))',
             "{{host}} -> {{peer}}",
             0,
-            31,
-            w=12,
-            h=8,
-            unit="Bps",
-        ),
-        bargauge(
-            12,
-            "Relay Traffic empfangen",
-            f'topk(15, rate(openmain_netbird_peer_transfer_received_bytes{{{relay_filter}}}[2m]))',
-            "{{host}} <- {{peer}}",
-            12,
-            31,
+            35,
             w=12,
             h=8,
             unit="Bps",
         ),
         bargauge(
             13,
+            "Relay Traffic empfangen",
+            f'topk(15, rate(openmain_netbird_peer_transfer_received_bytes{{{relay_filter}}}[2m]))',
+            "{{host}} <- {{peer}}",
+            12,
+            35,
+            w=12,
+            h=8,
+            unit="Bps",
+        ),
+        bargauge(
+            14,
             "Zeit seit letztem WireGuard-Handshake",
             f'topk(15, time() - openmain_netbird_peer_last_handshake_timestamp_seconds{{{relay_filter}}})',
             "{{host}} -> {{peer}}",
             0,
-            39,
+            43,
             w=24,
             h=8,
             unit="s",
@@ -394,13 +446,13 @@ def build():
                     "datasource": ds(),
                     "definition": (
                         'label_values(openmain_netbird_peer_connection_info{job="netbird-client-detail",'
-                        'customer=~"$customer",connection_type="relay"},host)'
+                        'customer=~"$customer"},host)'
                     ),
                     "query": {
                         "qryType": 1,
                         "query": (
                             'label_values(openmain_netbird_peer_connection_info{job="netbird-client-detail",'
-                            'customer=~"$customer",connection_type="relay"},host)'
+                            'customer=~"$customer"},host)'
                         ),
                         "refId": "RelaySource",
                     },

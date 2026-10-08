@@ -14,7 +14,6 @@ services:
     # Docker forbids extra_hosts with network_mode: service:netbird.
     command: ["python", "-u", "/app/sync.py"]
     volumes:
-      - ./netbox-sync/sync.py:/app/sync.py:ro
-      - ./netbox-sync/inventory_report.py:/app/inventory_report.py:ro
+      - ./netbox-sync:/app:ro
     security_opt:
       - no-new-privileges:true

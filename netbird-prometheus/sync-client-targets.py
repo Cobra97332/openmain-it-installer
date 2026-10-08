@@ -475,6 +475,34 @@ def main():
     if not isinstance(peers, list):
         raise RuntimeError("NetBird /peers lieferte keine Liste.")
 
+    existing = load_existing_targets(target_path)
+
+    # Bereits manuell eingetragene Prometheus-Targets automatisch in die
+    # NetBird-Metrics-Gruppe übernehmen. Damit werden bestehende Installationen
+    # ohne erneute Handarbeit auf die API-basierte Verwaltung migriert.
+    peer_by_ip = {
+        str(peer.get("ip") or ""): peer
+        for peer in peers
+        if str(peer.get("ip") or "")
+    }
+    for item in existing:
+        if (item.get("labels") or {}).get("managed_by") == "netbird-api":
+            continue
+        for target in item.get("targets") or []:
+            if not isinstance(target, str):
+                continue
+            target_ip = target.rsplit(":", 1)[0]
+            peer = peer_by_ip.get(target_ip)
+            if not peer:
+                continue
+            ensure_peer_in_group(
+                args.management_url,
+                args.api_token,
+                metrics_gid,
+                str(peer.get("id")),
+                args.metrics_group,
+            )
+
     if args.prometheus_peer_ip:
         prometheus_peer = next(
             (peer for peer in peers if str(peer.get("ip") or "") == args.prometheus_peer_ip),
@@ -518,7 +546,6 @@ def main():
         args.customer_fallback,
         ignore_groups,
     )
-    existing = load_existing_targets(target_path)
     merged = merge_targets(existing, automatic)
     changed = atomic_write_json(target_path, merged)
 

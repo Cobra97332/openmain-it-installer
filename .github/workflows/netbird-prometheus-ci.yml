@@ -32,6 +32,14 @@ jobs:
           python3 -m py_compile netbird-prometheus/add-client-target.py
           python3 -m py_compile netbird-prometheus/normalize-dashboards.py
 
+      - name: Validate client metrics safety model
+        run: |
+          grep -F '127.0.0.1' netbird-prometheus/enable-client-metrics.sh
+          grep -F 'systemd-socket-proxyd' netbird-prometheus/enable-client-metrics.sh
+          grep -F 'FreeBind=yes' netbird-prometheus/enable-client-metrics.sh
+          grep -F 'ListenStream=$NETBIRD_IP:$METRICS_PORT' netbird-prometheus/enable-client-metrics.sh
+          ! grep -F -- '--local-metrics-address "$NETBIRD_IP:$METRICS_PORT"'             netbird-prometheus/enable-client-metrics.sh
+
       - name: Test client target helper
         run: |
           printf '[]\n' > /tmp/netbird-clients.json

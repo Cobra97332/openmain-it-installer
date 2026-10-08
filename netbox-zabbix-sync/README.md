@@ -42,3 +42,31 @@ In `env/sync.env`, use `ZABBIX_CONNECT_IP=100.107.239.95`, `ZABBIX_URL=https://z
 After updating, inspect the sync container logs to confirm that the Zabbix API returns hosts. Ordinary DNS lookups will continue to return public addresses; ZABBIX_CONNECT_IP is used only inside the sync script. Keep DRY_RUN=true until validated.
 
 Always include both Compose files when operating the sync service.
+
+## Read-only discovery and classification (default)
+
+The new `inventory_report.py` builds a classification report from Zabbix host groups, parent templates, type tags and the `inventory.type` field. It prints one JSON-formatted `DISCOVERY` line per host, followed by summary, unique host groups and template names.
+
+- `DISCOVERY_ONLY=true` (default even when missing from an old env file) disables all NetBox import logic, even when DRY_RUN=false.
+- `DRY_RUN=true` still protects the older placeholder importer when discovery-only mode is intentionally disabled.
+- Classification `kind=vm` or `kind=device` requires explicit metadata. Contradictions and ambiguous hosts remain `unknown`.
+- Tenant hints are only extracted from explicit customer/tenant tags or groups prefixed `Customers/`, `Kunden/`, `Tenants/`, or `Mandanten/`.
+- Role hints derive from known monitoring templates/group names and are not proof of asset type.
+- Loopback and link-local addresses are ignored. No IPAM records are written.
+- This inventory report is not suitable for public release if Zabbix contains confidential hostnames or customer group names. Logs remain on your Docker host.
+
+### Update the service
+
+```bash
+cd /opt/netbox
+git -C /tmp/openmain-it-installer pull --ff-only
+cp /tmp/openmain-it-installer/netbox-zabbix-sync/compose.sync.yml ./compose.sync.yml
+cp /tmp/openmain-it-installer/netbox-zabbix-sync/netbox-sync/sync.py ./netbox-sync/sync.py
+cp /tmp/openmain-it-installer/netbox-zabbix-sync/netbox-sync/inventory_report.py ./netbox-sync/inventory_report.py
+# Keep your existing env/sync.env and all tokens.
+docker compose -f docker-compose.yml -f compose.sync.yml config -q
+docker compose -f docker-compose.yml -f compose.sync.yml up -d --no-deps --force-recreate netbox-sync
+docker compose -f docker-compose.yml -f compose.sync.yml logs --tail=120 netbox-sync
+```
+
+Review the resulting reports before enabling any write operations.

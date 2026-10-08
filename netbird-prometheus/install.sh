@@ -139,7 +139,16 @@ chmod 0755 "$INSTALL_DIR/add-client-target.py"
 
 cat > /usr/local/sbin/openmain-netbird-add-client <<EOF
 #!/usr/bin/env bash
-exec "$INSTALL_DIR/add-client-target.py" --file "$HOST_TARGETS/netbird-clients.json" "\$@"
+set -Eeuo pipefail
+"$INSTALL_DIR/add-client-target.py" --file "$HOST_TARGETS/netbird-clients.json" "\$@"
+
+if [[ -f "$AUTO_ENV_FILE" && -x /usr/local/sbin/openmain-netbird-sync-targets ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$AUTO_ENV_FILE"
+  set +a
+  /usr/local/sbin/openmain-netbird-sync-targets
+fi
 EOF
 chmod 0755 /usr/local/sbin/openmain-netbird-add-client
 

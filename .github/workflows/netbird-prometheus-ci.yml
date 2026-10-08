@@ -42,6 +42,7 @@ jobs:
         run: |
           python3 -m py_compile netbird-prometheus/add-client-target.py
           python3 -m py_compile netbird-prometheus/normalize-dashboards.py
+          python3 -m py_compile netbird-prometheus/generate-overview-dashboard.py
           python3 -m py_compile netbird-prometheus/sync-client-targets.py
 
       - name: PowerShell syntax
@@ -221,12 +222,15 @@ jobs:
             /tmp/netbird-dashboards \
             --rate-interval 2m
 
+          python3 netbird-prometheus/generate-overview-dashboard.py \
+            /tmp/netbird-dashboards/overview.json
+
           python3 - <<'PY'
           import json
           from pathlib import Path
 
           root = Path("/tmp/netbird-dashboards")
-          expected = {"management.json", "signal.json", "relay.json", "client.json"}
+          expected = {"management.json", "signal.json", "relay.json", "client.json", "overview.json"}
           files = {p.name for p in root.glob("*.json")}
           assert files == expected, files
 
@@ -280,6 +284,59 @@ jobs:
                   assert 'connection_type="relay"' in client_panels["Relay peers"]["targets"][0]["expr"]
                   assert client_panels["Management connected"]["fieldConfig"]["defaults"]["mappings"]
                   assert "directly connected P2P peers" in client_panels["Peer latency"]["description"]
+
+              if path.name == "overview.json":
+                  assert data["uid"] == "openmain-netbird-overview"
+                  assert data["title"] == "NetBird / Overview"
+                  assert data["refresh"] == "30s"
+                  assert data["time"] == {"from": "now-2d", "to": "now"}
+                  assert "$__rate_interval" not in text
+                  assert "$interval" not in text
+
+                  variables_by_name = {
+                      v.get("name"): v
+                      for v in data.get("templating", {}).get("list", [])
+                  }
+                  assert set(variables_by_name) == {"datasource", "customer", "host"}
+                  assert variables_by_name["customer"]["includeAll"] is True
+                  assert variables_by_name["host"]["includeAll"] is True
+
+                  overview_panels = {}
+                  def index_overview_panels(value):
+                      if isinstance(value, list):
+                          for item in value:
+                              index_overview_panels(item)
+                      elif isinstance(value, dict):
+                          title = value.get("title")
+                          if title:
+                              overview_panels[title] = value
+                          for item in value.values():
+                              index_overview_panels(item)
+                  index_overview_panels(data)
+
+                  for title in (
+                      "Clients online",
+                      "Clients offline",
+                      "Management verbunden",
+                      "Signal verbunden",
+                      "P2P Verbindungen",
+                      "Relay Verbindungen",
+                      "P2P Anteil",
+                      "Relay Traffic",
+                      "P2P Latenz",
+                      "Verbindungstypen",
+                      "Überwachte Clients je Kunde",
+                      "Top P2P Latenzen",
+                      "Client Status",
+                  ):
+                      assert title in overview_panels, title
+
+                  assert 'connection_type="p2p"' in repr(overview_panels["P2P Verbindungen"])
+                  assert 'connection_type="relay"' in repr(overview_panels["Relay Verbindungen"])
+                  assert 'relay_transfer_received_bytes_total' in repr(overview_panels["Relay Traffic"])
+                  assert 'relay_transfer_sent_bytes_total' in repr(overview_panels["Relay Traffic"])
+                  assert 'netbird_peer_latency_seconds' in repr(overview_panels["P2P Latenz"])
+                  assert overview_panels["Client Status"]["type"] == "table"
 
               if path.name == "management.json":
                   for stale in (

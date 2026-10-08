@@ -1,0 +1,107 @@
+name: NetBird Prometheus CI
+
+on:
+  push:
+    paths:
+      - 'netbird-prometheus/**'
+      - '.github/workflows/netbird-prometheus-ci.yml'
+  pull_request:
+    paths:
+      - 'netbird-prometheus/**'
+      - '.github/workflows/netbird-prometheus-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bash syntax
+        run: |
+          bash -n netbird-prometheus/install.sh
+          bash -n netbird-prometheus/enable-server-metrics.sh
+          bash -n netbird-prometheus/enable-client-metrics.sh
+
+      - name: Python syntax
+        run: |
+          python3 -m py_compile netbird-prometheus/add-client-target.py
+
+      - name: Test client target helper
+        run: |
+          printf '[]\n' > /tmp/netbird-clients.json
+          python3 netbird-prometheus/add-client-target.py             --file /tmp/netbird-clients.json             100.64.10.20 test-gateway customer-a
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("/tmp/netbird-clients.json").read_text())
+          assert data == [{
+              "targets": ["100.64.10.20:9191"],
+              "labels": {"host": "test-gateway", "customer": "customer-a"},
+          }], data
+          print("client target helper OK")
+          PY
+
+      - name: Validate pinned NetBird dashboards
+        run: |
+          ref="$(sed -n 's/^NETBIRD_REF=.*:-\([^}]*\)}.*/\1/p' netbird-prometheus/install.sh | head -1)"
+          test -n "$ref"
+          mkdir -p /tmp/netbird-dashboards
+          for dashboard in management signal relay client; do
+            curl -fsSL               "https://raw.githubusercontent.com/netbirdio/netbird/$ref/infrastructure_files/observability/grafana/dashboards/$dashboard.json"               -o "/tmp/netbird-dashboards/$dashboard.json"
+          done
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("/tmp/netbird-dashboards")
+          expected = {"management.json", "signal.json", "relay.json", "client.json"}
+          files = {p.name for p in root.glob("*.json")}
+          assert files == expected, files
+
+          for path in root.glob("*.json"):
+              data = json.loads(path.read_text())
+              assert data.get("title"), path
+              assert data.get("uid"), path
+              variables = data.get("templating", {}).get("list", [])
+              assert any(v.get("type") == "datasource" and v.get("query") == "prometheus" for v in variables), path
+
+          print("official NetBird dashboards OK")
+          PY
+
+      - name: Prometheus config syntax
+        run: |
+          cat > /tmp/prometheus.yml <<'EOF'
+          global:
+            scrape_interval: 30s
+            scrape_timeout: 10s
+            evaluation_interval: 30s
+
+          scrape_configs:
+            - job_name: netbird-server
+              static_configs:
+                - targets:
+                    - "100.64.10.10:9090"
+                  labels:
+                    cluster: "openmain"
+                    environment: "prod"
+                    host: "netbird-server"
+              metric_relabel_configs:
+                - source_labels: [__name__]
+                  regex: 'signal_(.*)'
+                  target_label: __name__
+                  replacement: '$1'
+
+            - job_name: netbird-client
+              file_sd_configs:
+                - files:
+                    - /etc/prometheus/targets/netbird-clients.json
+                  refresh_interval: 30s
+          EOF
+
+          docker run --rm             --entrypoint /bin/promtool             -v /tmp/prometheus.yml:/etc/prometheus/prometheus.yml:ro             prom/prometheus:v3.15.0             check config /etc/prometheus/prometheus.yml

@@ -123,14 +123,13 @@ for path in root.glob("*.json"):
     # Grafana 13.2.x can pass $__rate_interval literally to Prometheus for these
     # upstream NetBird dashboards, causing PromQL parse errors. NetBird is
     # scraped every 30s, so 2m provides the required four-sample rate window.
-    replacements = 0
+    replacements = [0]
 
     def walk(value):
-        nonlocal replacements
         if isinstance(value, str):
             count = value.count("$__rate_interval")
             if count:
-                replacements += count
+                replacements[0] += count
                 return value.replace("$__rate_interval", rate_interval)
             return value
         if isinstance(value, list):
@@ -144,7 +143,7 @@ for path in root.glob("*.json"):
         raise SystemExit(f"Unersetztes $__rate_interval in {path}")
 
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    print(f"{path.name}: {replacements} $__rate_interval ersetzt durch {rate_interval}")
+    print(f"{path.name}: {replacements[0]} $__rate_interval ersetzt durch {rate_interval}")
 PY
 
 cat > "$HOST_CONFIG" <<EOF

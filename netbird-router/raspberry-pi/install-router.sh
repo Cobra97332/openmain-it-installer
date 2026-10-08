@@ -19,6 +19,7 @@ HOSTNAME_LOCAL="${NB_HOSTNAME:-$(hostname -s)}"
 ZABBIX_ENABLED="${NB_ZABBIX_ENABLED:-1}"
 METRICS_ENABLED="${NB_METRICS_ENABLED:-1}"
 METRICS_PORT="${NB_METRICS_PORT:-9191}"
+METRICS_DETAIL_PORT="${NB_METRICS_DETAIL_PORT:-9192}"
 METRICS_GROUP="${NB_METRICS_GROUP:-NetBird-Metrics}"
 MONITORING_GROUP="${NB_MONITORING_GROUP:-Monitoring}"
 PROMETHEUS_NETBIRD_IP="${NB_PROMETHEUS_NETBIRD_IP:-100.107.91.6}"
@@ -56,6 +57,7 @@ Optionen:
   --zabbix-server IP
   --lan-interface IFACE
   --metrics-port PORT
+  --metrics-detail-port PORT
   --prometheus-netbird-ip IP
   --metrics-group NAME
   --monitoring-group NAME
@@ -80,6 +82,7 @@ while [[ $# -gt 0 ]]; do
     --zabbix-server) ZABBIX_SERVER="$2"; shift 2;;
     --lan-interface) LAN_IF="$2"; shift 2;;
     --metrics-port) METRICS_PORT="$2"; shift 2;;
+    --metrics-detail-port) METRICS_DETAIL_PORT="$2"; shift 2;;
     --prometheus-netbird-ip) PROMETHEUS_NETBIRD_IP="$2"; shift 2;;
     --metrics-group) METRICS_GROUP="$2"; shift 2;;
     --monitoring-group) MONITORING_GROUP="$2"; shift 2;;
@@ -95,6 +98,8 @@ done
 [[ "$METRICS_ENABLED" == 0 || "$METRICS_ENABLED" == 1 ]] || die "NB_METRICS_ENABLED muss 0 oder 1 sein."
 [[ "$METRICS_PORT" =~ ^[0-9]+$ ]] || die "Ungueltiger Metrics-Port: $METRICS_PORT"
 (( METRICS_PORT >= 1 && METRICS_PORT <= 65535 )) || die "Ungueltiger Metrics-Port: $METRICS_PORT"
+[[ "$METRICS_DETAIL_PORT" =~ ^[0-9]+$ ]] || die "Ungueltiger Metrics-Detail-Port: $METRICS_DETAIL_PORT"
+(( METRICS_DETAIL_PORT >= 1 && METRICS_DETAIL_PORT <= 65535 )) || die "Ungueltiger Metrics-Detail-Port: $METRICS_DETAIL_PORT"
 
 MODEL="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || true)"
 [[ "$MODEL" == *"Raspberry Pi"* ]] || die "Kein Raspberry Pi erkannt: $MODEL"
@@ -220,6 +225,7 @@ write_var NB_ZABBIX_API_TOKEN "$ZABBIX_API_TOKEN" "$ENV_FILE"
 write_var NB_ZABBIX_ENABLED "$ZABBIX_ENABLED" "$ENV_FILE"
 write_var NB_METRICS_ENABLED "$METRICS_ENABLED" "$ENV_FILE"
 write_var NB_METRICS_PORT "$METRICS_PORT" "$ENV_FILE"
+write_var NB_METRICS_DETAIL_PORT "$METRICS_DETAIL_PORT" "$ENV_FILE"
 write_var NB_METRICS_GROUP "$METRICS_GROUP" "$ENV_FILE"
 write_var NB_MONITORING_GROUP "$MONITORING_GROUP" "$ENV_FILE"
 write_var NB_PROMETHEUS_NETBIRD_IP "$PROMETHEUS_NETBIRD_IP" "$ENV_FILE"

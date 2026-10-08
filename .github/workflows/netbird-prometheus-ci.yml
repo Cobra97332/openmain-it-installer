@@ -148,6 +148,16 @@ jobs:
                   "hostname": "not-monitored",
                   "groups": [{"name": "All"}],
               },
+              {
+                  "id": "peer-d",
+                  "ip": "100.64.10.23",
+                  "hostname": "nb-Bauer-2",
+                  "groups": [
+                      {"name": "All"},
+                      {"name": "Kunden"},
+                      {"name": "NetBird-Metrics"},
+                  ],
+              },
           ]
 
           targets = mod.make_auto_targets(
@@ -157,9 +167,19 @@ jobs:
               9191,
               "intern",
               mod.DEFAULT_IGNORE_GROUPS,
+              known_customer_groups=["Bauer", "Beispielkunde"],
           )
 
           assert targets == [
+              {
+                  "targets": ["100.64.10.23:9191"],
+                  "labels": {
+                      "host": "nb-Bauer-2",
+                      "customer": "Bauer",
+                      "managed_by": "netbird-api",
+                      "peer_id": "peer-d",
+                  },
+              },
               {
                   "targets": ["100.64.10.20:9191"],
                   "labels": {
@@ -185,7 +205,7 @@ jobs:
               "labels": {"host": "manual-pbs", "customer": "intern"},
           }]
           merged = mod.merge_targets(existing, targets)
-          assert len(merged) == 2, merged
+          assert len(merged) == 3, merged
           assert not any(item["labels"].get("host") == "manual-pbs" for item in merged)
           assert any(
               item["labels"].get("host") == "pbsterramaster"
@@ -193,6 +213,36 @@ jobs:
               for item in merged
           )
           assert any(item["labels"].get("host") == "pc-intern" for item in merged)
+          assert any(
+              item["labels"].get("host") == "nb-Bauer-2"
+              and item["labels"].get("customer") == "Bauer"
+              for item in merged
+          )
+
+          # Hostname inference is only a label fallback and must not change
+          # NetBird group membership or guess ambiguous customer names.
+          assert mod.infer_customer(
+              {
+                  "hostname": "nb-Bauer-2",
+                  "groups": [{"name": "NetBird-Metrics"}, {"name": "Kunden"}],
+              },
+              "NetBird-Metrics",
+              "Monitoring",
+              "intern",
+              mod.DEFAULT_IGNORE_GROUPS,
+              known_customer_groups=["Bauer"],
+          ) == "Bauer"
+          assert mod.infer_customer(
+              {
+                  "hostname": "nb-Bauer-Beispielkunde-2",
+                  "groups": [{"name": "NetBird-Metrics"}],
+              },
+              "NetBird-Metrics",
+              "Monitoring",
+              "intern",
+              mod.DEFAULT_IGNORE_GROUPS,
+              known_customer_groups=["Bauer", "Bauer-Beispielkunde"],
+          ) == "Bauer-Beispielkunde"
           print("NetBird target rendering OK")
           PY
 

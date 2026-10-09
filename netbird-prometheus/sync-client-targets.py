@@ -3,6 +3,7 @@ import argparse
 import ipaddress
 import json
 import os
+import re
 import sys
 import tempfile
 import urllib.error
@@ -278,6 +279,28 @@ def infer_customer(
             + ", ".join(unique_markers)
         )
         return unassigned_customer
+
+    # OpenMain customer routers use the deterministic hostname convention
+    # nb-<Kunde>-<Nummer>, e.g. nb-Bauer-2. This is a safe secondary source
+    # when a legacy peer has not yet received its explicit Kunde:<Name> marker.
+    # An explicit marker above always wins.
+    hostname = str(peer.get("hostname") or peer.get("name") or "").strip()
+    match = re.fullmatch(r"nb-(.+)-([0-9]+)", hostname, flags=re.IGNORECASE)
+    if match:
+        hostname_customer = match.group(1).strip()
+        if hostname_customer:
+            # Prefer the spelling/case of an existing same-named NetBird group.
+            matching_groups = sorted(
+                {
+                    name
+                    for name in names
+                    if name.casefold() == hostname_customer.casefold()
+                },
+                key=str.casefold,
+            )
+            if len(matching_groups) == 1:
+                return matching_groups[0]
+            return hostname_customer
 
     if any(name.casefold() == customer_root_group.casefold() for name in names):
         return unassigned_customer

@@ -217,7 +217,7 @@ jobs:
                   "targets": ["100.64.10.23:9191"],
                   "labels": {
                       "host": "nb-Bauer-2",
-                      "customer": "Unzugeordnet",
+                      "customer": "Bauer",
                       "managed_by": "netbird-api",
                       "peer_id": "peer-d",
                   },
@@ -238,7 +238,7 @@ jobs:
           )
           assert any(
               item["labels"].get("host") == "nb-Bauer-2"
-              and item["labels"].get("customer") == "Unzugeordnet"
+              and item["labels"].get("customer") == "Bauer"
               for item in merged
           )
           assert any(
@@ -247,7 +247,8 @@ jobs:
               for item in merged
           )
 
-          # Customer ownership must come only from explicit customer marker groups.
+          # Explicit customer markers are authoritative. Legacy customer-router
+          # hostnames nb-<Kunde>-<Nummer> are a deterministic fallback.
           assert mod.infer_customer(
               {
                   "hostname": "nb-Bauer-2",
@@ -276,7 +277,7 @@ jobs:
               "Monitoring",
               "intern",
               mod.DEFAULT_IGNORE_GROUPS,
-          ) == "Unzugeordnet"
+          ) == "Bauer"
 
           assert mod.infer_customer(
               {

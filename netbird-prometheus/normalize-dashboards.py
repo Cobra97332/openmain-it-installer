@@ -284,10 +284,16 @@ for name in sorted(EXPECTED):
                 "type": "query",
                 "label": "Kunde",
                 "datasource": {"type": "prometheus", "uid": "${datasource}"},
-                "definition": 'query_result(up{job="netbird-client"} >= 0)',
+                "definition": (
+                    'query_result(up{job="netbird-client",'
+                    'customer!~"^(Netbird|Unzugeordnet)$"} >= 0)'
+                ),
                 "query": {
                     "qryType": 3,
-                    "query": 'query_result(up{job="netbird-client"} >= 0)',
+                    "query": (
+                        'query_result(up{job="netbird-client",'
+                        'customer!~"^(Netbird|Unzugeordnet)$"} >= 0)'
+                    ),
                     "refId": "PrometheusVariableQueryEditor-Customer",
                 },
                 "regex": '/customer="([^"]+)"/',

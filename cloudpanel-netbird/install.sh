@@ -33,8 +33,19 @@ NETBIRD_IP="$(ip -4 -o addr show dev "$NETBIRD_INTERFACE" 2>/dev/null | awk 'NR=
 curl -kfsS -o /dev/null --connect-timeout 4 --max-time 8 https://127.0.0.1:8443/ ||
   die "CloudPanel-Port 8443 lokal nicht erreichbar (HTTP-Status oder TLS-Verbindung)."
 # CloudPanel kann TLS-Verbindungen ohne passenden SNI-Hostnamen ablehnen.
-# Deshalb nicht gegen https://127.0.0.1:443/ ohne SNI testen.
-ss -ltnH | awk '{print $4}' | grep -Eq '(^|[:.])443
+# Darum keine TLS-Probe gegen eine reine 127.0.0.1-Adresse.
+ss -ltnH | awk '{print $4}' | grep -Eq '(^|[:.])443$' ||
+  die "Lokaler HTTPS-Port 443 ist nicht offen."
+if [[ -n "${TEST_SITE_DOMAIN:-}" ]]; then
+  [[ "$TEST_SITE_DOMAIN" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]] || die "Ungueltige TEST_SITE_DOMAIN."
+  curl -ksS -o /dev/null --connect-timeout 4 --max-time 8 \
+    --resolve "$TEST_SITE_DOMAIN:443:127.0.0.1" \
+    "https://$TEST_SITE_DOMAIN/" ||
+    die "Website $TEST_SITE_DOMAIN auf lokalem Port 443 nicht erreichbar."
+  log "SNI-HTTPS-Website erreichbar: $TEST_SITE_DOMAIN"
+else
+  log "Hinweis: Fuer einen SNI-Test TEST_SITE_DOMAIN=www.example.com setzen."
+fi
 
 if [[ ! -f "$CONF" ]]; then
   for port in "$ADMIN_PORT" "$SITES_PORT"; do

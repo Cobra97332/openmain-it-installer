@@ -285,18 +285,18 @@ for name in sorted(EXPECTED):
                 "label": "Kunde",
                 "datasource": {"type": "prometheus", "uid": "${datasource}"},
                 "definition": (
-                    'query_result(up{job="netbird-client",'
-                    'customer!~"^(Netbird|Unzugeordnet)$"} >= 0)'
+                    'label_values(up{job="netbird-client",'
+                    'customer!~"^(Netbird|Unzugeordnet)$"}, customer)'
                 ),
                 "query": {
-                    "qryType": 3,
+                    "qryType": 1,
                     "query": (
-                        'query_result(up{job="netbird-client",'
-                        'customer!~"^(Netbird|Unzugeordnet)$"} >= 0)'
+                        'label_values(up{job="netbird-client",'
+                        'customer!~"^(Netbird|Unzugeordnet)$"}, customer)'
                     ),
                     "refId": "PrometheusVariableQueryEditor-Customer",
                 },
-                "regex": '/customer="([^"]+)"/',
+                "regex": "",
                 "refresh": 1,
                 "sort": 1,
                 "multi": False,
@@ -310,16 +310,18 @@ for name in sorted(EXPECTED):
                 "label": "Host",
                 "datasource": {"type": "prometheus", "uid": "${datasource}"},
                 "definition": (
-                    'query_result(up{job="netbird-client",customer="$customer"} >= 0)'
+                    'label_values(up{job="netbird-client",'
+                    'customer="$customer"}, host)'
                 ),
                 "query": {
-                    "qryType": 3,
+                    "qryType": 1,
                     "query": (
-                        'query_result(up{job="netbird-client",customer="$customer"} >= 0)'
+                        'label_values(up{job="netbird-client",'
+                        'customer="$customer"}, host)'
                     ),
                     "refId": "PrometheusVariableQueryEditor-Host",
                 },
-                "regex": '/host="([^"]+)"/',
+                "regex": "",
                 "refresh": 1,
                 "sort": 1,
                 "multi": False,

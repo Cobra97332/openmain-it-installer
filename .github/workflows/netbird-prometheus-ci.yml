@@ -187,6 +187,15 @@ jobs:
 
           assert targets == [
               {
+                  "targets": ["100.64.10.23:9191"],
+                  "labels": {
+                      "host": "nb-Bauer-2",
+                      "customer": "Bauer",
+                      "managed_by": "netbird-api",
+                      "peer_id": "peer-d",
+                  },
+              },
+              {
                   "targets": ["100.64.10.20:9191"],
                   "labels": {
                       "host": "pbsterramaster",
@@ -211,15 +220,6 @@ jobs:
                       "customer": "Meier",
                       "managed_by": "netbird-api",
                       "peer_id": "peer-e",
-                  },
-              },
-              {
-                  "targets": ["100.64.10.23:9191"],
-                  "labels": {
-                      "host": "nb-Bauer-2",
-                      "customer": "Bauer",
-                      "managed_by": "netbird-api",
-                      "peer_id": "peer-d",
                   },
               },
           ], targets

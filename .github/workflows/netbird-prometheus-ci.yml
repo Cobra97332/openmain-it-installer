@@ -493,7 +493,10 @@ jobs:
                   assert variables_by_name["customer"]["label"] == "Kunde"
                   assert variables_by_name["host"]["label"] == "Host"
                   assert variables_by_name["customer"]["query"]["qryType"] == 3
-                  assert variables_by_name["customer"]["query"]["query"] == 'query_result(up{job="netbird-client"} >= 0)'
+                  assert variables_by_name["customer"]["query"]["query"] == (
+                      'query_result(up{job="netbird-client",'
+                      'customer!~"^(Netbird|Unzugeordnet)$"} >= 0)'
+                  )
                   assert variables_by_name["customer"]["regex"] == '/customer="([^"]+)"/'
                   assert variables_by_name["host"]["query"]["qryType"] == 3
                   assert 'query_result(up{job="netbird-client",customer="$customer"} >= 0)' == variables_by_name["host"]["query"]["query"]

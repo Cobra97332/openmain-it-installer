@@ -388,6 +388,34 @@ setup_metrics(){
   log "NetBird Client Metrics aktiv: $METRICS_TARGET"
 }
 
+validate_monitoring_assignment(){
+  local peers marker peer_groups missing=()
+
+  marker="${CUSTOMER_MARKER_PREFIX}${CUSTOMER}"
+  peers=$(api GET "/peers")
+
+  peer_groups=$(jq -r --arg p "$PEER_ID" '
+    (if type=="array" then . else [] end)[]
+    | select(.id==$p)
+    | (.groups // [])[]
+    | if type=="object" then .name else empty end
+  ' <<<"$peers")
+
+  grep -Fxq "$GLOBAL_GROUP" <<<"$peer_groups" || missing+=("$GLOBAL_GROUP")
+  grep -Fxq "$CUSTOMER" <<<"$peer_groups" || missing+=("$CUSTOMER")
+  grep -Fxq "$marker" <<<"$peer_groups" || missing+=("$marker")
+
+  if [[ "$METRICS_ENABLED" == 1 ]]; then
+    grep -Fxq "$METRICS_GROUP" <<<"$peer_groups" || missing+=("$METRICS_GROUP")
+  fi
+
+  if (( ${#missing[@]} > 0 )); then
+    die "Monitoring-/Kundenzuordnung unvollständig. Fehlende Gruppen: ${missing[*]}"
+  fi
+
+  log "Zuordnung validiert: Kunde=$CUSTOMER / Marker=$marker / Metrics=$([[ "$METRICS_ENABLED" == 1 ]] && echo "$METRICS_GROUP" || echo deaktiviert)"
+}
+
 allocate_mapping(){
   local resources used networks nid rs addr
   networks=$(api GET "/networks")
@@ -548,6 +576,7 @@ main(){
   find_peer
   setup_groups
   setup_metrics
+  validate_monitoring_assignment
   allocate_mapping
   ensure_network
   write_nft

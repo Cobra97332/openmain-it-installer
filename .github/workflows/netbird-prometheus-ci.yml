@@ -492,15 +492,18 @@ jobs:
                   assert set(variables_by_name) == {"datasource", "customer", "host"}
                   assert variables_by_name["customer"]["label"] == "Kunde"
                   assert variables_by_name["host"]["label"] == "Host"
-                  assert variables_by_name["customer"]["query"]["qryType"] == 3
+                  assert variables_by_name["customer"]["query"]["qryType"] == 1
                   assert variables_by_name["customer"]["query"]["query"] == (
-                      'query_result(up{job="netbird-client",'
-                      'customer!~"^(Netbird|Unzugeordnet)$"} >= 0)'
+                      'label_values(up{job="netbird-client",'
+                      'customer!~"^(Netbird|Unzugeordnet)$"}, customer)'
                   )
-                  assert variables_by_name["customer"]["regex"] == '/customer="([^"]+)"/'
-                  assert variables_by_name["host"]["query"]["qryType"] == 3
-                  assert 'query_result(up{job="netbird-client",customer="$customer"} >= 0)' == variables_by_name["host"]["query"]["query"]
-                  assert variables_by_name["host"]["regex"] == '/host="([^"]+)"/'
+                  assert variables_by_name["customer"]["regex"] == ""
+                  assert variables_by_name["host"]["query"]["qryType"] == 1
+                  assert variables_by_name["host"]["query"]["query"] == (
+                      'label_values(up{job="netbird-client",'
+                      'customer="$customer"}, host)'
+                  )
+                  assert variables_by_name["host"]["regex"] == ""
                   client_repr = repr(data)
                   assert 'customer=~"$customer"' in client_repr
                   assert 'host=~"$host"' in client_repr

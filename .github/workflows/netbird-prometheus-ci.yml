@@ -105,6 +105,8 @@ jobs:
           grep -F 'CUSTOMER_MARKER_PREFIX="${NB_CUSTOMER_MARKER_PREFIX:-Kunde:}"' router-install.sh
           grep -F 'CUSTOMER_MARKER_GROUP_ID=$(ensure_group "$marker_group")' router-install.sh
           grep -F 'ensure_peer_in_group "$CUSTOMER_MARKER_GROUP_ID"' router-install.sh
+          grep -F 'validate_monitoring_assignment' router-install.sh
+          grep -F 'Monitoring-/Kundenzuordnung unvollständig' router-install.sh
           grep -F 'ensure_setup_key_metrics_group' router-install.sh
           grep -F 'ensure_metrics_policy' router-install.sh
           grep -F 'openmain-netbird-client-metrics' router-install.sh

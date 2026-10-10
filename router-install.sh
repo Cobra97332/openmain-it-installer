@@ -14,9 +14,9 @@ PRIMARY_METRIC="${NB_PRIMARY_METRIC:-100}"
 BACKUP_METRIC="${NB_BACKUP_METRIC:-200}"
 ZABBIX_ENABLED="${NB_ZABBIX_ENABLED:-1}"
 ZABBIX_SERVER="${NB_ZABBIX_SERVER:-100.107.91.6}"
-ZABBIX_PROXY_GROUP="${NB_ZABBIX_PROXY_GROUP:-Zabbix-Proxies}"
+ZABBIX_PROXY_GROUP="${NB_ZABBIX_PROXY_GROUP:-Zabbix-Kunden-Proxies}"
 ZABBIX_SERVER_GROUP="${NB_ZABBIX_SERVER_GROUP:-Zabbix-Server}"
-ZABBIX_POLICY_NAME="${NB_ZABBIX_POLICY_NAME:-OpenMain Zabbix-Proxies -> Zabbix-Server TCP 10051}"
+ZABBIX_POLICY_NAME="${NB_ZABBIX_POLICY_NAME:-Zabbix Proxy to Server}"
 METRICS_ENABLED="${NB_METRICS_ENABLED:-1}"
 METRICS_PORT="${NB_METRICS_PORT:-9191}"
 METRICS_DETAIL_PORT="${NB_METRICS_DETAIL_PORT:-9192}"
@@ -310,75 +310,63 @@ setup_groups(){
 setup_zabbix_access(){
   [[ "$ZABBIX_ENABLED" == 1 ]] || return 0
 
-  local peers matches server_id count saved_peer_id policies policy_id payload
+  local groups peers matches count server_id saved_peer_id policies
+  local proxy_group_count server_group_count policy_count
   [[ "$ZABBIX_SERVER" =~ ^100\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-    || die "Zabbix-Server muss eine NetBird-IPv4 im Bereich 100.x.x.x sein: $ZABBIX_SERVER"
+    || die "Zabbix-Server muss eine NetBird-IPv4 sein: $ZABBIX_SERVER"
 
-  # Only customer router peers receive the Zabbix outbound permission.
-  ZABBIX_PROXY_GROUP_ID=$(ensure_group "$ZABBIX_PROXY_GROUP")
-  ensure_peer_in_group "$ZABBIX_PROXY_GROUP_ID"
+  # Use the existing NetBird groups; never silently create a different group.
+  groups=$(api GET "/groups")
+  proxy_group_count=$(jq -r --arg n "$ZABBIX_PROXY_GROUP" \
+    '[.[] | select(.name==$n)] | length' <<<"$groups")
+  server_group_count=$(jq -r --arg n "$ZABBIX_SERVER_GROUP" \
+    '[.[] | select(.name==$n)] | length' <<<"$groups")
+  [[ "$proxy_group_count" == 1 && "$server_group_count" == 1 ]] \
+    || die "Zabbix-Gruppen muessen genau einmal existieren: $ZABBIX_PROXY_GROUP ($proxy_group_count), $ZABBIX_SERVER_GROUP ($server_group_count)."
 
-  # Identify the target by its overlay IP, never by an ambiguous hostname.
+  ZABBIX_PROXY_GROUP_ID=$(jq -r --arg n "$ZABBIX_PROXY_GROUP" \
+    '.[] | select(.name==$n) | .id' <<<"$groups")
+  ZABBIX_SERVER_GROUP_ID=$(jq -r --arg n "$ZABBIX_SERVER_GROUP" \
+    '.[] | select(.name==$n) | .id' <<<"$groups")
+
+  # Identify destination using its current overlay IP, never hostname.
   peers=$(api GET "/peers")
   matches=$(jq -c --arg ip "$ZABBIX_SERVER" \
-    '[(if type=="array" then . else [] end)[] | select(.ip==$ip)]' <<<"$peers")
+    '[.[] | select(.ip==$ip)]' <<<"$peers")
   count=$(jq -r 'length' <<<"$matches")
-  [[ "$count" == 1 ]] || die \
-    "Zabbix-NetBird-Peer $ZABBIX_SERVER nicht eindeutig gefunden (Anzahl: $count). Policy nicht eingerichtet."
+  [[ "$count" == 1 ]] \
+    || die "Zabbix-Server-Peer $ZABBIX_SERVER nicht eindeutig gefunden (Anzahl: $count)."
   server_id=$(jq -r '.[0].id // empty' <<<"$matches")
   [[ -n "$server_id" && "$server_id" != "$PEER_ID" ]] \
-    || die "Zabbix-Ziel-Peer ungueltig oder identisch mit dem Kundenrouter."
+    || die "Zabbix-Ziel-Peer ungueltig."
 
-  ZABBIX_SERVER_GROUP_ID=$(ensure_group "$ZABBIX_SERVER_GROUP")
+  # Check the existing policy before modifying any group memberships.
+  # Do not create a duplicate or overwrite the user's existing two-port rule.
+  policies=$(api GET "/policies")
+  policy_count=$(jq -r --arg n "$ZABBIX_POLICY_NAME" \
+    '[.[] | select(.name==$n)] | length' <<<"$policies")
+  [[ "$policy_count" == 1 ]] \
+    || die "Bestehende NetBird-Policy '$ZABBIX_POLICY_NAME' nicht eindeutig vorhanden (Anzahl: $policy_count)."
+
+  jq -e --arg n "$ZABBIX_POLICY_NAME" \
+    --arg src "$ZABBIX_PROXY_GROUP_ID" --arg dst "$ZABBIX_SERVER_GROUP_ID" \
+    'any(.[]; .name==$n and .enabled==true and
+      any(.rules[]?;
+        .enabled==true and .action=="accept" and (.protocol | ascii_downcase)=="tcp" and
+        ((.ports // []) | index("10051") != null) and
+        any(.sources[]?; (if type=="object" then .id else . end)==$src) and
+        any(.destinations[]?; (if type=="object" then .id else . end)==$dst)))' \
+    <<<"$policies" >/dev/null \
+    || die "Policy '$ZABBIX_POLICY_NAME' erlaubt nicht nachweisbar $ZABBIX_PROXY_GROUP -> $ZABBIX_SERVER_GROUP TCP/10051. Ports im NetBird-Dashboard pruefen."
+
+  ensure_peer_in_group "$ZABBIX_PROXY_GROUP_ID"
   saved_peer_id="$PEER_ID"
   PEER_ID="$server_id"
   ensure_peer_in_group "$ZABBIX_SERVER_GROUP_ID"
   PEER_ID="$saved_peer_id"
 
-  # Explicit NetBird peer-to-peer policy for active Zabbix proxies.
-  # TCP/443 is deliberately not opened: the API may be on another proxy peer.
-  policies=$(api GET "/policies")
-  policy_id=$(jq -r --arg n "$ZABBIX_POLICY_NAME" \
-    '(if type=="array" then . else [] end)[] | select(.name==$n) | .id // empty' \
-    <<<"$policies" | head -n1)
-  payload=$(jq -nc --arg name "$ZABBIX_POLICY_NAME" \
-    --arg src "$ZABBIX_PROXY_GROUP_ID" \
-    --arg dst "$ZABBIX_SERVER_GROUP_ID" \
-    '{
-      name:$name,
-      description:"NetBird-only traffic from customer Zabbix proxies to the central Zabbix server",
-      enabled:true,
-      source_posture_checks:[],
-      rules:[{
-        name:"Active Zabbix Proxy TCP 10051",
-        enabled:true,
-        action:"accept",
-        bidirectional:false,
-        protocol:"tcp",
-        ports:["10051"],
-        sources:[$src],
-        destinations:[$dst]
-      }]
-    }')
-  if [[ -n "$policy_id" ]]; then
-    api PUT "/policies/$policy_id" "$payload" >/dev/null
-  else
-    api POST "/policies" "$payload" >/dev/null
-  fi
-
-  # Verify the access policy exists, is active, and targets the correct groups.
-  policies=$(api GET "/policies")
-  jq -e --arg n "$ZABBIX_POLICY_NAME" \
-    --arg src "$ZABBIX_PROXY_GROUP_ID" --arg dst "$ZABBIX_SERVER_GROUP_ID" \
-    'any(.[]; .name==$n and .enabled==true and
-      any(.rules[]?; .enabled==true and .action=="accept" and .protocol=="tcp" and
-        (.ports | index("10051") != null) and
-        any(.sources[]?; (if type=="object" then .id else . end)==$src) and
-        any(.destinations[]?; (if type=="object" then .id else . end)==$dst)))' \
-    <<<"$policies" >/dev/null \
-    || die "Zabbix-NetBird-Policy konnte nach der Einrichtung nicht verifiziert werden."
-
-  log "Zabbix-NetBird-Policy: $ZABBIX_PROXY_GROUP -> $ZABBIX_SERVER_GROUP, TCP/10051"
+  log "Bestehende Zabbix-Policy verifiziert: $ZABBIX_POLICY_NAME (TCP/10051)"
+  log "Gruppen: Router=$ZABBIX_PROXY_GROUP, Server=$ZABBIX_SERVER_GROUP"
 }
 
 ensure_metrics_policy(){

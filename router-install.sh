@@ -221,11 +221,28 @@ connect_netbird(){
 }
 
 find_peer(){
-  local peers
-  peers=$(api GET "/peers")
-  PEER_ID=$(jq -r --arg n "$HOSTNAME_LOCAL" '(if type=="array" then . else [] end)[] | select(.name==$n or .hostname==$n or .dns_label==$n) | .id' <<<"$peers" | head -n1)
-  [[ -n "$PEER_ID" ]] || die "Peer '$HOSTNAME_LOCAL' nicht in NetBird gefunden."
-  log "Peer: $PEER_ID"
+  local peers netbird_ip matches count tries
+  netbird_ip=$(netbird status --ipv4 | awk 'NF {sub(/\/.*/, "", $1); print $1; exit}')
+  [[ "$netbird_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Aktuelle NetBird-IPv4 konnte nicht bestimmt werden."
+
+  # Alte Peers mit gleichem Hostnamen duerfen nie ausgewaehlt werden.
+  for ((tries=1; tries<=30; tries++)); do
+    peers=$(api GET "/peers")
+    matches=$(jq -c --arg ip "$netbird_ip" '[(if type=="array" then . else [] end)[] | select(.ip==$ip)]' <<<"$peers")
+    count=$(jq -r 'length' <<<"$matches")
+    if (( count == 1 )); then
+      PEER_ID=$(jq -r '.[0].id // empty' <<<"$matches")
+      [[ -n "$PEER_ID" ]] || die "Peer mit $netbird_ip hat keine gueltige ID."
+      PEER_IP="$netbird_ip"
+      log "Aktueller Peer: $PEER_ID / $PEER_IP / Hostname $HOSTNAME_LOCAL"
+      return 0
+    fi
+    if (( count > 1 )); then
+      die "Mehrere Peers mit NetBird-IP $netbird_ip gefunden. Gruppenzuordnung abgebrochen."
+    fi
+    sleep 2
+  done
+  die "Neuer Peer $netbird_ip nicht per NetBird-API sichtbar. Kein Fallback auf Hostname."
 }
 
 ensure_group(){

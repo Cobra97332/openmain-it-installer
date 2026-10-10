@@ -634,7 +634,9 @@ setup_zabbix(){
 
   [[ -n "$helper" ]] || die "Zabbix-Helferskript fehlt. Erwartet: /usr/local/sbin/zabbix-proxy-install"
 
-  "$helper"     --customer "$CUSTOMER"     --role "$ROLE"     --server "$ZABBIX_SERVER"     --hostname "$HOSTNAME_LOCAL"
+  NB_LAN_INTERFACE="$LAN_IF" "$helper" \
+    --customer "$CUSTOMER" --role "$ROLE" \
+    --server "$ZABBIX_SERVER" --hostname "$HOSTNAME_LOCAL"
 }
 
 save_state(){

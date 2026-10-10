@@ -26,6 +26,8 @@ ZABBIX_URL="${NETBIRD_ROUTER_ZABBIX_URL:-https://raw.githubusercontent.com/Cobra
 ZABBIX_API_HELPER_URL="${NETBIRD_ROUTER_ZABBIX_API_HELPER_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/zabbix-api-register.sh}"
 ZABBIX_SERVER="${NB_ZABBIX_SERVER:-100.107.91.6}"
 ZABBIX_API_TOKEN="${NB_ZABBIX_API_TOKEN:-}"
+ZABBIX_API_URL="${NB_ZABBIX_API_URL:-https://zabbix.openmain-it.de/api_jsonrpc.php}"
+ZABBIX_PROXYGROUP_NAME="${NB_ZABBIX_PROXYGROUP_NAME:-}"
 METRICS_ENABLED="${NB_METRICS_ENABLED:-1}"
 METRICS_PORT="${NB_METRICS_PORT:-9191}"
 METRICS_DETAIL_PORT="${NB_METRICS_DETAIL_PORT:-9192}"
@@ -57,6 +59,8 @@ while [[ $# -gt 0 ]]; do
     --ct-password) CT_PASSWORD="$2"; shift 2;;
     --ssh-key-url) SSH_KEY_URL="$2"; shift 2;;
     --zabbix-server) ZABBIX_SERVER="$2"; shift 2;;
+    --zabbix-api-url) ZABBIX_API_URL="$2"; shift 2;;
+    --zabbix-proxygroup) ZABBIX_PROXYGROUP_NAME="$2"; shift 2;;
     --metrics-port) METRICS_PORT="$2"; shift 2;;
     --metrics-detail-port) METRICS_DETAIL_PORT="$2"; shift 2;;
     --prometheus-netbird-ip) PROMETHEUS_NETBIRD_IP="$2"; shift 2;;
@@ -78,6 +82,7 @@ command -v pct >/dev/null || die "pct fehlt."
 [[ -n "$CTID" ]] || CTID=$(pvesh get /cluster/nextid)
 [[ -n "$HOSTNAME_CT" ]] || read -r -p "Hostname: " HOSTNAME_CT
 [[ -n "$CUSTOMER" ]] || read -r -p "Firmenname: " CUSTOMER
+[[ -n "$ZABBIX_PROXYGROUP_NAME" ]] || ZABBIX_PROXYGROUP_NAME="$CUSTOMER"
 [[ -n "$SETUP_KEY" ]] || { read -r -s -p "NetBird Setup Key: " SETUP_KEY; echo; }
 [[ -n "$API_TOKEN" ]] || { read -r -s -p "NetBird API Token: " API_TOKEN; echo; }
 if [[ -z "$CT_PASSWORD" ]]; then
@@ -178,6 +183,8 @@ NB_PRIMARY_METRIC=$(printf '%q' "$PRIMARY_METRIC")
 NB_BACKUP_METRIC=$(printf '%q' "$BACKUP_METRIC")
 NB_ZABBIX_SERVER=$(printf '%q' "$ZABBIX_SERVER")
 NB_ZABBIX_API_TOKEN=$(printf '%q' "$ZABBIX_API_TOKEN")
+NB_ZABBIX_API_URL=$(printf '%q' "$ZABBIX_API_URL")
+NB_ZABBIX_PROXYGROUP_NAME=$(printf '%q' "$ZABBIX_PROXYGROUP_NAME")
 NB_METRICS_ENABLED=$(printf '%q' "$METRICS_ENABLED")
 NB_METRICS_PORT=$(printf '%q' "$METRICS_PORT")
 NB_METRICS_DETAIL_PORT=$(printf '%q' "$METRICS_DETAIL_PORT")

@@ -671,8 +671,8 @@ main(){
   allocate_mapping
   ensure_network
   write_nft
-  setup_zabbix
   save_state
+  setup_zabbix
   log "Fertig: $CUSTOMER / $ROLE / Metric $ROUTER_METRIC / $VIRTUAL_NET -> $LAN_NET"
   if [[ "$ZABBIX_ENABLED" == 1 ]]; then
     log "Zabbix Proxy aktiv -> $ZABBIX_SERVER"

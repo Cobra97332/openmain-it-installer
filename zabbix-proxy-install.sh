@@ -129,12 +129,16 @@ UserParameter=netbird.connected,netbird status >/dev/null 2>&1 && echo 1 || echo
 EOF
 
 API_HELPER="/usr/local/sbin/zabbix-api-register"
-if [[ -x "$API_HELPER" ]]; then
-  if [[ -n "${NB_ZABBIX_API_TOKEN:-}" ]]; then
-    "$API_HELPER" "$CUSTOMER" "$ROLE" "$PROXY_NAME" "$LAN_IP" "$PSK_IDENTITY" "$PSK_FILE"
+ZABBIX_API_REGISTRATION_STATUS="pending"
+if [[ -x "$API_HELPER" && -n "${NB_ZABBIX_API_TOKEN:-}" ]]; then
+  if "$API_HELPER" "$CUSTOMER" "$ROLE" "$PROXY_NAME" "$LAN_IP" "$PSK_IDENTITY" "$PSK_FILE"; then
+    ZABBIX_API_REGISTRATION_STATUS="registered"
   else
-    echo "[!] NB_ZABBIX_API_TOKEN fehlt - Proxy wird nicht automatisch per Zabbix API registriert." >&2
+    echo "[WARNUNG] Zabbix-API-Registrierung fehlgeschlagen. Lokale Installation wird fortgesetzt." >&2
+    echo "[WARNUNG] Die Registrierung im Zabbix-Server muss nach Behebung des API-Zugriffs nachgeholt werden." >&2
   fi
+else
+  echo "[WARNUNG] Kein Zabbix-API-Token oder Registrierungshelfer vorhanden. Registrierung ausstehend." >&2
 fi
 
 systemctl enable --now zabbix-proxy zabbix-agent2
@@ -148,6 +152,7 @@ ZABBIX_PROXY_NAME=$PROXY_NAME
 ZABBIX_ACTIVE_AGENT_ADDRESS=$LAN_IP
 ZABBIX_ACTIVE_AGENT_PORT=10051
 ZABBIX_PSK_IDENTITY=$PSK_IDENTITY
+ZABBIX_API_REGISTRATION_STATUS=$ZABBIX_API_REGISTRATION_STATUS
 ZABBIX_PSK=$(cat "$PSK_FILE")
 EOF
 chmod 600 "$STATE_FILE"
@@ -196,7 +201,7 @@ if id omadmin >/dev/null 2>&1; then
   chmod 0644 /home/omadmin/.profile
 fi
 
-log "Zabbix Proxy mit PSK eingerichtet."
+log "Zabbix Proxy mit PSK eingerichtet. API-Registrierung: $ZABBIX_API_REGISTRATION_STATUS"
 echo "Proxy-Name   : $PROXY_NAME"
 echo "Zabbix       : $ZABBIX_SERVER:10051"
 echo "Active Agents: $LAN_IP:10051"

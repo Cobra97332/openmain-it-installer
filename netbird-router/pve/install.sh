@@ -160,6 +160,9 @@ pct exec "$CTID" -- test -c /dev/net/tun || die "TUN nicht im Container."
 curl -fsSL "$COMMON_URL" -o "$TMP/router-install.sh" || die "router-install.sh konnte nicht von GitHub geladen werden."
 curl -fsSL "$ZABBIX_URL" -o "$TMP/zabbix-proxy-install.sh" || die "zabbix-proxy-install.sh konnte nicht von GitHub geladen werden."
 curl -fsSL "$ZABBIX_API_HELPER_URL" -o "$TMP/zabbix-api-register.sh" || die "zabbix-api-register.sh konnte nicht von GitHub geladen werden."
+curl -fsSL "https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-router/pve/install-dhcp-recovery.sh" -o "$TMP/install-dhcp-recovery.sh" || die "DHCP-Recovery-Skript konnte nicht geladen werden."
+chmod 700 "$TMP/install-dhcp-recovery.sh"
+pct push "$CTID" "$TMP/install-dhcp-recovery.sh" /root/install-dhcp-recovery.sh -perms 700
 chmod 700 "$TMP/router-install.sh" "$TMP/zabbix-proxy-install.sh" "$TMP/zabbix-api-register.sh"
 pct push "$CTID" "$TMP/router-install.sh" /root/router-install.sh -perms 700
 pct push "$CTID" "$TMP/zabbix-proxy-install.sh" /usr/local/sbin/zabbix-proxy-install -perms 755
@@ -188,6 +191,8 @@ pct push "$CTID" "$TMP/secrets" /root/.netbird-router-secrets -perms 600
 QC=$(printf '%q' "$CUSTOMER")
 QH=$(printf '%q' "$HOSTNAME_CT")
 pct exec "$CTID" -- bash -lc "set -a; source /root/.netbird-router-secrets; set +a; /root/router-install.sh --role \"\$NB_ROLE\" --management-url \"\$NB_MANAGEMENT_URL\" --zabbix-server \"\$NB_ZABBIX_SERVER\" --customer $QC --hostname $QH; rc=\$?; rm -f /root/.netbird-router-secrets; exit \$rc"
+
+pct exec "$CTID" -- /root/install-dhcp-recovery.sh || die "DHCP-Recovery konnte nicht eingerichtet werden."
 
 log "Fertig. Prüfen mit:"
 echo "pct exec $CTID -- netbird status"

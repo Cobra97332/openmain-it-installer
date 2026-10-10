@@ -128,7 +128,10 @@ file ownership and permissions and refuse conflicting TLS/hostname changes.
 
 IMPORTANT legacy migration limits:
 Installations made with --disable-firewall / old mein_binat rules must undergo
-an explicitly reviewed migration. They stop before network mutation here.
+an explicitly reviewed migration. The old NAT-file guard stops early, but the
+profile-only DisableFirewall check currently runs after package installation and
+daemon enable/start. Move this check to preflight before merge; see the mandatory
+legacy acceptance gate in ABNAHME-PVE.txt.
 Existing manually configured agents are retained and require migration before
 the new managed host/agent automation can take ownership. A proxy-create response
 lost after server commit leaves a pending-key marker: it stops for TLS identity/key

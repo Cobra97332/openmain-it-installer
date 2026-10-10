@@ -86,8 +86,7 @@ install -d -o zabbix -g zabbix -m 0750 /var/lib/zabbix
 install -d -o root -g zabbix -m 0750 /etc/zabbix
 
 if [[ ! -s "$PSK_FILE" ]]; then
-  umask 077
-  openssl rand -hex 32 > "$PSK_FILE"
+  (umask 077; openssl rand -hex 32 > "$PSK_FILE")
 fi
 chown zabbix:zabbix "$PSK_FILE"
 chmod 600 "$PSK_FILE"
@@ -127,6 +126,12 @@ UserParameter=netbird.ipforward,cat /proc/sys/net/ipv4/ip_forward
 UserParameter=netbird.nftables,nft list table ip mein_binat >/dev/null 2>&1 && echo 1 || echo 0
 UserParameter=netbird.connected,netbird status >/dev/null 2>&1 && echo 1 || echo 0
 EOF
+
+# The Zabbix daemons must be able to read their configuration files.
+# PSK secrets stay protected separately by 0600 permissions.
+chmod 0644 /etc/zabbix/zabbix_proxy.conf \
+           /etc/zabbix/zabbix_agent2.conf \
+           /etc/zabbix/zabbix_agent2.d/netbird-router.conf
 
 API_HELPER="/usr/local/sbin/zabbix-api-register"
 ZABBIX_API_REGISTRATION_STATUS="pending"

@@ -155,6 +155,9 @@ done
 pct exec "$CTID" -- test -c /dev/net/tun || die "TUN nicht im Container."
 
 curl -fsSL "$COMMON_URL" -o "$TMP/router-install.sh" || die "router-install.sh konnte nicht von GitHub geladen werden."
+curl -fsSL "https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-router/pve/install-dhcp-recovery.sh" -o "$TMP/install-dhcp-recovery.sh" || die "DHCP-Recovery-Skript konnte nicht geladen werden."
+chmod 700 "$TMP/install-dhcp-recovery.sh"
+pct push "$CTID" "$TMP/install-dhcp-recovery.sh" /root/install-dhcp-recovery.sh -perms 700
 chmod 700 "$TMP/router-install.sh"
 pct push "$CTID" "$TMP/router-install.sh" /root/router-install.sh -perms 700
 
@@ -180,6 +183,8 @@ QC=$(printf '%q' "$CUSTOMER")
 QH=$(printf '%q' "$HOSTNAME_CT")
 
 pct exec "$CTID" -- bash -lc "set -a; source /root/.netbird-router-secrets; set +a; /root/router-install.sh --role \"\$NB_ROLE\" --management-url \"\$NB_MANAGEMENT_URL\" --customer $QC --hostname $QH --no-zabbix; rc=\$?; rm -f /root/.netbird-router-secrets; exit \$rc"
+
+pct exec "$CTID" -- /root/install-dhcp-recovery.sh || die "DHCP-Recovery konnte nicht eingerichtet werden."
 
 log "Fertig. NetBird-Router wurde ohne Zabbix eingerichtet."
 echo "Prüfen mit:"

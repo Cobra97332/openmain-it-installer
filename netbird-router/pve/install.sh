@@ -190,9 +190,9 @@ pct push "$CTID" "$TMP/secrets" /root/.netbird-router-secrets -perms 600
 
 QC=$(printf '%q' "$CUSTOMER")
 QH=$(printf '%q' "$HOSTNAME_CT")
-pct exec "$CTID" -- bash -lc "set -a; source /root/.netbird-router-secrets; set +a; /root/router-install.sh --role \"\$NB_ROLE\" --management-url \"\$NB_MANAGEMENT_URL\" --zabbix-server \"\$NB_ZABBIX_SERVER\" --customer $QC --hostname $QH; rc=\$?; rm -f /root/.netbird-router-secrets; exit \$rc"
-
 pct exec "$CTID" -- /root/install-dhcp-recovery.sh || die "DHCP-Recovery konnte nicht eingerichtet werden."
+
+pct exec "$CTID" -- bash -lc "set -a; source /root/.netbird-router-secrets; set +a; /root/router-install.sh --role \"\$NB_ROLE\" --management-url \"\$NB_MANAGEMENT_URL\" --zabbix-server \"\$NB_ZABBIX_SERVER\" --customer $QC --hostname $QH; rc=\$?; rm -f /root/.netbird-router-secrets; exit \$rc"
 
 log "Fertig. Prüfen mit:"
 echo "pct exec $CTID -- netbird status"

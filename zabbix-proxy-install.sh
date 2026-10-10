@@ -66,12 +66,13 @@ STATE_DIR="/var/lib/netbird-kundenrouter"
 STATE_FILE="$STATE_DIR/zabbix-proxy.env"
 INFO_FILE="/etc/netbird-zabbix-info.conf"
 
-LAN_IF=$(ip -4 route show default | awk 'NR==1{print $5}')
-LAN_IP=""
-if [[ -n "$LAN_IF" ]]; then
-  LAN_IP=$(ip -4 addr show dev "$LAN_IF" scope global | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
-fi
-[[ -n "$LAN_IP" ]] || LAN_IP="NICHT_ERKANNT"
+# Prefer the same LAN interface that the router's BINAT configuration uses.
+# Fallback only for standalone Zabbix helper installations.
+LAN_IF="${NB_LAN_INTERFACE:-$(ip -4 route show default | awk 'NR==1{print $5}')}"
+[[ -n "$LAN_IF" ]] || die "Kein Kunden-LAN-Interface erkannt."
+LAN_IP=$(ip -4 -o addr show dev "$LAN_IF" scope global | awk 'NR==1{split($4,a,"/");print a[1]}')
+[[ "$LAN_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Keine gueltige LAN-IPv4 auf $LAN_IF erkannt. Zabbix-Registrierung abgebrochen."
+log "Zabbix-Adresse fuer aktive Agents: $LAN_IF / $LAN_IP:10051"
 
 log "Installiere Zabbix Repository ..."
 tmp=/tmp/zabbix-release.deb

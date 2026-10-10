@@ -259,21 +259,25 @@ ensure_group(){
 }
 
 ensure_peer_in_group(){
-  local gid="$1" g payload
+  local gid="$1" g payload current
+
   g=$(api GET "/groups/$gid")
 
-  # GET /groups/{id} liefert peers als Objekte. PUT /groups/{id}
-  # erwartet dagegen eine Liste von Peer-IDs (Strings).
+  # A group update must preserve existing peer memberships and resources.
   if jq -e --arg p "$PEER_ID" '[(.peers // [])[]? | if type=="object" then .id else . end] | index($p) != null' <<<"$g" >/dev/null; then
     return 0
   fi
 
   payload=$(jq -c --arg p "$PEER_ID" '{
     name: .name,
-    peers: ([(.peers // [])[]? | if type=="object" then .id else . end] + [$p] | map(select(. != null and . != "")) | unique)
+    peers: ([(.peers // [])[]? | if type=="object" then .id else . end] + [$p] | map(select(. != null and . != "")) | unique),
+    resources: [(.resources // [])[] | {id, type}]
   }' <<<"$g")
 
   api PUT "/groups/$gid" "$payload" >/dev/null
+  current=$(api GET "/groups/$gid")
+  jq -e --arg p "$PEER_ID" '[(.peers // [])[]? | if type=="object" then .id else . end] | index($p) != null' <<<"$current" >/dev/null \
+    || die "Gruppenzuordnung fuer Peer $PEER_ID in $gid fehlgeschlagen."
 }
 
 setup_groups(){

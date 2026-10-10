@@ -22,6 +22,10 @@ GROUP_NAME="${NB_ZABBIX_PROXYGROUP_NAME:-$CUSTOMER}"
 [[ -n "$GROUP_NAME" ]] || { echo "Zabbix Proxy-Gruppenname fehlt." >&2; exit 1; }
 [[ "$LAN_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Keine gueltige LAN-IPv4: $LAN_IP" >&2; exit 1; }
 
+[[ "$API_URL" == https://* ]] || { echo 'Zabbix API benoetigt HTTPS.' >&2; exit 1; }
+python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$LAN_IP" >/dev/null 2>&1 \
+  || { echo 'Ungueltige LAN-Adresse.' >&2; exit 1; }
+
 api(){
   local method="$1" params="$2" payload
   payload=$(jq -nc --arg method "$method" --argjson params "$params" '{jsonrpc:"2.0",method:$method,params:$params,id:1}')
@@ -56,7 +60,7 @@ if [[ -n "$pid" ]]; then
   ' <<<"$existing" >/dev/null 2>&1 || { echo "Bestehende Proxy-TLS-Identitaet, TLS-Modus oder Betriebsart weicht ab. Keine Aenderung." >&2; exit 1; }
 fi
 
-r=$(api proxygroup.get "$(jq -nc --arg n "$GROUP_NAME" '{output:["proxy_groupid","name"],filter:{name:[$n]}}')")
+r=$(api proxygroup.get "$(jq -nc --arg n "$GROUP_NAME" '{output:["proxy_groupid","name","min_online","failover_delay"],filter:{name:[$n]}}')")
 groups=$(result "$r")
 jq -e --arg name "$GROUP_NAME" 'type=="array" and all(.[]; .name==$name and (.proxy_groupid|type=="string" and length>0))' <<<"$groups" >/dev/null 2>&1 || { echo "Ungueltige Proxy-Gruppenliste." >&2; exit 1; }
 group_count=$(jq -r 'length' <<<"$groups")
@@ -65,6 +69,10 @@ gid=$(jq -r '.[0].proxy_groupid // empty' <<<"$groups")
 if [[ -n "$pid" ]]; then
   old_gid=$(jq -r '.[0].proxy_groupid // "0"' <<<"$existing")
   [[ "$old_gid" == 0 || "$old_gid" == "$gid" ]] || { echo "Proxy gehoert bereits einer anderen Gruppe an. Keine Aenderung." >&2; exit 1; }
+fi
+if [[ -n "$gid" ]]; then
+  jq -e '.[0] | (.min_online|tostring)=="1" and (.failover_delay|type=="string" and length>0)' <<<"$groups" >/dev/null 2>&1 \
+    || { echo "Bestehende Proxy-Gruppe nicht fuer Einzelrouter-Failover konfiguriert. Keine Ueberschreibung." >&2; exit 1; }
 fi
 if [[ -z "$gid" ]]; then
   r=$(api proxygroup.create "$(jq -nc --arg n "$GROUP_NAME" '{name:$n,failover_delay:"1m",min_online:"1"}')")

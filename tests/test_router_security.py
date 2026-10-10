@@ -324,7 +324,7 @@ Path(sys.argv[sys.argv.index('-o')+1]).write_text('fake package')
             included = self.proxy.parent / 'tls.conf'
             included.write_text(tls)
             tls = f'Include={included}\n'
-        self.proxy.write_text('Hostname=proxy-customer-primary\nServer=192.0.2.20\n' + tls + 'CacheSize=64M\n')
+        self.proxy.write_text('Hostname=proxy-customer-primary\nServer=192.0.2.20\n' + tls + f'DBName={self.fs}/var/lib/zabbix/zabbix_proxy.db\nCacheSize=64M\n')
         self.agent.write_text('Hostname=custom-agent\nServer=192.0.2.99\nTLSConnect=psk\n')
         self.items.write_text('UserParameter=keep,echo keep\n')
 
@@ -332,7 +332,10 @@ Path(sys.argv[sys.argv.index('-o')+1]).write_text('fake package')
         self.existing(include=True)
         database = self.fs / 'var/lib/zabbix/zabbix_proxy.db'
         database.parent.mkdir(parents=True, exist_ok=True)
-        database.write_bytes(b'existing database sentinel')
+        import sqlite3
+        with sqlite3.connect(database) as connection:
+            connection.execute('CREATE TABLE sentinel (value TEXT)')
+            connection.execute("INSERT INTO sentinel VALUES ('existing customer data')")
         files = (self.proxy, self.agent, self.items, self.key, database)
         before = {p:p.read_bytes() for p in files}
         self.key.chmod(0o640)
@@ -340,6 +343,8 @@ Path(sys.argv[sys.argv.index('-o')+1]).write_text('fake package')
             result = self.run_installer()
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual({p:p.read_bytes() for p in files}, before)
+        with sqlite3.connect(self.fs / 'var/lib/netbird-kundenrouter/zabbix-proxy.sqlite3.previous') as backup:
+            self.assertEqual(backup.execute('SELECT value FROM sentinel').fetchone()[0], 'existing customer data')
         self.assertEqual(self.key.stat().st_mode & 0o777, 0o640)
         info = (self.fs / 'etc/netbird-zabbix-info.conf').read_text()
         self.assertIn('Existing\\ identity', info)

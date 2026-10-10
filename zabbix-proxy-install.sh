@@ -3,34 +3,6 @@
 set +xv
 set -Eeuo pipefail
 
-SSH_PUBLIC_KEY="${OPENMAIN_SSH_PUBLIC_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJc8VZvZ7o/8emKoGC7UXPiOMP8PSxch6P2rUGNio8Vi Stefan}"
-
-ensure_openmain_root_ssh() {
-  if ! command -v sshd >/dev/null 2>&1; then
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server
-  fi
-
-  install -d -m 0700 /root/.ssh
-  touch /root/.ssh/authorized_keys
-  grep -qxF "$SSH_PUBLIC_KEY" /root/.ssh/authorized_keys 2>/dev/null || printf '%s\n' "$SSH_PUBLIC_KEY" >> /root/.ssh/authorized_keys
-  chown root:root /root/.ssh/authorized_keys
-  chmod 0600 /root/.ssh/authorized_keys
-
-  install -d -m 0755 /etc/ssh/sshd_config.d
-  cat > /etc/ssh/sshd_config.d/00-openmain-root-key.conf <<'EOF'
-PermitRootLogin prohibit-password
-PubkeyAuthentication yes
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-EOF
-
-  sshd -t
-  systemctl enable --now ssh >/dev/null 2>&1 || systemctl enable --now sshd >/dev/null 2>&1 || true
-  systemctl restart ssh >/dev/null 2>&1 || systemctl restart sshd >/dev/null 2>&1 || true
-}
-
-
 ZABBIX_SERVER="${ZABBIX_SERVER:-100.107.91.6}"
 ZABBIX_VERSION="${ZABBIX_VERSION:-7.4}"
 CUSTOMER="${CUSTOMER:-}"
@@ -62,7 +34,7 @@ slug=$(printf '%s' "$CUSTOMER" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null |
 slug=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
 [[ -n "$slug" ]] || slug="kunde"
 
-PROXY_NAME="proxy-${slug}-${ROLE}"
+PROXY_NAME="${NB_ZABBIX_PROXY_NAME:-proxy-${slug}-${ROLE}}"
 PSK_IDENTITY="PSK-${PROXY_NAME}"
 PSK_FILE="/etc/zabbix/zabbix_proxy.psk"
 STATE_DIR="/var/lib/netbird-kundenrouter"
@@ -87,7 +59,7 @@ import glob
 import pathlib
 import sys
 
-keys = ("Hostname", "Server", "TLSConnect", "TLSPSKIdentity", "TLSPSKFile")
+keys = ("Hostname", "Server", "TLSConnect", "TLSPSKIdentity", "TLSPSKFile", "DBName")
 values = {}
 seen = set()
 
@@ -135,7 +107,6 @@ if [[ -e "$PSK_FILE" ]]; then
   unset existing_psk
 fi
 
-ensure_openmain_root_ssh
 
 # Prefer the same LAN interface that the router's BINAT configuration uses.
 # Fallback only for standalone Zabbix helper installations.
@@ -172,8 +143,37 @@ if [[ -n "$ZABBIX_AGENT_GROUP_IPS" ]]; then
   log "Zabbix Agent-Proxy-Gruppe: $AGENT_ACTIVE"
 fi
 
+# SQLite online backup before package upgrades; never remove/reinitialize a DB.
+if [[ "$PROXY_EXISTED" == 1 ]]; then
+  install -d -m 0700 "$STATE_DIR"
+  cp -p "$PROXY_CONF" "$STATE_DIR/zabbix_proxy.conf.previous"
+  python3 - "${config_values[5]}" "$STATE_DIR/zabbix-proxy.sqlite3.previous" 2>/dev/null <<'PYBACKUP' || die "SQLite-Sicherung fehlgeschlagen; Paketinstallation abgebrochen."
+import os
+from pathlib import Path
+import sqlite3
+import sys
+import tempfile
+from urllib.parse import quote
+source, target = map(Path, sys.argv[1:])
+if not source.is_absolute():
+    raise ValueError('Absolute SQLite path required')
+if source.exists():
+    fd, temporary = tempfile.mkstemp(dir=target.parent)
+    os.close(fd)
+    try:
+        with sqlite3.connect('file:' + quote(str(source)) + '?mode=ro', uri=True, timeout=10) as original:
+            with sqlite3.connect(temporary) as backup:
+                original.backup(backup)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+PYBACKUP
+fi
+
 log "Installiere Zabbix Repository ..."
-tmp=/tmp/zabbix-release.deb
+tmp=$(mktemp)
 curl -fsSL "https://repo.zabbix.com/zabbix/$ZABBIX_VERSION/release/debian/pool/main/z/zabbix-release/zabbix-release_latest_$ZABBIX_VERSION+debian13_all.deb" -o "$tmp"
 dpkg -i "$tmp"
 rm -f "$tmp"
@@ -216,12 +216,13 @@ fi
 
 if [[ "$AGENT_EXISTED" == 0 ]]; then
 cat > "$AGENT_CONF" <<EOF
+# OpenMain managed agent configuration v1
 PidFile=/run/zabbix/zabbix_agent2.pid
 LogFile=/var/log/zabbix/zabbix_agent2.log
 LogFileSize=0
 Server=$AGENT_SERVER
 ServerActive=$AGENT_ACTIVE
-Hostname=$HOSTNAME_LOCAL
+Hostname=${NB_ZABBIX_AGENT_HOST:-$HOSTNAME_LOCAL}
 Include=/etc/zabbix/zabbix_agent2.d/*.conf
 ControlSocket=/tmp/agent.sock
 EOF
@@ -233,7 +234,8 @@ if [[ "$ITEMS_EXISTED" == 0 ]]; then
 cat > "$AGENT_ITEMS" <<'EOF'
 UserParameter=netbird.service,systemctl is-active --quiet netbird && echo 1 || echo 0
 UserParameter=netbird.ipforward,cat /proc/sys/net/ipv4/ip_forward
-UserParameter=netbird.nftables,nft list table ip mein_binat >/dev/null 2>&1 && echo 1 || echo 0
+UserParameter=netbird.nftables,systemctl is-active --quiet openmain-binat && echo 1 || echo 0
+UserParameter=openmain.agent.active,echo 1
 UserParameter=netbird.connected,netbird status >/dev/null 2>&1 && echo 1 || echo 0
 EOF
 chmod 0644 "$AGENT_ITEMS"
@@ -243,10 +245,11 @@ fi
 zabbix_proxy -T -c "$PROXY_CONF" >/dev/null 2>&1 || die "Proxy-Konfiguration ungueltig; kein Dienstneustart."
 zabbix_agent2 -T -c "$AGENT_CONF" >/dev/null 2>&1 || die "Agent-Konfiguration ungueltig; kein Dienstneustart."
 
-API_HELPER="/usr/local/sbin/zabbix-api-register"
+API_HELPER="${NB_BUNDLE_DIR:+$NB_BUNDLE_DIR/zabbix-api-register.sh}"
+API_HELPER="${API_HELPER:-/usr/local/sbin/zabbix-api-register}"
 ZABBIX_API_REGISTRATION_STATUS="pending"
-if [[ -x "$API_HELPER" && -n "${NB_ZABBIX_API_TOKEN:-}" ]]; then
-  if NB_ZABBIX_PSK_PENDING_FILE="$PSK_PENDING" "$API_HELPER" "$CUSTOMER" "$ROLE" "$PROXY_NAME" "$LAN_IP" "$PSK_IDENTITY" "$PSK_FILE"; then
+if [[ -f "$API_HELPER" && -n "${NB_ZABBIX_API_TOKEN:-}" ]]; then
+  if NB_ZABBIX_PSK_PENDING_FILE="$PSK_PENDING" bash "$API_HELPER" "$CUSTOMER" "$ROLE" "$PROXY_NAME" "$LAN_IP" "$PSK_IDENTITY" "$PSK_FILE"; then
     ZABBIX_API_REGISTRATION_STATUS="registered"
   else
     die "Zabbix-API-Registrierung nicht bestaetigt. TLS-Bestand pruefen; kein Dienstneustart."
@@ -255,8 +258,41 @@ else
   echo "[WARNUNG] Kein Zabbix-API-Token oder Registrierungshelfer vorhanden. Registrierung ausstehend." >&2
 fi
 
+if [[ "${NB_ZABBIX_REGISTER_HOST:-0}" == 1 ]]; then
+  [[ "$ZABBIX_API_REGISTRATION_STATUS" == registered ]] || die "Vollstaendige API-Registrierung erforderlich."
+  LAN_NETWORK=$(ip -4 -o addr show dev "$LAN_IF" scope global | awk 'NR==1{print $4}')
+  LAN_NETWORK=$(python3 -c 'import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network)' "$LAN_NETWORK")
+  export SYNC_CUSTOMER="$CUSTOMER" SYNC_HOST="${NB_ZABBIX_AGENT_HOST:-$HOSTNAME_LOCAL}" SYNC_PROXY="$PROXY_NAME"
+  export SYNC_IDENTITY="$PSK_IDENTITY" SYNC_PSK_FILE="$PSK_FILE" SYNC_INTERFACE="$LAN_IF" SYNC_NETWORK="$LAN_NETWORK" SYNC_AGENT_CONFIG="$AGENT_CONF"
+  SYNC_INITIAL_AGENT=$(( 1 - AGENT_EXISTED )) python3 "$NB_BUNDLE_DIR/netbird-router/common/zabbix_sync.py" install || die "Host-/Agent-Abgleich nicht bestaetigt."
+  install -d -m 0755 /usr/local/lib/openmain-router
+  install -m 0644 "$NB_BUNDLE_DIR/netbird-router/common/"{runtime,zabbix_sync}.py /usr/local/lib/openmain-router/
+  cat > /etc/systemd/system/openmain-zabbix-sync.service <<'UNIT'
+[Unit]
+Description=Update customer proxy LAN addresses and agent failover members
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/openmain-router/zabbix_sync.py
+UMask=0077
+UNIT
+  cat > /etc/systemd/system/openmain-zabbix-sync.timer <<'UNIT'
+[Unit]
+Description=Refresh Zabbix customer proxy group membership
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=2min
+[Install]
+WantedBy=timers.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now openmain-zabbix-sync.timer
+fi
+
 systemctl enable --now zabbix-proxy zabbix-agent2
-systemctl restart zabbix-proxy zabbix-agent2
+if [[ "$PROXY_EXISTED" == 0 || "$AGENT_EXISTED" == 0 ]]; then
+  systemctl restart zabbix-proxy zabbix-agent2
+fi
 
 install -d -m 0700 "$STATE_DIR"
 umask 077
@@ -322,6 +358,3 @@ echo "Verschluesselung: PSK"
 echo "PSK Identity : $PSK_IDENTITY"
 echo "PSK          : geschuetzt in der lokalen PSK-Datei (wird nicht ausgegeben)"
 echo
-echo "Im Zabbix-Frontend den Proxy als ACTIVE Proxy anlegen und unter Verschluesselung PSK aktivieren."
-echo "Bei Proxy-Gruppen als Address for active agents eintragen: $LAN_IP Port 10051"
-echo "Gespeicherte Zugangsdaten: $STATE_FILE"

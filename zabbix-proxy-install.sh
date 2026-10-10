@@ -34,6 +34,7 @@ ZABBIX_VERSION="${ZABBIX_VERSION:-7.4}"
 CUSTOMER="${CUSTOMER:-}"
 ROLE="${ROLE:-primary}"
 HOSTNAME_LOCAL="${HOSTNAME_LOCAL:-$(hostname -s)}"
+ZABBIX_AGENT_GROUP_IPS="${NB_ZABBIX_AGENT_GROUP_IPS:-}"
 
 log(){ printf '\033[1;32m[+]\033[0m %s\n' "$*"; }
 die(){ printf '\033[1;31m[FEHLER]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -45,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --server) ZABBIX_SERVER="$2"; shift 2 ;;
     --version) ZABBIX_VERSION="$2"; shift 2 ;;
     --hostname) HOSTNAME_LOCAL="$2"; shift 2 ;;
+    --agent-group-ips) ZABBIX_AGENT_GROUP_IPS="$2"; shift 2 ;;
     *) die "Unbekannte Option: $1" ;;
   esac
 done
@@ -73,6 +75,33 @@ LAN_IF="${NB_LAN_INTERFACE:-$(ip -4 route show default | awk 'NR==1{print $5}')}
 LAN_IP=$(ip -4 -o addr show dev "$LAN_IF" scope global | awk 'NR==1{split($4,a,"/");print a[1]}')
 [[ "$LAN_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Keine gueltige LAN-IPv4 auf $LAN_IF erkannt. Zabbix-Registrierung abgebrochen."
 log "Zabbix-Adresse fuer aktive Agents: $LAN_IF / $LAN_IP:10051"
+
+# Optional customer proxy group: the installer must receive all peer LAN IPs.
+# Do not guess sibling IPs or use a different customer network.
+AGENT_SERVER="127.0.0.1"
+AGENT_ACTIVE="127.0.0.1:10051"
+if [[ -n "$ZABBIX_AGENT_GROUP_IPS" ]]; then
+  IFS=',' read -r -a GROUP_ADDRS <<< "$ZABBIX_AGENT_GROUP_IPS"
+  (( ${#GROUP_ADDRS[@]} >= 2 )) || die "Proxy-Gruppe benoetigt mindestens zwei LAN-Adressen."
+  seen_local=0
+  declare -A addr_seen=()
+  AGENT_ACTIVE=""
+  for addr in "${GROUP_ADDRS[@]}"; do
+    python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$addr" >/dev/null 2>&1 \
+      || die "Ungueltige Zabbix-Gruppen-LAN-IP: $addr"
+    [[ -z "${addr_seen[$addr]:-}" ]] || die "Doppelte Proxy-Gruppen-LAN-IP: $addr"
+    addr_seen[$addr]=1
+    [[ "$addr" == "$LAN_IP" ]] && seen_local=1
+    AGENT_SERVER+=",$addr"
+    if [[ -z "$AGENT_ACTIVE" ]]; then
+      AGENT_ACTIVE="$addr:10051"
+    else
+      AGENT_ACTIVE+=";$addr:10051"
+    fi
+  done
+  (( seen_local == 1 )) || die "Eigene LAN-IP $LAN_IP fehlt in --agent-group-ips."
+  log "Zabbix Agent-Proxy-Gruppe: $AGENT_ACTIVE"
+fi
 
 log "Installiere Zabbix Repository ..."
 tmp=/tmp/zabbix-release.deb
@@ -113,8 +142,8 @@ cat > /etc/zabbix/zabbix_agent2.conf <<EOF
 PidFile=/run/zabbix/zabbix_agent2.pid
 LogFile=/var/log/zabbix/zabbix_agent2.log
 LogFileSize=0
-Server=127.0.0.1
-ServerActive=127.0.0.1:10051
+Server=$AGENT_SERVER
+ServerActive=$AGENT_ACTIVE
 Hostname=$HOSTNAME_LOCAL
 Include=/etc/zabbix/zabbix_agent2.d/*.conf
 ControlSocket=/tmp/agent.sock

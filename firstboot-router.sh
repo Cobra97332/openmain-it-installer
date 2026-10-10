@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Never trace credentials, including when invoked with bash -x/-v.
+set +xv
 set -Eeuo pipefail
 DONE=/var/lib/openmain-router-firstboot.done
 [[ -e "$DONE" ]] && exit 0

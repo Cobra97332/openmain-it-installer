@@ -1,0 +1,45 @@
+name: Router security regression tests
+
+on:
+  push:
+    paths:
+      - 'router-install.sh'
+      - 'zabbix-*.sh'
+      - 'firstboot-router.sh'
+      - 'netbird-router/**'
+      - 'netbird-prometheus/sync-client-targets.py'
+      - 'tests/test_router_security.py'
+      - '.github/workflows/router-security-ci.yml'
+  pull_request:
+    paths:
+      - 'router-install.sh'
+      - 'zabbix-*.sh'
+      - 'firstboot-router.sh'
+      - 'netbird-router/**'
+      - 'netbird-prometheus/sync-client-targets.py'
+      - 'tests/test_router_security.py'
+      - '.github/workflows/router-security-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  offline-regressions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install static analysis tools
+        run: sudo apt-get update && sudo apt-get install -y shellcheck jq
+      - name: Bash syntax and ShellCheck
+        shell: bash
+        run: |
+          files=(router-install.sh zabbix-proxy-install.sh zabbix-api-register.sh
+                 firstboot-router.sh netbird-router/pve/install.sh
+                 netbird-router/pve/install-no-zabbix.sh
+                 netbird-router/raspberry-pi/install-router.sh)
+          for file in "${files[@]}"; do bash -n "$file"; done
+          shellcheck "${files[@]}"
+      - name: Offline API and installation mocks
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -m unittest discover -s tests -v

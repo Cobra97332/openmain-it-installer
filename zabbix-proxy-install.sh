@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Never trace credentials, including when invoked with bash -x/-v.
+set +xv
 set -Eeuo pipefail
 
 SSH_PUBLIC_KEY="${OPENMAIN_SSH_PUBLIC_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJc8VZvZ7o/8emKoGC7UXPiOMP8PSxch6P2rUGNio8Vi Stefan}"
@@ -53,7 +55,6 @@ done
 
 [[ $EUID -eq 0 ]] || die "Bitte als root ausführen."
 
-ensure_openmain_root_ssh
 [[ "$ROLE" == primary || "$ROLE" == backup ]] || die "--role muss primary oder backup sein."
 [[ -n "$CUSTOMER" ]] || read -r -p "Firmenname/Kunde: " CUSTOMER
 
@@ -67,6 +68,74 @@ PSK_FILE="/etc/zabbix/zabbix_proxy.psk"
 STATE_DIR="/var/lib/netbird-kundenrouter"
 STATE_FILE="$STATE_DIR/zabbix-proxy.env"
 INFO_FILE="/etc/netbird-zabbix-info.conf"
+PROXY_CONF="/etc/zabbix/zabbix_proxy.conf"
+AGENT_CONF="/etc/zabbix/zabbix_agent2.conf"
+AGENT_ITEMS="/etc/zabbix/zabbix_agent2.d/netbird-router.conf"
+PSK_PENDING="$STATE_DIR/zabbix-psk.pending"
+PROXY_EXISTED=0
+AGENT_EXISTED=0
+ITEMS_EXISTED=0
+[[ ! -e "$AGENT_CONF" && ! -L "$AGENT_CONF" ]] || AGENT_EXISTED=1
+[[ ! -e "$AGENT_ITEMS" && ! -L "$AGENT_ITEMS" ]] || ITEMS_EXISTED=1
+
+# Read configuration as data (including Include files), never source it as shell.
+# Refuse ambiguous/incomplete TLS state before installing or replacing anything.
+if [[ -e "$PROXY_CONF" || -L "$PROXY_CONF" ]]; then
+  PROXY_EXISTED=1
+  details=$(python3 - "$PROXY_CONF" 2>/dev/null <<'PYCONFIG'
+import glob
+import pathlib
+import sys
+
+keys = ("Hostname", "Server", "TLSConnect", "TLSPSKIdentity", "TLSPSKFile")
+values = {}
+seen = set()
+
+def read_config(filename):
+    path = pathlib.Path(filename).resolve(strict=True)
+    if path in seen:
+        raise ValueError("Repeated include")
+    seen.add(path)
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if key == "Include":
+            if not pathlib.Path(value).is_absolute():
+                raise ValueError("Ambiguous relative include")
+            for included in sorted(glob.glob(value)):
+                read_config(included)
+        elif key in keys:
+            if key in values or not value:
+                raise ValueError("Ambiguous configuration")
+            values[key] = value
+
+read_config(sys.argv[1])
+for key in keys:
+    print(values[key])
+PYCONFIG
+  ) || die "Vorhandene Proxy-/TLS-Konfiguration unvollstaendig oder mehrdeutig. Keine Aenderung."
+  mapfile -t config_values <<< "$details"
+  [[ "${config_values[0]}" == "$PROXY_NAME" && "${config_values[1]}" == "$ZABBIX_SERVER" ]] \
+    || die "Vorhandener Proxy-Name oder Server weicht ab. Keine automatische Ueberschreibung."
+  [[ "${config_values[2]}" == psk && "${config_values[4]}" == /* ]] \
+    || die "Vorhandene TLS-Konfiguration nicht eindeutig PSK-basiert. Keine Aenderung."
+  PSK_IDENTITY="${config_values[3]}"
+  PSK_FILE="${config_values[4]}"
+  [[ -s "$PSK_FILE" ]] || die "Vorhandene TLS-Konfiguration ohne lesbaren PSK. Kein Ersatzschluessel erzeugt."
+elif [[ -e "$PSK_FILE" || -L "$PSK_FILE" || -e "$STATE_FILE" ]]; then
+  die "Vorhandener PSK/Zustand ohne Proxy-Konfiguration. TLS-Identitaet zuerst wiederherstellen."
+fi
+
+if [[ -e "$PSK_FILE" ]]; then
+  existing_psk=$(cat "$PSK_FILE" 2>/dev/null) || die "Vorhandener PSK nicht lesbar."
+  [[ "$existing_psk" =~ ^[[:xdigit:]]{32,512}$ && $(( ${#existing_psk} % 2 )) == 0 ]] \
+    || die "Vorhandener PSK ungueltig. Kein Ersatzschluessel erzeugt."
+  unset existing_psk
+fi
+
+ensure_openmain_root_ssh
 
 # Prefer the same LAN interface that the router's BINAT configuration uses.
 # Fallback only for standalone Zabbix helper installations.
@@ -110,18 +179,23 @@ dpkg -i "$tmp"
 rm -f "$tmp"
 
 apt-get update -y
-DEBIAN_FRONTEND=noninteractive apt-get install -y zabbix-proxy-sqlite3 zabbix-agent2 openssl
+DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold install -y zabbix-proxy-sqlite3 zabbix-agent2 openssl python3 jq
 
 install -d -o zabbix -g zabbix -m 0750 /var/lib/zabbix
 install -d -o root -g zabbix -m 0750 /etc/zabbix
 
-if [[ ! -s "$PSK_FILE" ]]; then
-  (umask 077; openssl rand -hex 32 > "$PSK_FILE")
+if [[ "$PROXY_EXISTED" == 0 ]]; then
+  install -d -m 0700 "$STATE_DIR"
+  # Keep the marker across failed/ambiguous registration attempts. Never silently
+  # attach a newly generated local key to an existing server-side proxy.
+  (umask 077; : > "$PSK_PENDING")
+  (umask 077; set -o noclobber; openssl rand -hex 32 > "$PSK_FILE")
+  chown zabbix:zabbix "$PSK_FILE"
+  chmod 600 "$PSK_FILE"
 fi
-chown zabbix:zabbix "$PSK_FILE"
-chmod 600 "$PSK_FILE"
 
-cat > /etc/zabbix/zabbix_proxy.conf <<EOF
+if [[ "$PROXY_EXISTED" == 0 ]]; then
+cat > "$PROXY_CONF" <<EOF
 ProxyMode=0
 Server=$ZABBIX_SERVER
 StatsAllowedIP=127.0.0.1,::1,$ZABBIX_SERVER
@@ -137,8 +211,11 @@ TLSConnect=psk
 TLSPSKIdentity=$PSK_IDENTITY
 TLSPSKFile=$PSK_FILE
 EOF
+chmod 0644 "$PROXY_CONF"
+fi
 
-cat > /etc/zabbix/zabbix_agent2.conf <<EOF
+if [[ "$AGENT_EXISTED" == 0 ]]; then
+cat > "$AGENT_CONF" <<EOF
 PidFile=/run/zabbix/zabbix_agent2.pid
 LogFile=/var/log/zabbix/zabbix_agent2.log
 LogFileSize=0
@@ -148,29 +225,31 @@ Hostname=$HOSTNAME_LOCAL
 Include=/etc/zabbix/zabbix_agent2.d/*.conf
 ControlSocket=/tmp/agent.sock
 EOF
+chmod 0644 "$AGENT_CONF"
+fi
 
 install -d -m 0755 /etc/zabbix/zabbix_agent2.d
-cat > /etc/zabbix/zabbix_agent2.d/netbird-router.conf <<'EOF'
+if [[ "$ITEMS_EXISTED" == 0 ]]; then
+cat > "$AGENT_ITEMS" <<'EOF'
 UserParameter=netbird.service,systemctl is-active --quiet netbird && echo 1 || echo 0
 UserParameter=netbird.ipforward,cat /proc/sys/net/ipv4/ip_forward
 UserParameter=netbird.nftables,nft list table ip mein_binat >/dev/null 2>&1 && echo 1 || echo 0
 UserParameter=netbird.connected,netbird status >/dev/null 2>&1 && echo 1 || echo 0
 EOF
+chmod 0644 "$AGENT_ITEMS"
+fi
 
-# The Zabbix daemons must be able to read their configuration files.
-# PSK secrets stay protected separately by 0600 permissions.
-chmod 0644 /etc/zabbix/zabbix_proxy.conf \
-           /etc/zabbix/zabbix_agent2.conf \
-           /etc/zabbix/zabbix_agent2.d/netbird-router.conf
+# Validators may print configuration values on errors; emit only a safe summary.
+zabbix_proxy -T -c "$PROXY_CONF" >/dev/null 2>&1 || die "Proxy-Konfiguration ungueltig; kein Dienstneustart."
+zabbix_agent2 -T -c "$AGENT_CONF" >/dev/null 2>&1 || die "Agent-Konfiguration ungueltig; kein Dienstneustart."
 
 API_HELPER="/usr/local/sbin/zabbix-api-register"
 ZABBIX_API_REGISTRATION_STATUS="pending"
 if [[ -x "$API_HELPER" && -n "${NB_ZABBIX_API_TOKEN:-}" ]]; then
-  if "$API_HELPER" "$CUSTOMER" "$ROLE" "$PROXY_NAME" "$LAN_IP" "$PSK_IDENTITY" "$PSK_FILE"; then
+  if NB_ZABBIX_PSK_PENDING_FILE="$PSK_PENDING" "$API_HELPER" "$CUSTOMER" "$ROLE" "$PROXY_NAME" "$LAN_IP" "$PSK_IDENTITY" "$PSK_FILE"; then
     ZABBIX_API_REGISTRATION_STATUS="registered"
   else
-    echo "[WARNUNG] Zabbix-API-Registrierung fehlgeschlagen. Lokale Installation wird fortgesetzt." >&2
-    echo "[WARNUNG] Die Registrierung im Zabbix-Server muss nach Behebung des API-Zugriffs nachgeholt werden." >&2
+    die "Zabbix-API-Registrierung nicht bestaetigt. TLS-Bestand pruefen; kein Dienstneustart."
   fi
 else
   echo "[WARNUNG] Kein Zabbix-API-Token oder Registrierungshelfer vorhanden. Registrierung ausstehend." >&2
@@ -188,17 +267,16 @@ ZABBIX_ACTIVE_AGENT_ADDRESS=$LAN_IP
 ZABBIX_ACTIVE_AGENT_PORT=10051
 ZABBIX_PSK_IDENTITY=$PSK_IDENTITY
 ZABBIX_API_REGISTRATION_STATUS=$ZABBIX_API_REGISTRATION_STATUS
-ZABBIX_PSK=$(cat "$PSK_FILE")
 EOF
 chmod 600 "$STATE_FILE"
 
-cat > "$INFO_FILE" <<EOF
-ZABBIX_INFO_PROXY=$PROXY_NAME
-ZABBIX_INFO_SERVER=$ZABBIX_SERVER
-ZABBIX_INFO_ACTIVE_ADDRESS=$LAN_IP
-ZABBIX_INFO_ACTIVE_PORT=10051
-ZABBIX_INFO_PSK_IDENTITY=$PSK_IDENTITY
-EOF
+{
+  printf 'ZABBIX_INFO_PROXY=%q\n' "$PROXY_NAME"
+  printf 'ZABBIX_INFO_SERVER=%q\n' "$ZABBIX_SERVER"
+  printf 'ZABBIX_INFO_ACTIVE_ADDRESS=%q\n' "$LAN_IP"
+  printf 'ZABBIX_INFO_ACTIVE_PORT=10051\n'
+  printf 'ZABBIX_INFO_PSK_IDENTITY=%q\n' "$PSK_IDENTITY"
+} > "$INFO_FILE"
 chmod 0644 "$INFO_FILE"
 
 cat > /etc/profile.d/netbird-zabbix-info.sh <<'EOF'
@@ -217,8 +295,7 @@ printf '%-18s %s\n' "Zabbix-Server:" "$ZABBIX_INFO_SERVER:10051"
 printf '%-18s %s\n' "Active Agents:" "$ZABBIX_INFO_ACTIVE_ADDRESS:$ZABBIX_INFO_ACTIVE_PORT"
 printf '%-18s %s\n' "PSK Identity:" "$ZABBIX_INFO_PSK_IDENTITY"
 echo
-echo "PSK anzeigen:"
-echo "  sudo cat /etc/zabbix/zabbix_proxy.psk"
+echo "PSK wird nicht in Terminal oder Logs ausgegeben."
 echo "============================================================"
 echo
 EOF
@@ -226,6 +303,7 @@ chmod 0755 /etc/profile.d/netbird-zabbix-info.sh
 
 LOGIN_SOURCE_LINE='source /etc/profile.d/netbird-zabbix-info.sh'
 for profile in /root/.profile /home/omadmin/.profile; do
+  [[ -d "$(dirname "$profile")" ]] || continue
   touch "$profile"
   grep -qxF "$LOGIN_SOURCE_LINE" "$profile" || echo "$LOGIN_SOURCE_LINE" >> "$profile"
 done
@@ -242,7 +320,7 @@ echo "Zabbix       : $ZABBIX_SERVER:10051"
 echo "Active Agents: $LAN_IP:10051"
 echo "Verschluesselung: PSK"
 echo "PSK Identity : $PSK_IDENTITY"
-echo "PSK          : $(cat "$PSK_FILE")"
+echo "PSK          : geschuetzt in der lokalen PSK-Datei (wird nicht ausgegeben)"
 echo
 echo "Im Zabbix-Frontend den Proxy als ACTIVE Proxy anlegen und unter Verschluesselung PSK aktivieren."
 echo "Bei Proxy-Gruppen als Address for active agents eintragen: $LAN_IP Port 10051"

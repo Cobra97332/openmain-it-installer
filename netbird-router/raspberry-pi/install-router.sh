@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
+# Never trace credentials, including when invoked with bash -x/-v.
+set +xv
 set -Eeuo pipefail
 
-VERSION="3.0"
 COMMON_ROUTER_URL="https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/router-install.sh"
 ZABBIX_PROXY_URL="https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/zabbix-proxy-install.sh"
 ZABBIX_API_URL_FILE="https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/zabbix-api-register.sh"
@@ -234,6 +235,7 @@ chmod 0600 "$ENV_FILE"
 
 cat > "$DEPLOY_SCRIPT" <<'DEPLOY'
 #!/usr/bin/env bash
+set +xv
 set -Eeuo pipefail
 
 BASE_DIR="/etc/openmain-netbird-router"

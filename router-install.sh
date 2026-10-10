@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
+# Never trace credentials, including when invoked with bash -x/-v.
+set +xv
 set -Eeuo pipefail
 
-VERSION="3.0"
 MGMT_URL="${NB_MANAGEMENT_URL:-https://netbird.openmain-it.de}"
 API_TOKEN="${NB_API_TOKEN:-}"
 SETUP_KEY="${NB_SETUP_KEY:-}"
@@ -108,9 +109,8 @@ api(){
   tmp=$(mktemp)
   local args=(-sS -X "$method" "$API_ROOT$path" -H "Authorization: Token $API_TOKEN" -H 'Accept: application/json')
   [[ -n "$data" ]] && args+=(-H 'Content-Type: application/json' --data-raw "$data")
-  code=$(curl "${args[@]}" -o "$tmp" -w '%{http_code}') || { cat "$tmp" >&2; rm -f "$tmp"; die "API-Aufruf fehlgeschlagen: $method $path"; }
+  code=$(curl "${args[@]}" -o "$tmp" -w '%{http_code}' 2>/dev/null) || { rm -f "$tmp"; die "API-Aufruf fehlgeschlagen: $method $path"; }
   if [[ ! "$code" =~ ^2 ]]; then
-    cat "$tmp" >&2
     rm -f "$tmp"
     die "API $method $path -> HTTP $code"
   fi
@@ -221,7 +221,8 @@ connect_netbird(){
     )
   fi
 
-  netbird "${up_args[@]}"
+  # Enrollment failures may echo the setup key; never relay raw CLI output.
+  netbird "${up_args[@]}" >/dev/null 2>&1 || die "NetBird-Anmeldung fehlgeschlagen (Ausgabe zum Schutz der Zugangsdaten unterdrueckt)."
   netbird service reconfigure --enable-json-socket >/dev/null 2>&1 || true
   systemctl restart netbird
   wait_netbird
@@ -255,7 +256,9 @@ find_peer(){
 ensure_group(){
   local name="$1" groups gid payload resp
   groups=$(api GET "/groups")
-  gid=$(jq -r --arg n "$name" '(if type=="array" then . else [] end)[] | select(.name==$n) | .id' <<<"$groups" | head -n1)
+  jq -e --arg n "$name" 'type=="array" and ([.[] | select(.name==$n)] | length <= 1)' <<<"$groups" >/dev/null 2>&1 \
+    || die "Gruppenliste ungueltig oder Gruppenname nicht eindeutig. Keine Aenderung."
+  gid=$(jq -r --arg n "$name" '.[] | select(.name==$n) | .id' <<<"$groups")
   if [[ -z "$gid" ]]; then
     payload=$(jq -nc --arg n "$name" '{name:$n,peers:[]}')
     resp=$(api POST "/groups" "$payload")
@@ -270,8 +273,16 @@ ensure_peer_in_group(){
 
   g=$(api GET "/groups/$gid")
 
+  # A partial/error response must never turn into an empty replacement group.
+  jq -e --arg gid "$gid" '
+    .id==$gid and (.name|type=="string" and length>0) and
+    (.peers|type=="array") and (.resources|type=="array") and
+    all(.peers[]; (if type=="object" then .id else . end)|type=="string" and length>0) and
+    all(.resources[]; (.id|type=="string" and length>0) and (.type|type=="string" and length>0))
+  ' <<<"$g" >/dev/null 2>&1 || die "Gruppenbestand unvollstaendig. Keine Aenderung."
+
   # A group update must preserve existing peer memberships and resources.
-  if jq -e --arg p "$PEER_ID" '[(.peers // [])[]? | if type=="object" then .id else . end] | index($p) != null' <<<"$g" >/dev/null; then
+  if jq -e --arg p "$PEER_ID" '[(.peers // [])[]? | if type=="object" then .id else . end] | index($p) != null' <<<"$g" >/dev/null 2>&1; then
     return 0
   fi
 
@@ -356,7 +367,7 @@ setup_zabbix_access(){
         ((.ports // []) | index("10051") != null) and
         any(.sources[]?; (if type=="object" then .id else . end)==$src) and
         any(.destinations[]?; (if type=="object" then .id else . end)==$dst)))' \
-    <<<"$policies" >/dev/null \
+    <<<"$policies" >/dev/null 2>&1 \
     || die "Policy '$ZABBIX_POLICY_NAME' erlaubt nicht nachweisbar $ZABBIX_PROXY_GROUP -> $ZABBIX_SERVER_GROUP TCP/10051. Ports im NetBird-Dashboard pruefen."
 
   ensure_peer_in_group "$ZABBIX_PROXY_GROUP_ID"
@@ -373,7 +384,25 @@ ensure_metrics_policy(){
   local policies policy_id payload
 
   policies=$(api GET "/policies")
-  policy_id=$(jq -r --arg n "$METRICS_POLICY_NAME"     '(if type=="array" then . else [] end)[] | select(.name==$n) | .id // empty'     <<<"$policies" | head -n1)
+  jq -e --arg n "$METRICS_POLICY_NAME" 'type=="array" and ([.[] | select(.name==$n)] | length<=1)' <<<"$policies" >/dev/null 2>&1 \
+    || die "Policy-Liste ungueltig oder Policy-Name nicht eindeutig. Keine Aenderung."
+  policy_id=$(jq -r --arg n "$METRICS_POLICY_NAME" '.[] | select(.name==$n) | .id // empty' <<<"$policies")
+
+  if jq -e --arg n "$METRICS_POLICY_NAME" 'any(.[]; .name==$n)' <<<"$policies" >/dev/null 2>&1; then
+    # Verify required access only; retain extra rules, disabled rules and posture checks.
+    [[ -n "$policy_id" ]] || die "Bestehende Metrics-Policy ohne ID. Keine Aenderung."
+    jq -e --arg n "$METRICS_POLICY_NAME" --arg src "$MONITORING_GROUP_ID" \
+      --arg dst "$METRICS_GROUP_ID" --arg p "$METRICS_PORT" --arg d "$METRICS_DETAIL_PORT" '
+      .[] | select(.name==$n) | . as $policy |
+      .enabled==true and all([$p,$d][]; . as $port |
+        any($policy.rules[]?; .enabled==true and .action=="accept" and .protocol=="tcp" and
+          any(.sources[]?; (if type=="object" then .id else . end)==$src) and
+          any(.destinations[]?; (if type=="object" then .id else . end)==$dst) and
+          any(.ports[]?; tostring==$port)))
+    ' <<<"$policies" >/dev/null 2>&1 || die "Bestehende Metrics-Policy passt nicht. Keine automatische Ueberschreibung."
+    log "Bestehende Metrics-Policy beibehalten: $METRICS_POLICY_NAME"
+    return 0
+  fi
 
   payload=$(jq -nc     --arg name "$METRICS_POLICY_NAME"     --arg src "$MONITORING_GROUP_ID"     --arg dst "$METRICS_GROUP_ID"     --arg port "$METRICS_PORT"     --arg detail_port "$METRICS_DETAIL_PORT"     '{
       name:$name,
@@ -393,13 +422,8 @@ ensure_metrics_policy(){
       }]
     }')
 
-  if [[ -n "$policy_id" ]]; then
-    api PUT "/policies/$policy_id" "$payload" >/dev/null
-    log "Metrics-Policy aktualisiert: $METRICS_POLICY_NAME"
-  else
-    api POST "/policies" "$payload" >/dev/null
-    log "Metrics-Policy erstellt: $METRICS_POLICY_NAME"
-  fi
+  api POST "/policies" "$payload" >/dev/null
+  log "Metrics-Policy erstellt: $METRICS_POLICY_NAME"
 }
 
 ensure_setup_key_metrics_group(){

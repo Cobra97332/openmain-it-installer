@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Never trace credentials, including when invoked with bash -x/-v.
+set +xv
 set -Eeuo pipefail
 
 ROLE="primary"
@@ -182,7 +184,7 @@ pct push "$CTID" "$TMP/secrets" /root/.netbird-router-secrets -perms 600
 QC=$(printf '%q' "$CUSTOMER")
 QH=$(printf '%q' "$HOSTNAME_CT")
 
-pct exec "$CTID" -- bash -lc "set -a; source /root/.netbird-router-secrets; set +a; /root/router-install.sh --role \"\$NB_ROLE\" --management-url \"\$NB_MANAGEMENT_URL\" --customer $QC --hostname $QH --no-zabbix; rc=\$?; rm -f /root/.netbird-router-secrets; exit \$rc"
+pct exec "$CTID" -- bash -lc "set +xv; set -a; source /root/.netbird-router-secrets; set +a; /root/router-install.sh --role \"\$NB_ROLE\" --management-url \"\$NB_MANAGEMENT_URL\" --customer $QC --hostname $QH --no-zabbix; rc=\$?; rm -f /root/.netbird-router-secrets; exit \$rc"
 
 pct exec "$CTID" -- /root/install-dhcp-recovery.sh || die "DHCP-Recovery konnte nicht eingerichtet werden."
 

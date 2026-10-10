@@ -20,6 +20,16 @@ import pi_firstboot
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_pi_timer_rejection_precedes_probe_api_or_config_write(self):
+        with patch.object(pi_firstboot, 'config', return_value={'NB_CUSTOMER_NAME':'Synthetic','NB_ROLE':'primary'}), \
+             patch.object(pi_firstboot, 'inspect', side_effect=ValueError('rejected')), \
+             patch.object(pi_firstboot.subprocess, 'run') as run, \
+             patch.object(pi_firstboot.subprocess, 'check_output') as read, \
+             patch.object(pi_firstboot.urllib.request, 'urlopen') as api, \
+             patch.object(pi_firstboot, 'atomic') as write:
+            with self.assertRaises(ValueError):pi_firstboot.main()
+            run.assert_not_called();read.assert_not_called();api.assert_not_called();write.assert_not_called()
+
     def test_platform_matrix(self):
         debian = {'ID': 'debian', 'VERSION_ID': '13'}
         for arch in ('x86_64', 'aarch64'):

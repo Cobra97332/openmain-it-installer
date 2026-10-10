@@ -166,11 +166,15 @@ setup_access(){
 detect_lan(){
   local detected
   detected=$(python3 "$RUNTIME" lan "$LAN_IF_OVERRIDE") || die "LAN nicht eindeutig; NB_LAN_INTERFACE setzen."
-  LAN_IF=$(jq -r .interface <<<"$detected")
-  LAN_NET=$(jq -r .network <<<"$detected")
-  LAN_IP=$(jq -r .address <<<"$detected")
+  local values
+  values=$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["interface"]); print(d["network"]); print(d["address"])' <<<"$detected")
+  local fields
+  mapfile -t fields <<< "$values"
+  LAN_IF=${fields[0]}
+  LAN_NET=${fields[1]}
+  LAN_IP=${fields[2]}
   if [[ -s "$STATE_FILE" ]]; then
-    jq -e --arg c "$CUSTOMER" --arg l "$LAN_NET" '.customer==$c and .lan==$l' "$STATE_FILE" >/dev/null 2>&1 \
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(not(d["customer"]==sys.argv[2] and d["lan"]==sys.argv[3]))' "$STATE_FILE" "$CUSTOMER" "$LAN_NET" >/dev/null 2>&1 \
       || die "Kunde/LAN weicht vom gespeicherten Bestand ab; Migration separat durchfuehren."
   fi
   log "LAN: $LAN_IF / $LAN_NET / $LAN_IP"
@@ -192,16 +196,16 @@ wait_netbird(){
 
 connect_netbird(){
   local up_args status
-  systemctl enable --now netbird >/dev/null 2>&1 || die "NetBird-Dienst nicht gestartet."
-  wait_netbird
   if [[ "${PROFILE_EXISTED:-0}" == 1 ]]; then
-    jq -e --arg url "$MGMT_URL" '(.ManagementURL|if type=="object" then (.Scheme+"://"+.Host) else . end)==$url and (.DisableFirewall // false)==false' \
-      /etc/netbird/config.json >/dev/null 2>&1 || die "Bestehendes NetBird-Profil/Firewall passt nicht; keine Trennung oder Neuanmeldung."
+    # Ownership, endpoint and firewall were already admitted before packages.
+    # Never enable/start/reconnect an existing peer here.
     status=$(netbird status --json 2>/dev/null) || die "NetBird-Status nicht lesbar."
     jq -e '.management.connected==true' <<<"$status" >/dev/null 2>&1 \
       || die "Bestehendes NetBird-Profil nicht verbunden; Netzwerk/Anmeldung pruefen. Kein Reset."
     return 0
   fi
+  systemctl enable --now netbird >/dev/null 2>&1 || die "NetBird-Dienst nicht gestartet."
+  wait_netbird
   [[ -n "$SETUP_KEY" ]] || die "Setup-Key fuer neue Registrierung erforderlich."
   up_args=(up --setup-key "$SETUP_KEY" --management-url "$MGMT_URL")
   [[ -z "${HOSTNAME_OVERRIDE:-}" ]] || up_args+=(--hostname "$HOSTNAME_OVERRIDE")
@@ -522,6 +526,11 @@ setup_zabbix(){
 
   [[ -n "$helper" ]] || die "Zabbix-Helferskript fehlt. Erwartet: /usr/local/sbin/zabbix-proxy-install"
 
+  if [[ ! -e "${STATE_FILE%/*}/zabbix-intent.json" ]]; then
+    jq -nc --arg customer "$CUSTOMER" --arg proxy "proxy-${COMPANY_GROUP_ID}-${ROLE}" \
+      --arg host "router-${COMPANY_GROUP_ID}-${ROLE}" '{customer:$customer,proxy:$proxy,host:$host}' > "${STATE_FILE%/*}/zabbix-intent.tmp"
+    mv "${STATE_FILE%/*}/zabbix-intent.tmp" "${STATE_FILE%/*}/zabbix-intent.json"
+  fi
   NB_LAN_INTERFACE="$LAN_IF" NB_BUNDLE_DIR="$SCRIPT_DIR" NB_ZABBIX_REGISTER_HOST=1 NB_ZABBIX_PROXY_NAME="proxy-${COMPANY_GROUP_ID}-${ROLE}" NB_ZABBIX_AGENT_HOST="router-${COMPANY_GROUP_ID}-${ROLE}" bash "$helper" \
     --customer "$CUSTOMER" --role "$ROLE" \
     --server "$ZABBIX_SERVER" --hostname "$HOSTNAME_LOCAL"
@@ -554,18 +563,23 @@ checkpoint(){
   mv "${STATE_FILE%/*}/progress.tmp" "${STATE_FILE%/*}/progress.json"
 }
 
+preflight(){
+  python3 "$SCRIPT_DIR/netbird-router/common/preflight.py" \
+    --customer "$CUSTOMER" --role "$ROLE" --management-url "$MGMT_URL" \
+    --zabbix-server "$ZABBIX_SERVER" --zabbix-enabled "$ZABBIX_ENABLED" \
+    --lan-interface "$LAN_IF_OVERRIDE" || die "Bestandspruefung abgelehnt; keine Aenderungen."
+  detect_lan
+}
+
 main(){
+  # No state directory, lock, package, service, API write or connection before this.
+  preflight
   install -d -m 0700 "${STATE_FILE%/*}"
   exec 9>"${STATE_FILE%/*}/install.lock"
   flock -n 9 || die "Ein Installer laeuft bereits."
+  preflight
   trap 'checkpoint failed; warn "Installation unterbrochen. Mit denselben Angaben erneut starten."' ERR
-  # Legacy unmanaged NAT must be migrated explicitly, never silently stacked.
-  [[ ! -f /etc/nftables.d/netbird-kundenrouter.nft ]] || die "Alte mein_binat-Konfiguration vorhanden; gesicherte Firewallmigration erforderlich."
-  if [[ -s "${STATE_FILE%/*}/progress.json" ]]; then
-    jq -e --arg c "$CUSTOMER" '.customer==$c' "${STATE_FILE%/*}/progress.json" >/dev/null 2>&1 || die "Wiederaufnahmestatus gehoert einem anderen Kunden."
-  fi
   checkpoint preflight
-  detect_lan
   install_packages
   setup_access
   checkpoint netbird

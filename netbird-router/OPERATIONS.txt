@@ -29,7 +29,8 @@ Alternatively netbird-router/install.sh downloads one public GitHub commit:
   NB_INSTALLER_REF=<reviewed full 40-character commit SHA>
 When no SHA is supplied, main is resolved once before fetching the bundle.
 Prerequisites for that bootstrap: root, curl, Python >=3.12 (Debian 13 supplies
-3.13). The VM entrypoint installs missing jq/Python prerequisites itself.
+3.13). The VM entrypoint requires Python before admission; it never installs
+dependencies on an uninspected existing host. Other packages follow admission.
 Existing secret-bearing command-line flags remain compatibility options;
 prefer protected configuration or hidden terminal prompts.
 
@@ -128,10 +129,14 @@ file ownership and permissions and refuse conflicting TLS/hostname changes.
 
 IMPORTANT legacy migration limits:
 Installations made with --disable-firewall / old mein_binat rules must undergo
-an explicitly reviewed migration. The old NAT-file guard stops early, but the
-profile-only DisableFirewall check currently runs after package installation and
-daemon enable/start. Move this check to preflight before merge; see the mandatory
-legacy acceptance gate in ABNAHME-PVE.txt.
+an explicitly reviewed migration. All router entrypoints inspect local ownership,
+NetBird profiles/DisableFirewall/connected status, saved and active BINAT, LAN,
+and Zabbix identity/PSK/configuration before package, service or network changes.
+Rejected state remains untouched. Existing running PVE guests are inspected
+before file transfer; stopped existing guests are not automatically started.
+Only pristine new templates pass the shell bootstrap gate before Python is
+available. Unidentifiable interrupted state needs manual review without deleting
+profiles, keys or ownership markers. See ABNAHME-PVE.txt for the two-container gate.
 Existing manually configured agents are retained and require migration before
 the new managed host/agent automation can take ownership. A proxy-create response
 lost after server commit leaves a pending-key marker: it stops for TLS identity/key

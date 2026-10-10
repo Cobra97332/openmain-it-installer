@@ -26,11 +26,12 @@ p=Path(os.environ['MOCK_ROOT']);state=p/'ct.json';a=sys.argv[1:]
 with (p/'pct-calls').open('a') as f:f.write(json.dumps(a)+'\\n')
 s=json.loads(state.read_text()) if state.exists() else None
 if a[0]=='status':
- if s: print('status: running')
+ if s: print('status: '+os.environ.get('MOCK_CT_STATUS','running'))
  else: sys.exit(1)
 elif a[0]=='create':
  state.write_text(json.dumps({'id':a[1],'description':a[a.index('--description')+1]}))
 elif a[0]=='config':print('description: '+s['description'])
+elif a[0]=='exec' and a[3:5]==['python3','-c'] and os.environ.get('MOCK_REJECT_PREFLIGHT'):sys.exit(1)
 elif a[0] in ('push','exec','start'):pass
 else:sys.exit(98)
 ''')
@@ -59,6 +60,20 @@ else:sys.exit(98)
         self.assertNotEqual(result.returncode,0)
         calls=[json.loads(x)[0] for x in (self.root/'pct-calls').read_text().splitlines()]
         self.assertNotIn('exec',calls);self.assertNotIn('push',calls);self.assertNotIn('create',calls)
+    def test_rejected_existing_guest_has_no_push_packages_services_or_start(self):
+        self.assertEqual(self.run_wrapper().returncode,0)
+        journal=self.root/'pct-calls'
+        for env,value in [('MOCK_REJECT_PREFLIGHT','1'),('MOCK_CT_STATUS','stopped')]:
+            with self.subTest(case=env):
+                journal.unlink();self.env[env]=value
+                before=(self.root/'ct.json').read_bytes()
+                result=self.run_wrapper()
+                self.assertNotEqual(result.returncode,0)
+                calls=[json.loads(x) for x in journal.read_text().splitlines()]
+                self.assertTrue(all(x[0] in ('status','config') or (x[0]=='exec' and x[3:5]==['python3','-c']) for x in calls))
+                self.assertEqual((self.root/'ct.json').read_bytes(),before)
+                del self.env[env]
+
     def test_static_address_skips_dhcp_dependency(self):
         result=self.run_wrapper('--ip','192.0.2.20/24','--gateway','192.0.2.1')
         self.assertEqual(result.returncode,0,result.stderr)
@@ -74,6 +89,9 @@ class FirstbootTests(Sandbox):
         self.bundle=self.fs/'opt/openmain-router';self.bundle.mkdir(parents=True)
         (self.bundle/'router-install.sh').write_text('# fake core - never executed directly\n')
         self.config=self.fs/'etc/openmain-router/firstboot.json';self.config.parent.mkdir(parents=True)
+        checker=self.bundle/'netbird-router/common/preflight.py'
+        checker.parent.mkdir(parents=True)
+        checker.write_text('import os,sys; sys.exit(int(os.environ.get("MOCK_REJECT_PREFLIGHT", "0")))')
         self.config.write_text('{"NB_CUSTOMER_NAME":"Synthetic"}')
         self.done=self.fs/'var/lib/openmain-router-firstboot.done'
         source=(ROOT/'firstboot-router.sh').read_text()
@@ -83,6 +101,14 @@ class FirstbootTests(Sandbox):
         self.executable('bash','#!/bin/sh\necho run >> "$MOCK_ROOT/core-calls"\nexit "${MOCK_CORE_RESULT:-0}"\n')
     def run_wrapper(self):
         return subprocess.run(['/bin/bash',str(self.script)],env=self.env,capture_output=True,text=True,timeout=10)
+    def test_rejected_firstboot_keeps_input_and_never_calls_core(self):
+        self.env['MOCK_REJECT_PREFLIGHT']='1'
+        before=self.config.read_bytes()
+        self.assertNotEqual(self.run_wrapper().returncode,0)
+        self.assertEqual(self.config.read_bytes(),before)
+        self.assertFalse((self.root/'core-calls').exists())
+        self.assertFalse(self.done.exists())
+
     def test_failed_install_keeps_credentials_and_retry_marks_only_success(self):
         self.env['MOCK_CORE_RESULT']='1'
         self.assertNotEqual(self.run_wrapper().returncode,0)

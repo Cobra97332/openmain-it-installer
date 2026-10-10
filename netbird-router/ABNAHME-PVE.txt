@@ -1,8 +1,8 @@
 PR #30 - Abnahme Proxmox LXC (Stand 11.10.2026)
 =============================================
 Status: Testplan vorbereitet, NICHT im Proxmox-Labor ausgefuehrt.
-Referenz des geprueften Installer-Codes: 381c98ac5bf044976b8c3801fd0db9192a6b1cfe.
-Bei Codeaenderungen den neuen PR-Head testen und dessen SHA protokollieren.
+Referenz: finalen PR-Head auschecken und dessen SHA im Abnahmeprotokoll festhalten.
+Offline-Regressionen sind erfolgreich; reale Laborpruefungen stehen noch aus.
 
 1. Labor und Schutzgrenzen
 - Separater Proxmox-Laborhost/Cluster, keine produktiven Nodes oder Bridges.
@@ -104,13 +104,24 @@ Bei Codeaenderungen den neuen PR-Head testen und dessen SHA protokollieren.
   Firewall- und schreibenden API-Aenderungen abbrechen. Nur neue Diagnose-/Lock-
   Dateien sind toleriert. Mit Mock-Aufrufjournal und lokalen Vorher-/Nachher-
   Vergleichen nachweisen, ohne Inhalte/Secrets zu veroeffentlichen.
-- BEKANNTER BLOCKER im Referenzcommit: main() ruft install_packages/setup_access
-  vor connect_netbird() auf; dort wird NetBird bereits gestartet, bevor das
-  bestehende Profil/DisableFirewall geprueft wird. Die alte NFT-Datei hat zwar
-  einen fruehen Guard, der Profil-only-Fall aber nicht. Der strengere Test ist
-  deshalb noch nicht erfuellt. Preflight vor Mutationen verlagern und Regression
-  nachweisen; manuelle Zabbix-Bestaende ebenfalls frueh pruefen. Keine automatische
-  Bauer-Migration als Teil dieses PR-Abnahmelaufs zulassen.
+- Vorpruefung ist nun vor Paketinstallation, Dienststart, Enrollment und
+  Netzwerk-/Konfigurationsaenderungen vorgeschaltet. Negativtests fuehren den
+  Core mit isolierten Dateien und protokollierten Systemkommandos aus: Ablehnung
+  muss null Mutationen und unveraenderte Dateien/Rechte nachweisen.
+- Zusaetzlich: veraenderte aktive BINAT-Regel, anderer Kunde/Rolle/LAN,
+  verwaiste/mehrere Profile, fehlende Pruefwerkzeuge und fehlende/abweichende PSK.
+  Unterstuetzten verbundenen Bestand zweimal pruefen: kein NetBird down/up und
+  kein Start/Neustart des NetBird-Dienstes. Geheimnisse nur lokal vergleichen.
+- PVE-Wiederaufnahme: im markierten laufenden Test-CT synthetischen Konflikt
+  setzen; Abbruch bereits vor Bundle-/Credential-Push, DHCP und Paketinstallation.
+  Gestoppte bestehende CTs werden nicht automatisch gestartet. Nur den eigenen
+  Laborgast nach separater Kontrolle manuell starten, dann erneut pruefen.
+- Neue Templates ohne Python passieren zuerst eine strengere, rein lesende
+  Leerbestandspruefung; jeglicher Router-/Zabbix-Bestand stoppt den Bootstrap.
+  Bei nicht eindeutig zuordenbaren Zwischenstaenden sicher abbrechen, Daten
+  behalten und manuell pruefen. Keine Marker/Profile zur Umgehung loeschen.
+  Fuer saubere Wiederholungen muessen Profil und Management bereits verbunden
+  sein. Keine automatische Bauer-Migration oder automatische Wiederverbindung.
 
 6. Merge-Gate und Nachweis
 MERGE ERST, WENN alle Pflichtfelder oben PASS sind, insbesondere Legacy-Guard,

@@ -60,6 +60,18 @@ Path('/etc/nftables.d').mkdir(exist_ok=True)
 Path('/etc/nftables.d/openmain-binat.nft').write_text(nft_config('enp1s0','wt0','10.30.1.0/24','192.168.50.0/24'))
 run('nft','add','table','inet','foreign_fixture')
 for _ in range(2):run('bash','/src/netbird-router/common/apply-binat.sh')
+# Admission must recognize actual nft's normalized output, not just mocks.
+from preflight import inspect, Rejected
+state_dir=Path('/var/lib/netbird-kundenrouter');state_dir.mkdir(parents=True)
+(state_dir/'state.json').write_text(json.dumps(dict(customer='Synthetic',role='primary',lan='192.168.50.0/24',virtual='10.30.1.0/24')))
+inspect(desired=dict(customer='Synthetic',role='primary',lan_interface='enp1s0'),command=run)
+run('nft','add','rule','ip','openmain_binat','postrouting','counter')
+try:
+    inspect(desired=dict(customer='Synthetic',role='primary',lan_interface='enp1s0'),command=run)
+    raise AssertionError('Modified live rules admitted')
+except Rejected:
+    pass
+run('bash','/src/netbird-router/common/apply-binat.sh')
 before=run('nft','-j','list','table','ip','openmain_binat')
 Path('/etc/nftables.d/openmain-binat.nft').write_text('INVALID CANDIDATE')
 assert subprocess.run(['bash','/src/netbird-router/common/apply-binat.sh'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode!=0
@@ -74,4 +86,4 @@ try:
     receive(overlay,'10.30.1.20','100.64.0.10')
 finally:
     lan.close();overlay.close()
-print('PASS: prefix DNAT, scoped masquerade, reverse translation, repeat apply, invalid transaction rollback, foreign table preservation')
+print('PASS: prefix DNAT, scoped masquerade, reverse translation, repeat apply, invalid transaction rollback, foreign table preservation, live admission/modified-rule rejection')

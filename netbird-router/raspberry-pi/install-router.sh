@@ -19,13 +19,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ $EUID -eq 0 ]] || exit 1
+[[ ! -e /var/lib/openmain-pi-deployed ]] || { echo 'Bereits ausgerollt. Keine Aenderung; Updates separat ausfuehren.'; exit 0; }
+preflight_args=()
+[[ -z "$CONFIG" ]] || preflight_args+=(--config "$CONFIG")
+python3 "$ROOT/netbird-router/common/preflight.py" "${preflight_args[@]}"
 python3 "$ROOT/netbird-router/common/runtime.py" platform
+if [[ ! -r /proc/device-tree/model ]] || ! grep -aq '^Raspberry Pi [345] Model ' /proc/device-tree/model; then { echo 'Raspberry Pi 3/4/5 erforderlich.' >&2; exit 1; }; fi
 if ! command -v jq >/dev/null || ! command -v ping >/dev/null; then
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y jq iputils-ping
 fi
-if [[ ! -r /proc/device-tree/model ]] || ! grep -aq '^Raspberry Pi [345] Model ' /proc/device-tree/model; then { echo 'Raspberry Pi 3/4/5 erforderlich.' >&2; exit 1; }; fi
-[[ ! -e /var/lib/openmain-pi-deployed ]] || { echo 'Bereits ausgerollt. Updates ueber router-install.sh ausfuehren.'; exit 0; }
 install -d -m 0700 /etc/openmain-router
 args=(/etc/openmain-router/pi.json)
 [[ -z "$CONFIG" ]] || args+=("$CONFIG")

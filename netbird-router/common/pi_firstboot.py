@@ -5,6 +5,7 @@ import subprocess
 import sys
 import urllib.request
 from runtime import Invalid, atomic, config, lan
+from preflight import inspect
 
 
 def fingerprint(routes, addresses, neighbors, interface=''):
@@ -26,6 +27,12 @@ def moved(office, current):
 def main():
     target = Path('/etc/openmain-router/office.json')
     c = config('/etc/openmain-router/pi.json')
+    # The timer is also an entrypoint: inspect before even the gateway probe.
+    inspect(desired={k: c.get(env, default) for k, env, default in (
+        ('customer', 'NB_CUSTOMER_NAME', ''), ('role', 'NB_ROLE', ''),
+        ('management_url', 'NB_MANAGEMENT_URL', 'https://netbird.openmain-it.de'),
+        ('zabbix_server', 'NB_ZABBIX_SERVER', '100.107.91.6'),
+        ('zabbix_enabled', 'NB_ZABBIX_ENABLED', '1'), ('lan_interface', 'NB_LAN_INTERFACE', ''))})
     def ip(*args):
         return json.loads(subprocess.check_output(['ip', '-j', '-4', *args], stderr=subprocess.DEVNULL))
     routes, addresses = ip('route', 'show', 'table', 'main'), ip('addr', 'show')

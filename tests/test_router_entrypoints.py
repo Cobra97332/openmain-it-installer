@@ -9,6 +9,52 @@ import unittest
 from test_router_security import Sandbox, ROOT
 
 
+
+class EnrollmentCredentialTests(Sandbox):
+    def test_two_stage_new_peer_asks_setup_key_only_once_and_preserves_api_tokens(self):
+        import runpy
+        import sys
+        from unittest.mock import patch
+        import runtime
+
+        target=self.root/'customer.json'
+        supplied={
+            'NB_CUSTOMER_NAME':'Bauer-PR30',
+            'NB_ROLE':'backup',
+            'NB_API_TOKEN':'test-netbird-api-token',
+            'NB_ZABBIX_API_TOKEN':'test-zabbix-api-token',
+            'NB_HOSTNAME':'nb-Bauer-PR30-2',
+        }
+        # Mimic stage 1, when the new CT's existence has not been checked yet.
+        with patch.dict(os.environ,supplied,clear=True), patch('getpass.getpass') as prompt:
+            with patch.object(sys,'argv',['prepare_config.py',str(target)]):
+                runpy.run_path(str(ROOT/'netbird-router/common/prepare_config.py'),run_name='__main__')
+            prompt.assert_not_called()
+        self.assertEqual(target.stat().st_mode & 0o777,0o600)
+        self.assertNotIn('NB_SETUP_KEY',json.loads(target.read_text()))
+        # Stage 2 must load the protected stage 1 file, not start from {} again.
+        # Mock only UID ownership because GitHub runners do not execute as root.
+        original_config=runtime.config
+        def checked_local_file(path):
+            source=Path(path)
+            self.assertEqual(source,target)
+            self.assertEqual(source.stat().st_mode & 0o777,0o600)
+            return json.loads(source.read_text())
+        with patch.dict(os.environ,{},clear=True), patch.object(runtime,'config',side_effect=checked_local_file), patch('getpass.getpass',return_value='test-setup-key') as prompt:
+            with patch.object(sys,'argv',['prepare_config.py',str(target),str(target),'--require-setup-key']):
+                runpy.run_path(str(ROOT/'netbird-router/common/prepare_config.py'),run_name='__main__')
+            prompt.assert_called_once_with('NetBird Setup-Key: ')
+        result=json.loads(target.read_text())
+        self.assertEqual(result,{**supplied,'NB_SETUP_KEY':'test-setup-key'})
+        self.assertEqual(target.stat().st_mode & 0o777,0o600)
+
+    def test_proxmox_wrapper_reuses_first_stage_for_new_and_unregistered_guest(self):
+        source=(ROOT/'netbird-router/pve/install.sh').read_text()
+        text='prepare_config.py" "$TMP/customer.json" "$TMP/customer.json" --require-setup-key'
+        self.assertEqual(source.count(text),2)
+        self.assertNotIn('prepare_config.py" "${args[@]}" --require-setup-key',source)
+
+
 class PVEWrapperTests(Sandbox):
     def setUp(self):
         super().setUp()

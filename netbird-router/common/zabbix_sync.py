@@ -123,10 +123,17 @@ def register_host(api, c, address, psk):
                                  'selectInterfaces': 'extend', 'selectTags': 'extend'}))
     if host:
         checked('HOST_TLS_RECEIPT_UNVERIFIED', store.verify, 'host', host, gid)
+        # selectTags=extend may return hosttagid/automatic metadata. Require
+        # exactly one matching customer tag by its actual name/value, rather
+        # than comparing whole API dictionaries byte-for-byte.
+        tags = host.get('tags')
+        customer_tags = ([tag for tag in tags if isinstance(tag, dict)
+                          and tag.get('tag') == 'OpenMain customer']
+                         if isinstance(tags, list) else [])
         if (str(host.get('monitored_by')) != '2' or host.get('proxy_groupid') != gid
             or str(host.get('tls_connect')) != '2'
             or str(host.get('tls_accept')) != '2'
-            or {'tag': 'OpenMain customer', 'value': c['customer']} not in host.get('tags', [])):
+            or len(customer_tags) != 1 or customer_tags[0].get('value') != c['customer']):
             raise SyncError('HOST_OWNERSHIP_TLS_OR_MONITORING_CONFLICT')
         interfaces = [i for i in host['interfaces'] if str(i.get('type')) == '1' and str(i.get('main')) == '1']
         if len(interfaces) != 1 or str(interfaces[0].get('useip')) != '1' or interfaces[0].get('port') != '10050':

@@ -24,6 +24,22 @@ def native_rule(source='@nb-7d0b7d19', extra=None, handle=51):
     return dict(family='ip', table='netbird', chain='netbird-rt-fwd', handle=handle, expr=expr)
 
 
+def managed_rule(source='@nb-7d0b7d19', handle=51):
+    rule = native_rule(source=source, handle=handle)
+    rule['comment'] = acl.MARKER
+    rule['expr'] = [
+        {'match': {'op': '==', 'left': {'meta': {'key': 'iifname'}}, 'right': 'wt0'}},
+        {'match': {'op': '==', 'left': {'meta': {'key': 'oifname'}}, 'right': 'eth0'}},
+        {'match': {'op': '==', 'left': {'payload': {'protocol': 'ip', 'field': 'saddr'}}, 'right': source}},
+        {'match': {'op': 'in', 'left': {'ct': {'key': 'status'}}, 'right': 'dnat'}},
+        {'match': {'op': '==', 'left': {'ct': {'dir': 'original', 'key': 'daddr'}},
+                   'right': {'prefix': {'addr': '10.30.2.0', 'len': 24}}}},
+        {'match': {'op': '==', 'left': {'payload': {'protocol': 'ip', 'field': 'daddr'}},
+                   'right': {'prefix': {'addr': '192.168.178.0', 'len': 24}}}},
+        {'counter': {'packets': 0, 'bytes': 0}}, {'accept': None}]
+    return rule
+
+
 def output(*rules):
     return {'nftables': [{'metainfo': {'version': '1.0'}}, *({'rule': r} for r in rules)]}
 
@@ -103,6 +119,31 @@ class NetBirdBINATPolicyTests(unittest.TestCase):
         with self.assertRaises(acl.Refused):
             acl.transaction(output(native, native_rule('100.107.35.72', handle=39)), CFG)
 
+    def test_mixed_policy_refresh_revokes_stale_managed_acl(self):
+        old = managed_rule(source='@nb-7d0b7d19', handle=51)
+        new = native_rule(source='@nb-ffeeddcc', handle=52)
+        command = acl.transaction(output(old, new), CFG)
+        self.assertEqual(command.count('delete rule '), 1)
+        self.assertEqual(command.count('replace rule '), 1)
+        self.assertIn('delete rule ip netbird netbird-rt-fwd handle 51', command)
+        self.assertIn('replace rule ip netbird netbird-rt-fwd handle 52', command)
+        self.assertNotIn('ip saddr @nb-7d0b7d19', command)
+        self.assertIn('ip saddr @nb-ffeeddcc', command)
+
+    def test_mixed_refresh_without_customer_group_only_revokes_stale_acl(self):
+        old = managed_rule(handle=51)
+        native_peer = native_rule('100.107.35.72', handle=52)
+        command = acl.transaction(output(old, native_peer), CFG)
+        self.assertEqual(command.strip(), 'delete rule ip netbird netbird-rt-fwd handle 51')
+        with self.assertRaises(acl.Refused):
+            acl.transaction(output(native_peer), CFG)
+
+    def test_mixed_refresh_with_conflicting_rule_stays_unmodified(self):
+        old=managed_rule(handle=51)
+        bad=native_rule(source='0.0.0.0/0',handle=52)
+        with self.assertRaises(acl.Refused):
+            acl.transaction(output(old,bad),CFG)
+
     def test_other_customer_destination_is_not_used(self):
         rule = native_rule()
         rule['expr'][1]['match']['right']['prefix']['addr'] = '10.30.1.0'
@@ -124,8 +165,9 @@ class NetBirdBINATPolicyTests(unittest.TestCase):
             {'counter': {'packets': 0, 'bytes': 0}},
             {'accept': None}]
         self.assertEqual('', acl.transaction(output(rule), CFG))
-        with self.assertRaises(acl.Refused):
-            acl.transaction(output(rule, native_rule()), CFG)
+        mixed = acl.transaction(output(rule, native_rule(source='@nb-ffeeddcc', handle=52)), CFG)
+        self.assertIn('delete rule ip netbird netbird-rt-fwd handle 51', mixed)
+        self.assertIn('replace rule ip netbird netbird-rt-fwd handle 52', mixed)
 
 
 if __name__ == '__main__':

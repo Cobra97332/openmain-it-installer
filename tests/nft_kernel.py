@@ -45,7 +45,7 @@ def receive(sock, source, dest):
         if data[12:14]==b'\x08\x00' and data.endswith(b'openmain-nat-test'):
             assert socket.inet_ntoa(data[26:30])==source, data.hex()
             assert socket.inet_ntoa(data[30:34])==dest, data.hex()
-            return
+            return struct.unpack('!HH', data[34:38])
     raise AssertionError('NAT packet not received')
 
 
@@ -124,8 +124,9 @@ try:
     lan.settimeout(3)
     # Use a new conntrack tuple, not the UDP flow dropped before ACL repair.
     frame('overlay_peer','wt0','100.64.0.10','10.30.1.20',45679,12345)
-    receive(lan,'192.168.50.1','192.168.50.20')
-    frame('lan_peer','enp1s0','192.168.50.20','192.168.50.1',12345,45679)
+    mapped_port, target_port = receive(lan,'192.168.50.1','192.168.50.20')
+    print('SYNTHETIC NAT SOURCE/TARGET PORTS:', mapped_port, target_port, flush=True)
+    frame('lan_peer','enp1s0','192.168.50.20','192.168.50.1',target_port,mapped_port)
     receive(overlay,'10.30.1.20','100.64.0.10')
 finally:
     lan.close();overlay.close()

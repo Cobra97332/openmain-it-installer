@@ -116,8 +116,10 @@ class NetBirdBINATPolicyTests(unittest.TestCase):
             'left': {'payload': {'protocol': 'ip', 'field': 'saddr'}},
             'right': '100.107.35.72'}}
         self.assertEqual('', acl.transaction(output(native, peer), CFG))
+        revoked = acl.transaction(output(native, native_rule('100.107.35.72', handle=39)), CFG)
+        self.assertEqual(revoked.strip(), 'delete rule ip netbird netbird-rt-fwd handle 51')
         with self.assertRaises(acl.Refused):
-            acl.transaction(output(native, native_rule('100.107.35.72', handle=39)), CFG)
+            acl.transaction(output(native_rule('100.107.35.72', handle=39)), CFG)
 
     def test_mixed_policy_refresh_revokes_stale_managed_acl(self):
         old = managed_rule(source='@nb-7d0b7d19', handle=51)

@@ -83,7 +83,16 @@ Offline-Regressionen sind erfolgreich; reale Laborpruefungen stehen noch aus.
     (Probe-/API-Timeouts kommen hinzu). Port 443 dauerhaft sperren: Fehler statt
     Registrierungs-/Erfolgsmarker; Peer, Gruppen, PSK und Wiederaufnahmedaten
     bleiben erhalten. Nur Rechte zum Serverpeer reichen bei getrenntem API-
-    Ziel nicht. Nach Freigabe denselben Auftrag wiederholen; keine Duplikate.
+    Ziel nicht. Eine Reverse-Proxy-Service-IP ohne Peer-Eintrag separat pruefen:
+    Router-/Server-Peers bleiben eindeutig. Falls vorhanden, Dienst unter
+    /api/reverse-proxies/services auf exakte Domain, Aktivierung und private
+    access_groups pruefen; explizite Ablehnung oder Duplikate stoppen den Auftrag.
+    Bei fehlendem Dienstinventar bleiben DNS-Domainbindung, HTTPS/443 ueber das
+    aktive NetBird-Interface, gueltiges TLS und HTTP 200 mit Zabbix 7.4 zwingend.
+    Keine IP-URL, fremde Domain, Redirects oder Route ueber eth0/anderes VPN
+    zulassen; falsches Zertifikat muss stoppen. TCP/10051 bleibt ausschliesslich
+    am echten Serverpeer. Weder Dienst/Policy aendern noch oeffentliche Ports
+    oeffnen. Nach Freigabe denselben Auftrag wiederholen; keine Duplikate.
     Mitgliedschaft entfernen: Registrierung und spaetere Timer-API-Aenderungen
     sicher ablehnen. PSKs/Status nur lokal per cmp -s vergleichen.
 [ ] TLS: Proxy->Server und Agent<->Proxy funktionieren mit PSK. Eine falsche

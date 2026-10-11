@@ -9,6 +9,7 @@ import sys
 import urllib.request
 from runtime import Invalid, atomic, lan
 from zabbix_access import context, require_access
+from zabbix_registration import RPCError, TLSStore, key_bytes, rpc_result
 
 
 class API:
@@ -21,16 +22,20 @@ class API:
         if method.endswith(('.create', '.update')):
             require_access(self.url, self.access)
         data = json.dumps({'jsonrpc': '2.0', 'method': method, 'params': params, 'id': 1}).encode()
-        request = urllib.request.Request(self.url, data=data, headers={
-            'Content-Type': 'application/json-rpc', 'Authorization': 'Bearer ' + self.token})
+        headers = {'Content-Type': 'application/json-rpc'}
+        if method == 'apiinfo.version':
+            if params != []:
+                raise RPCError('Zabbix-API JSON-RPC -32602: apiinfo.version verlangt leeres Array, ohne Authentifizierung.')
+        else:
+            headers['Authorization'] = 'Bearer ' + self.token
+        request = urllib.request.Request(self.url, data=data, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
                 result = json.load(response)
-            if result.get('jsonrpc') != '2.0' or result.get('id') != 1 or 'error' in result or 'result' not in result:
-                raise Invalid('API response')
-            return result['result']
         except Exception:
             raise Invalid('Zabbix API fehlgeschlagen (Details unterdrueckt)') from None
+        return rpc_result(result)
+
 
 
 def unique(values):
@@ -46,15 +51,18 @@ def ensure_group(api, name):
 
 def register_host(api, c, address, psk):
     require_access(c['url'], c.get('access'))
-    proxy = unique(api('proxy.get', {'output': 'extend', 'filter': {'name': [c['proxy']]}}))
-    if not proxy or proxy.get('proxy_groupid', '0') == '0' or proxy.get('tls_psk_identity') != c['identity']:
+    store = TLSStore(c.get('receipt_file', '/var/lib/netbird-kundenrouter/zabbix-registration.json'), c, psk)
+    proxy = unique(api('proxy.get', {'output': ['proxyid','name','description','proxy_groupid','local_address','local_port','operating_mode','tls_accept'], 'filter': {'name': [c['proxy']]}}))
+    if not proxy or proxy.get('proxy_groupid', '0') == '0':
         raise Invalid('Proxy group/TLS conflict')
     gid = proxy['proxy_groupid']
-    host = unique(api('host.get', {'output': 'extend', 'filter': {'host': [c['host']]},
+    store.verify('proxy', proxy, gid)
+    host = unique(api('host.get', {'output': ['hostid','host','monitored_by','proxy_groupid','tls_connect','tls_accept'], 'filter': {'host': [c['host']]},
                                  'selectInterfaces': 'extend', 'selectTags': 'extend'}))
     if host:
+        store.verify('host', host, gid)
         if (str(host.get('monitored_by')) != '2' or host.get('proxy_groupid') != gid
-            or host.get('tls_psk_identity') != c['identity'] or str(host.get('tls_connect')) != '2'
+            or str(host.get('tls_connect')) != '2'
             or str(host.get('tls_accept')) != '2'
             or {'tag': 'OpenMain customer', 'value': c['customer']} not in host.get('tags', [])):
             raise Invalid('Existing host ownership/TLS/monitoring conflict')
@@ -64,6 +72,7 @@ def register_host(api, c, address, psk):
         if interfaces[0]['ip'] != address:
             api('hostinterface.update', {'interfaceid': interfaces[0]['interfaceid'], 'ip': address})
     else:
+        marker = store.prepare('host', c['host'], gid)
         template = unique(api('template.get', {'output': ['templateid'], 'filter': {'host': ['Linux by Zabbix agent']}}))
         if not template:
             raise Invalid('Standard template Linux by Zabbix agent missing')
@@ -84,7 +93,7 @@ def register_host(api, c, address, psk):
                 'key_': 'openmain.agent.active', 'type': 7, 'value_type': 3, 'delay': '1m'})
         api('host.create', {'host': c['host'], 'name': c['host'], 'monitored_by': 2,
             'proxy_groupid': gid, 'groups': [{'groupid': ensure_group(api, c['customer'])}],
-            'templates': [template, active], 'tags': [{'tag': 'OpenMain customer', 'value': c['customer']}],
+            'templates': [template, active], 'tags': [{'tag': 'OpenMain customer', 'value': c['customer']}, {'tag': 'OpenMain registration', 'value': marker}],
             'interfaces': [{'type': 1, 'main': 1, 'useip': 1, 'ip': address, 'dns': '', 'port': '10050'}],
             'tls_connect': 2, 'tls_accept': 2, 'tls_psk_identity': c['identity'], 'tls_psk': psk})
     members = api('proxy.get', {'output': ['proxyid', 'local_address', 'local_port'], 'proxy_groupids': [gid]})
@@ -99,12 +108,13 @@ def register_host(api, c, address, psk):
         raise Invalid('Own proxy absent from customer group')
     if proxy['local_address'] != address:
         api('proxy.update', {'proxyid': proxy['proxyid'], 'local_address': address, 'local_port': '10051'})
-    confirmed = unique(api('host.get', {'output': 'extend', 'filter': {'host': [c['host']]},
+    confirmed = unique(api('host.get', {'output': ['hostid','host','monitored_by','proxy_groupid','tls_connect','tls_accept'], 'filter': {'host': [c['host']]},
         'selectInterfaces': 'extend', 'selectTags': 'extend'}))
     if (not confirmed or str(confirmed.get('monitored_by')) != '2'
-        or confirmed.get('proxy_groupid') != gid or confirmed.get('tls_psk_identity') != c['identity']
+        or confirmed.get('proxy_groupid') != gid
         or not any(str(i.get('type')) == '1' and i.get('ip') == address for i in confirmed.get('interfaces', []))):
         raise Invalid('Host registration/address not confirmed')
+    store.confirm('host', confirmed, gid)
     return sorted(set(addresses))
 
 
@@ -167,7 +177,7 @@ def sync(c, api=None):
     owner = (info.st_uid, info.st_gid) if info else None
     if old and not old.startswith('# OpenMain managed agent configuration v1\n'):
         raise Invalid('Existing agent config is not managed; explicit migration required')
-    psk = Path(c['psk_file']).read_text().strip()
+    psk = key_bytes(c['psk_file']).hex()
     # Validate ownership/TLS before touching remote objects, then only change
     # endpoint lines; retain manual tuning and Includes byte-for-byte.
     merge_agent(old, c, [detected['address']])
@@ -196,6 +206,7 @@ def main():
             'customer', 'host', 'proxy', 'identity', 'psk_file', 'interface', 'network', 'agent_config')}
         c.update(url=os.environ.get('NB_ZABBIX_API_URL', 'https://zabbix.openmain-it.de/api_jsonrpc.php'),
                  token=os.environ['NB_ZABBIX_API_TOKEN'])
+        c['receipt_file'] = os.environ.get('NB_ZABBIX_RECEIPT_FILE', '/var/lib/netbird-kundenrouter/zabbix-registration.json')
         c['access'] = context()
         c['initial_agent'] = os.environ.get('SYNC_INITIAL_AGENT') == '1'
         sync(c)
@@ -212,6 +223,9 @@ def main():
 if __name__ == '__main__':
     try:
         main()
+    except RPCError as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)
     except Exception:
         print('Zabbix-Abgleich fehlgeschlagen: NetBird-/HTTPS-Zugriff, API-, LAN- oder Bestandskonflikt; Details zum Schutz der Secrets unterdrueckt.', file=sys.stderr)
         sys.exit(1)

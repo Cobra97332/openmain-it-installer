@@ -287,6 +287,7 @@ class TransportTests(unittest.TestCase):
             self.assertNotIn('-k', args); self.assertNotIn('-L', args)
             self.assertNotIn('Authorization', ' '.join(args))
             self.assertEqual(json.loads(args[args.index('--data') + 1])['method'], 'apiinfo.version')
+            self.assertEqual(json.loads(args[args.index('--data') + 1])['params'], [])
         for rc, body in [(7, success), (0, b'<html>secret</html>\n200\n100.64.0.30\nhttps://api.invalid/api'),
                          (0, success.replace(b'100.64.0.30', b'100.64.0.20')),
                          (0, success.replace(b'7.4.2', b'7.0.2'))]:

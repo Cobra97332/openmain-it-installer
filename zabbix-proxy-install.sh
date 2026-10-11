@@ -179,7 +179,52 @@ dpkg -i "$tmp"
 rm -f "$tmp"
 
 apt-get update -y
-DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold install -y zabbix-proxy-sqlite3 zabbix-agent2 openssl python3 jq
+# Debian maintainer scripts must not start/restart daemons before registration.
+# Preserve existing policy-rc.d; accept only a static unconditional denial.
+DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l python3 - <<'PYPACKAGES' || die "Paketinstallation/Dienstblockade fehlgeschlagen; keine Registrierung bestaetigt."
+import os
+from pathlib import Path
+import stat
+import subprocess
+policy = Path('/usr/sbin/policy-rc.d')
+managed = b'#!/bin/sh\n# OpenMain temporary package service guard v1\nexit 101\n'
+owned = None
+try:
+    parent = policy.parent.stat()
+    if policy.parent.is_symlink() or parent.st_uid != os.geteuid() or parent.st_mode & 0o022:
+        raise ValueError()
+    if policy.exists() or policy.is_symlink():
+        fd = os.open(policy, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            body = stream.read()
+        if info.st_uid != os.geteuid() or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o022 or not info.st_mode & stat.S_IXUSR or not body.splitlines() or body.splitlines()[0] not in (b'#!/bin/sh', b'#!/bin/bash', b'#!/usr/bin/sh', b'#!/usr/bin/bash'):
+            raise ValueError()
+        if body == managed:
+            owned = info.st_ino
+        elif [line.strip() for line in body.decode().splitlines() if line.strip() and not line.lstrip().startswith('#')] not in (['exit 101'], ['exit 101;']):
+            raise ValueError()
+    else:
+        fd = os.open(policy, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o755)
+        with os.fdopen(fd, 'wb') as stream:
+            os.fchmod(stream.fileno(), 0o755)
+            stream.write(managed)
+            stream.flush()
+            os.fsync(stream.fileno())
+            owned = os.fstat(stream.fileno()).st_ino
+    subprocess.run(['apt-get', '-o', 'Dpkg::Options::=--force-confold', 'install', '-y',
+                    'zabbix-proxy-sqlite3', 'zabbix-agent2', 'openssl', 'python3', 'jq'], check=True)
+except Exception:
+    raise SystemExit('Paketinstallation gestoppt; vorhandene Dienstpolicy nicht ersetzt. Details unterdrueckt.') from None
+finally:
+    if owned is not None:
+        fd = os.open(policy, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            unchanged = info.st_ino == owned and stream.read() == managed
+        if unchanged:
+            policy.unlink()
+PYPACKAGES
 
 install -d -o zabbix -g zabbix -m 0750 /var/lib/zabbix
 install -d -o root -g zabbix -m 0750 /etc/zabbix
@@ -266,7 +311,7 @@ if [[ "${NB_ZABBIX_REGISTER_HOST:-0}" == 1 ]]; then
   export SYNC_IDENTITY="$PSK_IDENTITY" SYNC_PSK_FILE="$PSK_FILE" SYNC_INTERFACE="$LAN_IF" SYNC_NETWORK="$LAN_NETWORK" SYNC_AGENT_CONFIG="$AGENT_CONF"
   SYNC_INITIAL_AGENT=$(( 1 - AGENT_EXISTED )) python3 "$NB_BUNDLE_DIR/netbird-router/common/zabbix_sync.py" install || die "Host-/Agent-Abgleich nicht bestaetigt."
   install -d -m 0755 /usr/local/lib/openmain-router
-  install -m 0644 "$NB_BUNDLE_DIR/netbird-router/common/"{runtime,preflight,zabbix_access,zabbix_sync}.py /usr/local/lib/openmain-router/
+  install -m 0644 "$NB_BUNDLE_DIR/netbird-router/common/"{runtime,preflight,zabbix_access,zabbix_registration,zabbix_sync}.py /usr/local/lib/openmain-router/
   cat > /etc/systemd/system/openmain-zabbix-sync.service <<'UNIT'
 [Unit]
 Description=Update customer proxy LAN addresses and agent failover members
@@ -289,6 +334,7 @@ UNIT
   systemctl enable --now openmain-zabbix-sync.timer
 fi
 
+[[ "$ZABBIX_API_REGISTRATION_STATUS" == registered ]] || die "API-Registrierung ausstehend; kein Zabbix-Dienststart/-neustart. PSK und Wiederaufnahmezustand bleiben erhalten."
 systemctl enable --now zabbix-proxy zabbix-agent2
 if [[ "$PROXY_EXISTED" == 0 || "$AGENT_EXISTED" == 0 ]]; then
   systemctl restart zabbix-proxy zabbix-agent2

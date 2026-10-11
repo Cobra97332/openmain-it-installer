@@ -95,6 +95,25 @@ Offline-Regressionen sind erfolgreich; reale Laborpruefungen stehen noch aus.
     oeffnen. Nach Freigabe denselben Auftrag wiederholen; keine Duplikate.
     Mitgliedschaft entfernen: Registrierung und spaetere Timer-API-Aenderungen
     sicher ablehnen. PSKs/Status nur lokal per cmp -s vergleichen.
+[ ] Zabbix 7.4.15 API-Vertrag: proxy.get/host.get fordern weder tls_psk_identity
+    noch tls_psk an; diese Felder sind write-only. apiinfo.version verwendet []
+    ohne Authentifizierung. Rootgeschuetzter Registrierungsnachweis (0600/0700)
+    bindet Kunde, API, Objekt-IDs, lokale Identitaet/Key und lesbaren Marker.
+    Abbruch nach proxy.create vor Antwort/Readback simulieren: beim Retry genau
+    denselben Proxy und PSK anhand persistierter Absicht/Marker wiederverwenden;
+    Pending-Marker erst nach bestaetigtem Readback entfernen. Fremde Proxys ohne
+    Nachweis nicht uebernehmen; fehlende/veraenderte Nachweise erfordern manuelle
+    Pruefung. Kein PSK-Update. JSON-RPC -32602 wird mit sicherer Klassifikation
+    gemeldet, nie mit Serverdaten. Ohne bestaetigte Registrierung keine Dienste
+    starten/neustarten. Auch Debian-Paket-Hooks werden waehrend apt install mit
+    einer temporaeren policy-rc.d-Dienstblockade angehalten; vorhandene fremde
+    Policies werden nicht ersetzt. Nur statische, eindeutige exit-101-Policies
+    sind unterstuetzt. Unbekannte Policies stoppen vor Paketinstallation; nach
+    hartem Abbruch wird nur die eigene Blockade bei Wiederaufnahme entfernt.
+    Gilt auch fuer Host-Registrierung und LAN-Abgleich.
+    Der lokale Nachweis belegt die urspruenglich geschriebene TLS-Zuordnung;
+    nachtraegliche externe PSK-Aenderungen sind mit write-only-Feldern NICHT
+    nachlesbar. Echten TLS-Handshake daher weiterhin separat nachweisen.
 [ ] TLS: Proxy->Server und Agent<->Proxy funktionieren mit PSK. Eine falsche
     Wegwerf-PSK bzw. unverschluesselte Verbindung in einem separaten Testclient
     wird abgewiesen. Keine PSK-/Token-Ausgabe. Im Laborgast vor Wiederholung eine
@@ -190,3 +209,12 @@ Ein bestandener LXC-Test ist keine Freigabe fuer Bauer-Migration, VM-Upgrades,
 ISO- oder Pi-Rollout. Diese benoetigen ihre getrennte Abnahme aus OPERATIONS.txt;
 sollen sie mit PR #30 als einsatzbereit freigegeben werden, sind ihre noch offenen
 Boot-/Hardwaretests ebenfalls Merge-Voraussetzung. Aktuell KEINE Merge-Freigabe.
+
+API-Referenzen fuer den 7.4-Vertrag:
+https://www.zabbix.com/documentation/7.4/en/manual/api/reference/proxy/object
+https://www.zabbix.com/documentation/7.4/en/manual/api/reference/proxy/get
+https://www.zabbix.com/documentation/7.4/en/manual/api/reference/proxy/create
+https://www.zabbix.com/documentation/7.4/en/manual/api/reference/proxygroup/get
+https://www.zabbix.com/documentation/7.4/en/manual/api/reference/proxygroup/create
+https://www.zabbix.com/documentation/7.4/en/manual/api/reference/apiinfo/version
+https://www.zabbix.com/documentation/7.4/en/manual/api/reference/host/object

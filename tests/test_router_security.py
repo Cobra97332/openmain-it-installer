@@ -7,12 +7,15 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 import urllib.error
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'netbird-router/common'))
+import zabbix_registration as registration
 # Synthetic sentinels only; no production credentials or endpoints.
 TOKEN = "test-api-token-do-not-log"
 PASSWORD = "test-password-do-not-log"
@@ -436,8 +439,13 @@ class ZabbixAPITests(Sandbox):
         helper.parent.mkdir(parents=True)
         helper.write_text('import os,sys\nsys.exit(int(os.environ.get("MOCK_ACCESS_DENIED","0")))\n')
         self.env['NB_BUNDLE_DIR']=str(bundle)
+        for name in ('runtime.py','zabbix_registration.py'):
+            source=(ROOT/'netbird-router/common'/name).read_text().replace('ROOT_UID = 0','ROOT_UID = '+str(os.getuid()))
+            (helper.parent/name).write_text(source)
+        self.receipt=self.root/'zabbix-registration.json'
+        self.env['NB_ZABBIX_RECEIPT_FILE']=str(self.receipt)
         self.psk = self.root / "key.psk"
-        self.psk.write_text(PSK)
+        self.psk.write_text(PSK);self.psk.chmod(0o600)
         self.pending = self.root / "psk.pending"
         self.env["NB_ZABBIX_PSK_PENDING_FILE"] = str(self.pending)
         self.state = self.root / "api.json"
@@ -450,21 +458,33 @@ request=json.loads(args[args.index('--data')+1])
 path=Path(os.environ['MOCK_ROOT'])/'api.json'
 s=json.loads(path.read_text());m=request['method'];p=request['params']
 if os.environ.get('MOCK_ERROR'):
- print(json.dumps({'jsonrpc':'2.0','id':1,'error':{'message':os.environ['NB_ZABBIX_API_TOKEN'],'data': 'ab'*32}}))
+ print(json.dumps({'jsonrpc':'2.0','id':1,'error':{'code':int(os.environ.get('MOCK_CODE','-32602')),'message':os.environ['NB_ZABBIX_API_TOKEN'],'data': 'ab'*32}}))
  sys.exit(0)
 if os.environ.get('MOCK_MALFORMED'):
  print('{}');sys.exit(0)
-if m=='proxy.get': result=s['proxies']
-elif m=='proxygroup.get': result=s['groups']
+if m=='proxy.get':
+ allowed={'proxyid','name','description','operating_mode','local_address','local_port','proxy_groupid','tls_accept'}
+ if not isinstance(p['output'],list) or not set(p['output'])<=allowed:
+  print(json.dumps({'jsonrpc':'2.0','id':1,'error':{'code':-32602,'data':'write-only or unsupported field'}}));sys.exit(0)
+ result=[{key:r[key] for key in p['output'] if key in r} for r in s['proxies']]
+elif m=='proxygroup.get':
+ assert set(p)=={'output','filter'} and set(p['output'])<= {'proxy_groupid','name','min_online','failover_delay'}
+ result=[{key:r[key] for key in p['output'] if key in r} for r in s['groups']]
 elif m=='proxygroup.create':
- s['groups']=[dict(p,proxy_groupid='g')];result={'proxy_groupids':['g']}
+ assert set(p)=={'name','failover_delay','min_online'}
+ s['groups']=[dict(p,proxy_groupid='201')];result={'proxy_groupids':['201']}
 elif m=='proxy.create':
- s['proxies']=[dict(p,proxyid='p')];result={'proxyids':['p']}
+ assert set(p)=={'name','description','proxy_groupid','local_address','local_port','operating_mode','tls_accept','tls_psk_identity','tls_psk'}
+ s['proxies']=[dict(p,proxyid='101')];result={'proxyids':['101']}
 elif m=='proxy.update':
- s['proxies'][0].update(p);result={'proxyids':['p']}
+ s['proxies'][0].update(p);result={'proxyids':['101']}
 else: sys.exit(98)
 if m.endswith(('.create','.update')):s['writes'].append({'method':m,'params':p})
 path.write_text(json.dumps(s))
+if m=='proxy.create' and os.environ.get('MOCK_LOST_CREATE'):
+ sys.exit(7)
+if m=='proxy.get' and os.environ.get('MOCK_READBACK_FAIL') and s['proxies']:
+ print(json.dumps({'jsonrpc':'2.0','id':1,'error':{'code':-32602,'data':os.environ['NB_ZABBIX_API_TOKEN']}}));sys.exit(0)
 print(json.dumps({'jsonrpc':'2.0','id':1,'result':result}))
 ''')
 
@@ -475,12 +495,18 @@ print(json.dumps({'jsonrpc':'2.0','id':1,'result':result}))
         self.clean_output(result)
         return result
 
-    def existing(self, **kwargs):
-        proxy = dict(proxyid='p', name='proxy-customer-primary', operating_mode='0',
+    def existing(self, trusted=False, **kwargs):
+        proxy = dict(proxyid='101', name='proxy-customer-primary', operating_mode='0',
                      tls_accept='2', tls_psk_identity='Existing identity', tls_psk=PSK,
-                     proxy_groupid='g', local_address='192.0.2.10', local_port='10051')
+                     proxy_groupid='201', local_address='192.0.2.10', local_port='10051')
+        if trusted:
+            c=dict(url=self.env['NB_ZABBIX_API_URL'],customer='customer',proxy=proxy['name'],identity='Existing identity')
+            with patch.object(registration,'ROOT_UID',os.getuid()):
+                store=registration.TLSStore(self.receipt,c,PSK)
+                proxy['description']=store.prepare('proxy',proxy['name'],'201')
+                store.confirm('proxy',proxy,'201')
         proxy.update(kwargs)
-        self.state.write_text(json.dumps({'proxies':[proxy], 'groups':[{'proxy_groupid':'g','name':'customer'}], 'writes':[]}))
+        self.state.write_text(json.dumps({'proxies':[proxy], 'groups':[{'proxy_groupid':'201','name':'customer','min_online':'1','failover_delay':'1m'}], 'writes':[]}))
 
     def test_access_denied_preserves_psk_pending_and_status_without_any_api_call(self):
         self.existing();self.pending.write_text('pending');self.psk.chmod(0o600)
@@ -495,7 +521,7 @@ print(json.dumps({'jsonrpc':'2.0','id':1,'result':result}))
         self.assertEqual([(p.read_bytes(),p.stat().st_mode,p.stat().st_ino) for p in files],before)
 
     def test_access_revoked_after_reads_blocks_proxy_update(self):
-        self.existing()
+        self.existing(trusted=True)
         state=json.loads(self.state.read_text());state['groups'][0].update(min_online='1',failover_delay='1m')
         self.state.write_text(json.dumps(state))
         helper=Path(self.env['NB_BUNDLE_DIR'])/'netbird-router/common/zabbix_access.py'
@@ -524,8 +550,67 @@ sys.exit(0 if n==1 else 1)
         self.assertEqual(len(updates), 1)
         self.assertFalse(any(k.startswith('tls_') for k in updates[0]))
 
+    def test_key_changed_before_intent_never_creates_receipt(self):
+        env=dict(self.env,REG_FILE=str(self.receipt),REG_URL=self.env['NB_ZABBIX_API_URL'],
+                 REG_CUSTOMER='customer',REG_PROXY='proxy-customer-primary',REG_IDENTITY='Existing identity',
+                 REG_PSK_FILE=str(self.psk),REG_GROUP='201')
+        helper=Path(self.env['NB_BUNDLE_DIR'])/'netbird-router/common/zabbix_registration.py'
+        r=subprocess.run(['python3',str(helper),'prepare'],input='cd'*32,env=env,capture_output=True,text=True)
+        self.assertNotEqual(r.returncode,0);self.clean_output(r)
+        self.assertFalse(self.receipt.exists());self.assertEqual(self.psk.read_text(),PSK)
+
+    def test_7415_write_only_fields_are_rejected_by_mock_api(self):
+        payload=json.dumps(dict(jsonrpc='2.0',id=1,method='proxy.get',params={'output':['tls_psk_identity']}))
+        r=subprocess.run(['curl','--data',payload],env=self.env,capture_output=True,text=True)
+        self.assertEqual(json.loads(r.stdout)['error']['code'],-32602)
+        self.assertEqual(self.run_api().returncode,0)
+        self.assertEqual(json.loads(self.state.read_text())['proxies'][0]['tls_psk'],PSK)
+
+    def test_failed_readback_or_lost_create_response_resume_same_key_and_proxy(self):
+        for failure in ('MOCK_LOST_CREATE','MOCK_READBACK_FAIL'):
+            with self.subTest(failure=failure):
+                self.state.write_text(json.dumps(dict(proxies=[],groups=[],writes=[])))
+                self.receipt.unlink(missing_ok=True);self.pending.touch()
+                before=(self.psk.read_bytes(),self.psk.stat().st_ino)
+                self.env[failure]='1'
+                self.assertNotEqual(self.run_api().returncode,0)
+                self.assertTrue(self.pending.exists())
+                receipt=json.loads(self.receipt.read_text())
+                self.assertIsNone(receipt['objects']['proxy']['id'])
+                self.env.pop(failure)
+                self.assertEqual(self.run_api().returncode,0)
+                self.assertFalse(self.pending.exists())
+                data=json.loads(self.state.read_text())
+                self.assertEqual(sum(x['method']=='proxy.create' for x in data['writes']),1)
+                self.assertEqual(data['proxies'][0]['tls_psk'],PSK)
+                self.assertEqual((self.psk.read_bytes(),self.psk.stat().st_ino),before)
+                self.assertEqual(self.receipt.stat().st_mode & 0o777,0o600)
+                self.assertEqual(json.loads(self.receipt.read_text())['objects']['proxy']['id'],'101')
+
+    def test_foreign_proxy_without_local_receipt_has_no_writes(self):
+        self.existing()
+        self.assertNotEqual(self.run_api().returncode,0)
+        self.assertEqual(json.loads(self.state.read_text())['writes'],[])
+        self.assertFalse(self.receipt.exists())
+
+    def test_local_identity_or_psk_change_rejected_without_tls_update(self):
+        self.existing(trusted=True)
+        self.assertNotEqual(self.run_api(identity='other').returncode,0)
+        self.psk.write_text('cd'*32)
+        self.assertNotEqual(self.run_api().returncode,0)
+        self.assertEqual(json.loads(self.state.read_text())['writes'],[])
+        self.assertEqual(json.loads(self.state.read_text())['proxies'][0]['tls_psk'],PSK)
+
+    def test_safe_rpc_error_code_and_classification_do_not_echo_server_data(self):
+        self.env['MOCK_ERROR']='1'
+        for code in (-32602,-32500,-32603):
+            self.env['MOCK_CODE']=str(code)
+            r=self.run_api();self.assertNotEqual(r.returncode,0)
+            self.assertIn('JSON-RPC '+str(code),r.stderr)
+        self.assertEqual(json.loads(self.state.read_text())['writes'],[])
+
     def test_tls_or_group_conflict_has_no_writes(self):
-        for options in ({'tls_psk_identity':'different'}, {'tls_accept':'1'}, {'tls_accept':TOKEN},
+        for options in ({'description':'different'}, {'tls_accept':'1'}, {'tls_accept':TOKEN},
                         {'operating_mode':'1'}, {'proxy_groupid':'other'}):
             with self.subTest(options=options):
                 self.existing(**options)
@@ -554,11 +639,14 @@ class ZabbixInstallerTests(Sandbox):
         # Only the test copy is remapped. Production paths and guards stay fixed.
         source = (ROOT / 'zabbix-proxy-install.sh').read_text()
         source = source.replace('[[ $EUID -eq 0 ]]', '[[ 0 -eq 0 ]]')
-        source = re.sub(r'/(?:etc|var|usr/local|root|home|tmp)/',
+        source = re.sub(r'/(?:etc|var|usr/local|usr/sbin|root|home|tmp)/',
                         lambda match: str(self.fs) + match.group(0), source)
         self.script = self.root / 'installer.sh'
         self.script.write_text(source)
-        for directory in ('root', 'etc/profile.d', 'tmp', 'var/log/zabbix'):
+        apihelper=self.fs/'usr/local/sbin/zabbix-api-register'
+        apihelper.parent.mkdir(parents=True,exist_ok=True)
+        apihelper.write_text('#!/bin/sh\nexit 0\n');apihelper.chmod(0o755)
+        for directory in ('root', 'etc/profile.d', 'tmp', 'var/log/zabbix','usr/sbin'):
             (self.fs / directory).mkdir(parents=True, exist_ok=True)
         self.proxy = self.fs / 'etc/zabbix/zabbix_proxy.conf'
         self.agent = self.fs / 'etc/zabbix/zabbix_agent2.conf'
@@ -678,6 +766,36 @@ Path(sys.argv[sys.argv.index('-o')+1]).write_text('fake package')
         self.assertEqual(self.proxy.read_bytes(), before)
         commands = (self.root / 'commands').read_text()
         self.assertNotIn('restart zabbix', commands)
+
+    def test_package_hooks_are_deferred_and_existing_policy_is_preserved(self):
+        self.existing()
+        policy=self.fs/'usr/sbin/policy-rc.d'
+        self.env['MOCK_POLICY']=str(policy)
+        self.executable('apt-get', '''#!/bin/sh
+printf '%s\\n' "$0 $*" >> "$MOCK_ROOT/commands"
+case "$*" in *install*) "$MOCK_POLICY" zabbix-proxy restart; test "$?" = 101 || exit 98;; esac
+exit 0
+''')
+        self.assertEqual(self.run_installer().returncode,0)
+        self.assertFalse(policy.exists())
+        policy.write_text('#!/bin/sh\nexit 101\n');policy.chmod(0o755)
+        before=(policy.read_bytes(),policy.stat().st_ino)
+        self.assertEqual(self.run_installer().returncode,0)
+        self.assertEqual((policy.read_bytes(),policy.stat().st_ino),before)
+        policy.write_text('#!/bin/sh\nexit 0\n')
+        self.assertNotEqual(self.run_installer().returncode,0)
+        self.assertEqual(policy.read_text(),'#!/bin/sh\nexit 0\n')
+        policy.write_text('#!/bin/true\nexit 101\n')
+        self.assertNotEqual(self.run_installer().returncode,0)
+        self.assertEqual(policy.read_text(),'#!/bin/true\nexit 101\n')
+
+    def test_missing_token_keeps_key_and_never_starts_or_restarts_services(self):
+        self.existing();before=self.key.read_bytes()
+        self.env.pop('NB_ZABBIX_API_TOKEN')
+        result=self.run_installer()
+        self.assertNotEqual(result.returncode,0)
+        self.assertNotIn('systemctl',(self.root/'commands').read_text())
+        self.assertEqual(self.key.read_bytes(),before)
 
     def test_api_failure_stops_before_service_restart(self):
         self.existing()

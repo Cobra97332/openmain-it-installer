@@ -211,7 +211,7 @@ def route(ip):
 def https(api_url, targets):
     # No token/PSK. TLS, SNI, CA trust and endpoint correctness are checked using
     # the same curl proxy/NO_PROXY environment as the shell registration path.
-    request = json.dumps(dict(jsonrpc='2.0', method='apiinfo.version', params={}, id=1))
+    request = json.dumps(dict(jsonrpc='2.0', method='apiinfo.version', params=[], id=1))
     try:
         result = subprocess.run(['curl', '--disable', '--no-insecure', '--no-proxy-insecure', '--no-location', '-fsS', '--proto', '=https', '--connect-timeout', '5', '--max-time', '8',
         api_url, '-H', 'Content-Type: application/json-rpc', '--data', request, '-w', '\n%{http_code}\n%{remote_ip}\n%{url_effective}'],

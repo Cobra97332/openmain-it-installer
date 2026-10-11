@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'netbird-router/common'))
 import runtime
 import network
+import zabbix_registration
 import zabbix_sync
 import pi_firstboot
 
@@ -187,20 +188,28 @@ class ZabbixHostTests(unittest.TestCase):
         access=patch.object(zabbix_sync,'require_access');access.start();self.addCleanup(access.stop)
         self.c={'url':'https://api.invalid','customer':'Example','host':'router-example-primary','proxy':'proxy-example-primary',
                 'identity':'test-only-identity','psk_file':'/tmp/mock.psk','network':'192.168.50.0/24'}
-        self.proxy={'proxyid':'p1','proxy_groupid':'g1','local_address':'192.168.50.10',
-                    'local_port':'10051','tls_psk_identity':self.c['identity']}
+        self.proxy={'proxyid':'101','proxy_groupid':'201','local_address':'192.168.50.10',
+                    'local_port':'10051','name':self.c['proxy'],'operating_mode':'0','tls_accept':'2'}
+        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup)
+        self.c['receipt_file']=str(Path(tmp.name)/'receipt.json')
+        uid=patch.object(zabbix_registration,'ROOT_UID',os.getuid());uid.start();self.addCleanup(uid.stop)
+        store=zabbix_registration.TLSStore(self.c['receipt_file'],self.c,'ab'*32)
+        self.proxy['description']=store.prepare('proxy',self.c['proxy'],'201')
+        store.confirm('proxy',self.proxy,'201')
         self.host=None;self.calls=[];self.extra=[]
     def api(self,method,params):
         self.calls.append((method,copy.deepcopy(params)))
-        if method=='proxy.get':return [self.proxy]+(self.extra if 'proxy_groupids' in params else [])
-        if method=='host.get':return [self.host] if self.host else []
+        if method=='proxy.get':
+            self.assertNotIn('tls_psk_identity',params['output']);self.assertNotIn('tls_psk',params['output'])
+            return [{k:v for k,v in row.items() if k in params['output']} for row in [self.proxy]+(self.extra if 'proxy_groupids' in params else [])]
+        if method=='host.get':return [{k:v for k,v in self.host.items() if k not in ('tls_psk_identity','tls_psk')}] if self.host else []
         if method=='template.get':return [{'templateid':'t1' if params['filter']['host']==['Linux by Zabbix agent'] else 't2'}]
         if method=='item.get':return [{'itemid':'item1','type':'7','value_type':'3'}]
         if method=='hostgroup.get':return [{'groupid':'hg1'}]
         if method=='host.create':
-            self.host=dict(params,hostid='h1')
+            self.host=dict(params,hostid='301')
             self.host['interfaces'][0]['interfaceid']='i1'
-            return {'hostids':['h1']}
+            return {'hostids':['301']}
         if method=='hostinterface.update':self.host['interfaces'][0]['ip']=params['ip'];return {'interfaceids':['i1']}
         if method=='proxy.update':self.proxy.update(params);return {'proxyids':['p1']}
         raise AssertionError(method)
@@ -229,7 +238,7 @@ class ZabbixHostTests(unittest.TestCase):
         zabbix_sync.register_host(self.api,self.c,'192.168.50.10','ab'*32)
         self.host['proxy_groupid']='foreign'
         with self.assertRaises(runtime.Invalid):zabbix_sync.register_host(self.api,self.c,'192.168.50.10','ab'*32)
-        self.host['proxy_groupid']='g1'
+        self.host['proxy_groupid']='201'
         self.extra=[{'proxyid':'p2','local_address':'192.168.99.10','local_port':'10051'}]
         with self.assertRaises(runtime.Invalid):zabbix_sync.register_host(self.api,self.c,'192.168.50.10','ab'*32)
     def test_managed_agent_updates_preserve_custom_parameters_and_reject_tls_conflict(self):

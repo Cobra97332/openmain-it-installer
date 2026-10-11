@@ -46,6 +46,11 @@ Offline-Regressionen sind erfolgreich; reale Laborpruefungen stehen noch aus.
   <LAB-Gateway> testen. Niemals bestehende Container auf die Test-CTIDs umbenennen.
 
 3. Pflichtpruefungen / erwartetes Ergebnis
+[ ] APT/Wiederaufnahme: unter umask 077 gehoeren NetBird-Keyring und netbird.list
+    root:root mit 0644. Im isolierten Laborgast beide auf 0600 setzen und denselben
+    Auftrag wiederholen: Reparatur vor erstem apt-get update, Inhalt unveraendert,
+    Signaturpruefung aktiv. Fremde Quellen/Keyrings unveraendert; Symlinks oder
+    abweichende Inhalte sicher ablehnen. PSKs, Tokens und Status bleiben 0600.
 [ ] LXC/TUN: pct config zeigt unprivileged: 1, nur benoetigtes TUN-Device und
     firewall=1. Im Gast: test -c /dev/net/tun, NetBird verbunden, wt0 vorhanden.
     NetBird kann TUN und nftables unter normalen LXC/AppArmor-Beschraenkungen

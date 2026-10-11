@@ -141,12 +141,14 @@ api(){
 }
 
 install_packages(){
+  # Repair only verified public NetBird files BEFORE APT's first sandboxed read.
+  python3 "$SCRIPT_DIR/netbird-router/common/apt_repository.py" repair \
+    || die "NetBird-Paketquelle nicht sicher reparierbar; kein APT-Update."
   apt-get update -y
   DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg jq nftables python3 iproute2 openssh-server sudo
   if ! command -v netbird >/dev/null 2>&1; then
-    install -d -m 0755 /usr/share/keyrings
-    curl -fsSL https://pkgs.netbird.io/debian/public.key | gpg --dearmor --yes -o /usr/share/keyrings/netbird-archive-keyring.gpg
-    printf '%s\n' 'deb [signed-by=/usr/share/keyrings/netbird-archive-keyring.gpg] https://pkgs.netbird.io/debian stable main' > /etc/apt/sources.list.d/netbird.list
+    python3 "$SCRIPT_DIR/netbird-router/common/apt_repository.py" install \
+      || die "NetBird-Paketquelle nicht verifiziert; kein APT-Update."
     apt-get update -y
     DEBIAN_FRONTEND=noninteractive apt-get install -y netbird
   fi

@@ -23,6 +23,13 @@ class BootstrapTests(Sandbox):
         source=(ROOT/'router-install.sh').read_text().replace('[[ $EUID -eq 0 ]]','[[ 0 -eq 0 ]]')
         source=re.sub(r'/(?:etc|var|usr/local|root)/',lambda m:str(self.fs)+m[0],source)
         self.script=bundle/'router-install.sh';self.script.write_text(source)
+        (common/'apt_repository.py').write_text((ROOT/'netbird-router/common/apt_repository.py').read_text().replace("root=Path('/')",f'root=Path({str(self.fs)!r})').replace('ROOT_UID = 0','ROOT_UID = os.geteuid()').replace('ROOT_GID = 0','ROOT_GID = os.getegid()'))
+        for directory in ('usr/share/keyrings','etc/apt/sources.list.d'):
+            (self.fs/directory).mkdir(parents=True,exist_ok=True)
+        # Match Debian's public system directories even if the test runner uses 077.
+        self.fs.chmod(0o755)
+        for directory in self.fs.rglob('*'):
+            if directory.is_dir():directory.chmod(0o755)
         self.runtime=common/'runtime.py'
         # Local host version is irrelevant to this filesystem-isolated bootstrap.
         self.runtime.write_text((ROOT/'netbird-router/common/runtime.py').read_text().replace('platform(values, os.uname().machine, model, memory)','pass # isolated platform fixture'))

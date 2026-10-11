@@ -39,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install static analysis tools
-        run: sudo apt-get update && sudo apt-get install -y shellcheck jq
+        run: sudo apt-get update && sudo apt-get install -y shellcheck jq gnupg
       - name: Syntax, ShellCheck and offline mocks
         run: bash tests/check-router.sh
       - name: Build Debian 13 test environment

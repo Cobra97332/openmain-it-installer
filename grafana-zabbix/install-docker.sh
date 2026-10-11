@@ -97,7 +97,8 @@ OVERRIDE_FILE="$COMPOSE_WORKDIR/compose.openmain-zabbix.yaml"
 install -d -m 0755 "$INSTALL_DIR" "$HOST_DASHBOARDS" "$HOST_BASE"
 
 curl -fsSL "$BASE_URL/generate-dashboards.py" -o "$INSTALL_DIR/generate-dashboards.py"
-curl -fsSL "$BASE_URL/sync-zabbix-groups.py" -o "$INSTALL_DIR/sync-zabbix-groups.py"\ncurl -fsSL "$BASE_URL/inspect-zabbix-host.py" -o "$INSTALL_DIR/inspect-zabbix-host.py"
+curl -fsSL "$BASE_URL/sync-zabbix-groups.py" -o "$INSTALL_DIR/sync-zabbix-groups.py"
+curl -fsSL "$BASE_URL/inspect-zabbix-host.py" -o "$INSTALL_DIR/inspect-zabbix-host.py"
 curl -fsSL "$BASE_URL/provisioning/dashboards/openmain.yaml" -o "$HOST_PROVIDER"
 curl -fsSL "$BASE_URL/openmain-zabbix-metadata.env.example" -o "$INSTALL_DIR/openmain-zabbix-metadata.env.example"
 curl -fsSL "$BASE_URL/systemd/openmain-zabbix-groups.service" -o /etc/systemd/system/openmain-zabbix-groups.service

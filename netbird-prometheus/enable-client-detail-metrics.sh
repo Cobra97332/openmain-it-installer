@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set +xv
 set -Eeuo pipefail
 
 BASE_URL="${OPENMAIN_GITHUB_RAW:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-prometheus}"
@@ -73,7 +74,11 @@ wait_endpoint(){
 
 log "Installiere Status-Exporter..."
 install -d -m 0755 "$(dirname "$EXPORTER")"
-curl -fsSL "$BASE_URL/netbird-status-exporter.py" -o "$EXPORTER"
+if [[ -n "${NB_BUNDLE_DIR:-}" ]]; then
+  install -m 0755 "$NB_BUNDLE_DIR/netbird-prometheus/netbird-status-exporter.py" "$EXPORTER"
+else
+  curl -fsSL "$BASE_URL/netbird-status-exporter.py" -o "$EXPORTER"
+fi
 chmod 0755 "$EXPORTER"
 
 cat > "$EXPORTER_SERVICE" <<EOF
@@ -134,7 +139,6 @@ systemctl enable --now "${UNIT_BASE}.socket" >/dev/null
 log "Prüfe lokalen Detail-Endpunkt..."
 wait_endpoint "$LOCAL_ENDPOINT" || {
   systemctl status openmain-netbird-status-exporter.service --no-pager >&2 || true
-  journalctl -u openmain-netbird-status-exporter.service --since '-5 min' --no-pager >&2 || true
   die "Lokaler Detail-Endpunkt $LOCAL_ENDPOINT ist nicht erreichbar."
 }
 

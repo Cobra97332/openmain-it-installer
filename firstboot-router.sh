@@ -1,47 +1,24 @@
 #!/usr/bin/env bash
+set +xv
 set -Eeuo pipefail
 DONE=/var/lib/openmain-router-firstboot.done
 [[ -e "$DONE" ]] && exit 0
-PUBLIC_BASE="https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main"
-
-echo "=== OpenMain-IT NetBird Kundenrouter ==="
-read -r -p "Firmenname/Kunde: " CUSTOMER
-while [[ -z "$CUSTOMER" ]]; do read -r -p "Firmenname/Kunde: " CUSTOMER; done
-echo "1) Primary"; echo "2) Backup"
-read -r -p "Auswahl [1/2]: " R
-case "$R" in 1) ROLE=primary;;2) ROLE=backup;;*) exit 1;;esac
-read -r -p "Hostname [$(hostname -s)]: " HOSTNAME_LOCAL
-HOSTNAME_LOCAL="${HOSTNAME_LOCAL:-$(hostname -s)}"
-hostnamectl set-hostname "$HOSTNAME_LOCAL"
-read -r -s -p "NetBird Setup Key: " NB_SETUP_KEY; echo
-read -r -s -p "NetBird API Token: " NB_API_TOKEN; echo
-read -r -s -p "Zabbix API Token (optional): " NB_ZABBIX_API_TOKEN; echo
-
-apt-get update
-apt-get install -y curl ca-certificates
-for f in router-install.sh zabbix-proxy-install.sh zabbix-api-register.sh; do
-  curl -fsSL "$PUBLIC_BASE/$f" -o "/tmp/$f"
-  chmod 0755 "/tmp/$f"
-done
-install -m 0755 /tmp/zabbix-proxy-install.sh /usr/local/sbin/zabbix-proxy-install
-install -m 0755 /tmp/zabbix-api-register.sh /usr/local/sbin/zabbix-api-register
-
-export NB_MANAGEMENT_URL="https://netbird.openmain-it.de"
-export NB_ZABBIX_SERVER="100.107.91.6"
-export NB_METRICS_ENABLED="1"
-export NB_METRICS_PORT="9191"
-export NB_METRICS_DETAIL_PORT="9192"
-export NB_METRICS_GROUP="NetBird-Metrics"
-export NB_MONITORING_GROUP="Monitoring"
-export NB_PROMETHEUS_NETBIRD_IP="100.107.91.6"
-export NB_ZABBIX_API_URL="https://zabbix.openmain-it.de/api_jsonrpc.php"
-export NB_ZABBIX_API_TOKEN
-/tmp/router-install.sh --customer "$CUSTOMER" --role "$ROLE" --hostname "$HOSTNAME_LOCAL" --management-url "$NB_MANAGEMENT_URL" --setup-key "$NB_SETUP_KEY" --api-token "$NB_API_TOKEN" --zabbix-server "$NB_ZABBIX_SERVER"
-
-touch "$DONE"
-chmod 600 "$DONE"
-echo "Router-Einrichtung abgeschlossen."
-echo "IPv4 Forwarding: $(cat /proc/sys/net/ipv4/ip_forward)"
-echo "NetBird Metrics:"
-curl -fsS http://127.0.0.1:9191/metrics 2>/dev/null | grep '^netbird_' | head -n 5 || true
-systemctl status openmain-netbird-metrics-proxy.socket --no-pager 2>/dev/null || true
+ROOT=/opt/openmain-router
+[[ -f "$ROOT/router-install.sh" ]] || { echo 'Installer-Bundle fehlt.' >&2; exit 1; }
+CONFIG=/etc/openmain-router/firstboot.json
+preflight_args=()
+[[ ! -e "$CONFIG" && ! -L "$CONFIG" ]] || preflight_args+=(--config "$CONFIG")
+profile=$(python3 "$ROOT/netbird-router/common/preflight.py" "${preflight_args[@]}" --report-profile)
+install -d -m 0700 /etc/openmain-router
+# Keep root-only input on failures; retries reconcile the same customer objects.
+config_args=("$CONFIG")
+[[ ! -f "$CONFIG" ]] || config_args+=("$CONFIG")
+if [[ -z "$(python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])' <<< "$profile")" ]]; then
+  config_args+=(--require-setup-key)
+fi
+python3 "$ROOT/netbird-router/common/prepare_config.py" "${config_args[@]}"
+bash "$ROOT/router-install.sh" --config "$CONFIG"
+install -d -m 0700 /var/lib
+(umask 077; touch "$DONE")
+rm -f "$CONFIG"
+echo 'Kundenrouter erfolgreich eingerichtet; Pruefbericht siehe Installer-Ausgabe.'

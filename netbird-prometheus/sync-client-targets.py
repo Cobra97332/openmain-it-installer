@@ -69,10 +69,9 @@ def api_request(base_url, token, method, path, payload=None):
                 return None
             return json.loads(body.decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "replace")
-        raise RuntimeError(f"{method} {path} -> HTTP {exc.code}: {body}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"{method} {path} fehlgeschlagen: {exc}") from exc
+        raise RuntimeError(f"{method} {path} -> HTTP {exc.code} (Details unterdrueckt)") from None
+    except urllib.error.URLError:
+        raise RuntimeError(f"{method} {path} fehlgeschlagen (Details unterdrueckt)") from None
 
 
 def group_id(group):
@@ -80,9 +79,11 @@ def group_id(group):
 
 
 def ensure_group(base_url, token, groups, name):
-    for group in groups:
-        if group.get("name") == name:
-            return group_id(group), groups
+    matches = [group for group in groups if group.get("name") == name]
+    if len(matches) > 1 or (matches and not group_id(matches[0])):
+        raise RuntimeError("Bestehende Gruppe ist nicht eindeutig. Keine Aenderung.")
+    if matches:
+        return group_id(matches[0]), groups
 
     log(f"Erstelle NetBird-Gruppe: {name}")
     created = api_request(
@@ -113,7 +114,19 @@ def peer_ids_from_group(group):
 
 def ensure_peer_in_group(base_url, token, group_id_value, peer_id, group_name):
     group = api_request(base_url, token, "GET", f"/groups/{group_id_value}")
-    current = peer_ids_from_group(group or {})
+    if (
+        not isinstance(group, dict)
+        or group.get("id") != group_id_value
+        or not group.get("name")
+        or not isinstance(group.get("peers"), list)
+        or not isinstance(group.get("resources"), list)
+        or any(not isinstance(p, (str, dict)) or not (p.get("id") if isinstance(p, dict) else p)
+               for p in group["peers"])
+        or any(not isinstance(r, dict) or not r.get("id") or not r.get("type")
+               for r in group["resources"])
+    ):
+        raise RuntimeError("Gruppenbestand unvollstaendig. Keine Aenderung.")
+    current = peer_ids_from_group(group)
     if peer_id in current:
         return False
 
@@ -144,25 +157,19 @@ def ids_from_rule_side(value):
 
 
 def policy_is_correct(policy, monitoring_group_id, metrics_group_id, ports):
-    if not policy.get("enabled"):
+    if policy.get("enabled") is not True:
         return False
-
-    rules = policy.get("rules") or []
-    if len(rules) != 1:
-        return False
-
-    rule = rules[0]
-    expected_ports = {str(port) for port in ports}
-    rule_ports = {str(port) for port in (rule.get("ports") or [])}
-    return (
-        rule.get("enabled") is True
-        and rule.get("action") == "accept"
-        and rule.get("protocol") == "tcp"
-        and rule.get("bidirectional") is False
-        and rule_ports == expected_ports
-        and ids_from_rule_side(rule.get("sources")) == {monitoring_group_id}
-        and ids_from_rule_side(rule.get("destinations")) == {metrics_group_id}
-    )
+    allowed_ports = set()
+    for rule in policy.get("rules") or []:
+        if (
+            rule.get("enabled") is True
+            and rule.get("action") == "accept"
+            and rule.get("protocol") == "tcp"
+            and monitoring_group_id in ids_from_rule_side(rule.get("sources"))
+            and metrics_group_id in ids_from_rule_side(rule.get("destinations"))
+        ):
+            allowed_ports.update(str(port) for port in rule.get("ports") or [])
+    return {str(port) for port in ports}.issubset(allowed_ports)
 
 
 def ensure_policy(
@@ -174,7 +181,10 @@ def ensure_policy(
     metrics_group_id,
     ports,
 ):
-    existing = next((p for p in policies if p.get("name") == policy_name), None)
+    matches = [p for p in policies if p.get("name") == policy_name]
+    if len(matches) > 1 or (matches and not matches[0].get("id")):
+        raise RuntimeError("Bestehende Metrics-Policy ist nicht eindeutig. Keine Aenderung.")
+    existing = matches[0] if matches else None
 
     ports = [int(port) for port in ports]
     port_text = ",".join(str(port) for port in ports)
@@ -208,14 +218,9 @@ def ensure_policy(
         return False
 
     if existing:
-        policy_id = str(existing.get("id") or "")
-        if not policy_id:
-            raise RuntimeError(f"Policy '{policy_name}' hat keine ID.")
-        api_request(base_url, token, "PUT", f"/policies/{policy_id}", payload)
-        log(f"NetBird-Policy aktualisiert: {policy_name}")
-    else:
-        api_request(base_url, token, "POST", "/policies", payload)
-        log(f"NetBird-Policy erstellt: {policy_name}")
+        raise RuntimeError("Bestehende Metrics-Policy passt nicht. Keine automatische Ueberschreibung.")
+    api_request(base_url, token, "POST", "/policies", payload)
+    log(f"NetBird-Policy erstellt: {policy_name}")
     return True
 
 

@@ -1,0 +1,146 @@
+Beta platform validation - 11 October 2026
+=========================================
+Scope: Cobra97332/openmain-it-installer, work branch based ONLY on beta
+91f879870d32708d05ad99e210d8e4a7029b0b83. No main/private/production changes.
+This report is NOT production acceptance or permission for a Bauer migration.
+
+Confirmed defects and corrections
+1. build-iso.sh used invalid xorriso syntax: -append_partition all revoke -.
+   A real xorriso run failed before producing a usable image. Removed the
+   invalid operation; preserve input boot structures with boot_image replay.
+   Missing build tools now produce a specific error. Local independently
+   verified SHA512 input does not unnecessarily require gpgv; remote downloads
+   still require the signature verifier and trusted Debian CD keyring.
+2. The beta bundle manifest omitted common/binat_acl.py although the core
+   installs/runs it. Manifest-built ISO/Pi bundles therefore lost the NetBird
+   ACL correction that a full checkout contained. Added the dependency and
+   bundle manifest itself; regressions require every common Python module.
+3. ISO firstboot and deferred Pi preparation did not collect/store a missing
+   setup key. The core could ask again after interruption; deferred deployment
+   cannot answer an interactive prompt. Collect it once BEFORE the core,
+   only when read-only admission identifies no existing active identity.
+   Preserve all credentials in root-only JSON on errors. Existing connected
+   profiles require no setup key. No automatic reconnect/re-enrollment.
+4. Repeating Pi preparation without --config ignored its saved pi.json and
+   asked for tokens again. Reuse the protected file through the same admission
+   and data-only parser; retain the original office fingerprint.
+5. Pi staging copied entire checkout directories, including possible untracked
+   customer files. Stage only the explicit bundle manifest. Validate all paths
+   before copying; reject traversal, duplicates, source/destination symlinks.
+   Existing customer files outside the source manifest remain unchanged.
+6. Firstboot's RemainAfterExit held tty1 in conflict with getty after success.
+   The oneshot now becomes inactive and asynchronously restores getty on exit.
+   The protected DONE condition prevents another enrollment. Dangling input
+   symlinks are rejected instead of being silently replaced.
+
+7. Minimal Debian 13 lacked sysctl: the core used it without installing procps.
+   Add the explicit dependency. QEMU executes real forwarding/packet checks
+   after installing this package in the otherwise minimal guest.
+
+8. The VM default entrypoint delegated interactive input directly to the core,
+   which could ask for credentials again after failure. Read-only admission
+   now precedes protected vm.json collection/reuse. Explicit --config updates
+   that same protected input; direct legacy CLI options remain supported.
+
+Test levels (do not conflate them)
+ACTUAL: Bash syntax and ShellCheck; Debian 13/Python 3.13 test processes in
+network-none Docker; real GPG public-signature/permissions checks; real hidden
+PTY prompts and persistence; real ifupdown contract; jq-absent bootstrap.
+MOCKED inside these tests: package installs, NetBird client/systemctl changes,
+NetBird and Zabbix APIs, profile/peer data, site fingerprints, registration,
+Primary/Backup routing metrics 100/200, and incomplete-installation failures.
+API mocks exercise preserved objects/resources, no duplicate creation, PSK
+provenance, write-only fields, denied HTTPS, foreign configuration rejection,
+and recovery after failed proxy/host/agent registration.
+
+ACTUAL KERNEL: disposable Docker network namespace and the no-NIC QEMU VM's
+Debian 13 kernel, veth links, nftables,
+conntrack and real raw UDP packets. Reproduces NetBird's post-DNAT ACL mismatch,
+checks the correction and reverse NAT, repeat reconciliation, an authorized
+backup peer, unauthorized peer denial and source-set revocation. Foreign
+firewall tables remain unchanged. The NetBird-generated source rule/set is
+SYNTHETIC; no actual NetBird management or tunnel runs in this packet test.
+
+ACTUAL QEMU AMD64: freshly bootstrapped Debian 13 filesystem, real Debian
+kernel 6.12.111+deb13-amd64, systemd PID 1, Python/Bash and a NEW sparse virtual
+disk. QEMU TCG, no NIC, no host disk passthrough. Entire offline regression
+suite runs inside the guest. Firstboot unit lifecycle is checked with its
+ExecStart replaced by a harmless local fixture; getty must return. The router
+core/API/service actions remain intercepted by the test suite, not live.
+
+ACTUAL ISO REMASTER + BIOS/UEFI BOOTS: build-iso.sh executes real xorriso on a
+clearly labelled SYNTHETIC input with Debian kernel/initramfs and GRUB BIOS/EFI
+loaders. QEMU boots the remastered image under SeaBIOS and OVMF (Secure Boot
+off) and runs platform/firstboot/bundle/ACL regressions from a prepared
+debootstrap disk. The complete suite runs on the direct-boot VM.
+This proves remaster commands, boot-loader preservation and guest execution
+for THIS FIXTURE. It does NOT install Debian using Debian Installer.
+The fixture excludes Apple HFS+/APM. It is not an official Debian netinst.
+
+ACTUAL ARM64 USERSPACE: signed-archive Debian 13 ARM64 packages unpacked from
+a foreign debootstrap cache; actual AArch64 Python 3.13.5 under QEMU-user.
+24 common runtime, NetBird allocation and Zabbix host/agent tests run on that
+architecture. Models/RAM for Pi 3/4/5 and network/API data remain simulated.
+No Pi kernel, firmware, NIC, systemd boot or SD-card deployment is emulated.
+NetBird/Zabbix ARM64 packages themselves have NOT been executed here.
+
+Measured offline results after corrections
+- Bash syntax/ShellCheck: PASS.
+- Debian 13 network-none container: 185 tests, all PASS, no skips.
+- Native static/offline run: 185 tests, PASS with two capability skips; those
+  _apt-permission/ifquery contracts are executed without skips in the Debian 13 container.
+- jq removed: 7 bootstrap tests PASS. ARM64 QEMU-user: 24 tests PASS.
+- Isolated Docker kernel packets: PASS. Real QEMU VM/BIOS/UEFI validation
+  runs in platform-lab CI; consult the final PR commit check logs.
+
+Reproduce the isolated lab
+- Build tools: docker build -f tests/Dockerfile.platform-lab \
+  -t openmain-platform-lab:debian13 .
+- Create a NEW empty LAB directory. Preparation needs only Debian package
+  mirrors and verifies the Debian archive. No router APIs or production tokens:
+  docker run --rm -v "$LAB:/lab" openmain-platform-lab:debian13 debootstrap \
+    --variant=minbase \
+    --include=systemd-sysv,kmod,procps,python3,jq,nftables,iproute2,ifupdown,curl,gnupg,shellcheck,ca-certificates \
+    trixie /lab/amd64 http://deb.debian.org/debian
+  docker run --rm -v "$LAB:/lab" openmain-platform-lab:debian13 debootstrap \
+    --foreign --arch=arm64 --variant=minbase --include=python3,jq \
+    trixie /lab/arm64 http://deb.debian.org/debian
+- Execute with network disabled, read-only source, no published ports:
+  docker run --rm --network none -e OPENMAIN_ISOLATED_TEST=1 \
+    -v "$LAB:/lab" -v "$PWD:/src:ro" openmain-platform-lab:debian13 \
+    python3 tests/qemu_platforms.py
+  docker run --rm --network none -e OPENMAIN_ISOLATED_TEST=1 \
+    -v "$LAB:/lab" -v "$PWD:/src:ro" openmain-platform-lab:debian13 \
+    python3 tests/arm64_platforms.py
+  Use a NEW --work /lab/<name> on a repeated QEMU run; existing disks are
+  never overwritten. Lab logs/images remain local; never commit runtime files.
+- router-security-ci.yml automates both lab levels alongside existing offline
+  and real-kernel tests. QEMU lab requires no privileged Docker/host networking.
+
+Outstanding acceptance / release gates
+1. Official Debian 13 NETINSTALL cannot be downloaded from cdimage.debian.org
+   in this environment's enforced HTTP allowlist. Build using signed official
+   SHA512SUMS/keyring, or an independently verified local official ISO. Test
+   real Debian Installer BIOS + UEFI, explicit confirmation on a NEW EMPTY
+   test disk, account creation, late_command, reboot, firstboot prompts and
+   retry after interruption. Synthetic boot PASS does not close this gate.
+2. In two isolated Debian 13 VMs with their own lab NetBird self-hosted and
+   Zabbix 7.4 servers, execute the FULL installer with disposable lab tokens.
+   Check real TUN/WireGuard, native ACL layout/refresh, HTTPS certificates and
+   proxy PSK handshakes, active/passive values, DNS/reverse-proxy access and
+   real package dependencies. Public NetBird/Zabbix package origins were not
+   allowlisted here; mocked apt success is not an installation proof.
+3. Power off/disconnect Primary; measure actual NetBird route convergence,
+   restored routes and Zabbix proxy-group reassignment. Repeat on recovery and
+   DHCP lease change. Mocked 100/200 objects do not prove runtime failover.
+4. Test Pi 3 B/B+, 4 and 5 on official ARM64 Raspberry Pi OS Lite Trixie:
+   firmware/SD boot, available RAM, Ethernet names, network manager/DHCP,
+   ARM64 NetBird/Zabbix packages, office preparation and same-prefix customer
+   move with different gateway MAC; invalid/indistinguishable location waits.
+   Interrupt deployment after enrollment/API allocation/registration, reboot
+   and verify identity/PSK/object reuse without repeated prompts.
+5. At the final reviewed commit, keep the two-container PVE acceptance gate
+   from ABNAHME-PVE.txt as the reference; no automatic legacy/Bauer migration.
+
+Do not merge/release on the strength of mocks alone. Capture final commit,
+versions, PASS/FAIL and timings; never publish raw credential/config/API dumps.

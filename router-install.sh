@@ -562,7 +562,7 @@ UNIT
 import json,sys
 with open(sys.argv[1], 'w') as stream:
     json.dump(dict(zip(('overlay','lan','virtual','real'),sys.argv[2:])),stream)
-    stream.write('\\n')
+    stream.write(chr(10))
 PYACL
   chmod 0600 "$acl_temp"
   mv -f -- "$acl_temp" /etc/nftables.d/openmain-binat-acl.json

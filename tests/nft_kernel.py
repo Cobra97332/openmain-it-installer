@@ -121,11 +121,25 @@ try:
     assert not transaction(observed,acl)
     run('python3','/src/netbird-router/common/binat_acl.py')  # idempotent
     lan.settimeout(3)
-    # Use a new conntrack tuple, not the UDP flow dropped before ACL repair.
-    frame('overlay_peer','wt0','100.64.0.10','10.30.1.20',45679,12345)
-    mapped_port, target_port = receive(lan,'192.168.50.1','192.168.50.20')
-    frame('lan_peer','enp1s0','192.168.50.20','192.168.50.1',target_port,mapped_port)
-    receive(overlay,'10.30.1.20','100.64.0.10')
+    # AF_PACKET frame injection is asynchronous. A packet visible at lan_peer
+    # can precede completion of the originating kernel forwarding path.
+    # Wait for conntrack's NAT tuple to settle before injecting the response.
+    import time
+    overlay.settimeout(2)
+    reverse_ok = False
+    for attempt in range(3):
+        port = 45679 + attempt
+        frame('overlay_peer','wt0','100.64.0.10','10.30.1.20',port,12345)
+        mapped_port, target_port = receive(lan,'192.168.50.1','192.168.50.20')
+        time.sleep(0.3)
+        frame('lan_peer','enp1s0','192.168.50.20','192.168.50.1',target_port,mapped_port)
+        try:
+            receive(overlay,'10.30.1.20','100.64.0.10')
+        except (AssertionError, socket.timeout):
+            continue
+        reverse_ok = True
+        break
+    assert reverse_ok, 'Kernel reverse NAT failed with NetBird ACL'
     # Simulate NetBird revoking toweri5 membership: the managed ACL must
     # immediately stop forwarding new flows even though its rule still exists.
     run('nft','delete','element','ip','netbird','nb-7d0b7d19','{ 100.64.0.10 }')

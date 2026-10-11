@@ -32,6 +32,8 @@ class AdmissionTests(Sandbox):
     def put(self,name,value):
         p=self.fs/name.lstrip('/');p.parent.mkdir(parents=True,exist_ok=True)
         p.write_text(json.dumps(value) if isinstance(value,dict) else value);p.chmod(0o600)
+        if name.startswith('/var/lib/netbird-kundenrouter/'):
+            p.parent.chmod(0o700)
         return p
     def command(self,*args):
         self.calls.append(args)
@@ -75,6 +77,40 @@ class AdmissionTests(Sandbox):
             self.assertEqual(info,dict(path='/var/lib/netbird/default.json',interface='wt-lab'))
         self.assertEqual(self.snapshot(),before)
         self.assertTrue(all(c[0] in ('netbird','ip','nft') for c in self.calls))
+
+    def test_installer_status_directory_and_files_must_be_private(self):
+        cases=('directory-0755', 'directory-0777', 'state-0644', 'state-0666',
+               'progress-0644', 'state-hardlink', 'progress-symlink',
+               'state-tmp-symlink', 'lock-symlink')
+        for case in cases:
+            with self.subTest(case=case):
+                self.setUp()
+                self.modern()
+                directory=self.fs/'var/lib/netbird-kundenrouter'
+                state=directory/'state.json'
+                progress=directory/'progress.json'
+                if case=='directory-0755':
+                    directory.chmod(0o755)
+                elif case=='directory-0777':
+                    directory.chmod(0o777)
+                elif case=='state-0644':
+                    state.chmod(0o644)
+                elif case=='state-0666':
+                    state.chmod(0o666)
+                elif case=='progress-0644':
+                    progress.chmod(0o644)
+                elif case=='state-hardlink':
+                    import os
+                    os.link(state,directory/'other-state-hardlink')
+                elif case=='progress-symlink':
+                    target=self.root/'external-progress.json'
+                    target.write_text(progress.read_text())
+                    progress.unlink();progress.symlink_to(target)
+                elif case=='state-tmp-symlink':
+                    (directory/'state.json.tmp').symlink_to(self.root/'other')
+                elif case=='lock-symlink':
+                    (directory/'install.lock').symlink_to(self.root/'other')
+                self.rejected()
 
     def test_named_active_profile_selected_over_default_and_inactive_profiles(self):
         selected=self.modern('profile-id','root')

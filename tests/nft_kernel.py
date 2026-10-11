@@ -162,6 +162,42 @@ try:
         pass
     else:
         raise AssertionError('BINAT grants unauthorized third NetBird peer')
+    # NetBird refresh: introduce a new native group while OLD rewritten ACLs
+    # are still present. The reconciler must revoke both stale managed grants
+    # atomically; only the freshly authorized group may access BINAT.
+    run('nft','add','set','ip','netbird','nb-ffeeddcc','{ type ipv4_addr; }')
+    run('nft','add','element','ip','netbird','nb-ffeeddcc','{ 100.64.0.12 }')
+    run('nft','add','rule','ip','netbird','netbird-rt-fwd',
+        'ip','saddr','@nb-ffeeddcc','ip','daddr','10.30.1.0/24','counter','accept')
+    mixed=_json.loads(run('nft','-j','list','chain','ip','netbird','netbird-rt-fwd'))
+    mixed_commands=transaction(mixed,acl)
+    assert mixed_commands.count('delete rule')==2
+    assert mixed_commands.count('replace rule')==1
+    run('python3','/src/netbird-router/common/binat_acl.py')
+    updated=run('nft','list','chain','ip','netbird','netbird-rt-fwd').decode()
+    assert 'nb-7d0b7d19' not in updated and '100.64.0.11' not in updated
+    assert 'nb-ffeeddcc' in updated
+    assert not transaction(_json.loads(run('nft','-j','list','chain','ip','netbird','netbird-rt-fwd')),acl)
+    lan.settimeout(1)
+    frame('overlay_peer','wt0','100.64.0.10','10.30.1.20',45693,12345)
+    try:
+        receive(lan,'192.168.50.1','192.168.50.20')
+    except socket.timeout:
+        pass
+    else:
+        raise AssertionError('Old NetBird ACL still grants revoked peer')
+    lan.settimeout(3)
+    frame('overlay_peer','wt0','100.64.0.12','10.30.1.20',45694,12345)
+    receive(lan,'192.168.50.1','192.168.50.20')
+    # A previously authorized explicit peer must also be revoked.
+    lan.settimeout(1)
+    frame('overlay_peer','wt0','100.64.0.11','10.30.1.20',45695,12345)
+    try:
+        receive(lan,'192.168.50.1','192.168.50.20')
+    except socket.timeout:
+        pass
+    else:
+        raise AssertionError('Stale explicit peer grant not revoked')
     # Simulate NetBird revoking toweri5 membership: the managed ACL must
     # immediately stop forwarding new flows even though its rule still exists.
     run('nft','delete','element','ip','netbird','nb-7d0b7d19','{ 100.64.0.10 }')

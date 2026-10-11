@@ -551,8 +551,53 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 UNIT
+  # NetBird evaluates the *translated* destination in FORWARD. Reconcile
+  # its policy-generated rule to the conntrack original destination while
+  # retaining the dynamic NetBird source set. Never add a parallel allow.
+  install -d -m 0755 /usr/local/lib/openmain-router
+  install -m 0644 "$SCRIPT_DIR/netbird-router/common/binat_acl.py" /usr/local/lib/openmain-router/binat_acl.py
+  local acl_temp
+  acl_temp=$(mktemp /etc/nftables.d/.openmain-acl.XXXXXX)
+  python3 - "$acl_temp" "$nbif" "$LAN_IF" "$VIRTUAL_NET" "$LAN_NET" <<'PYACL'
+import json,sys
+with open(sys.argv[1], 'w') as stream:
+    json.dump(dict(zip(('overlay','lan','virtual','real'),sys.argv[2:])),stream)
+    stream.write('\\n')
+PYACL
+  chmod 0600 "$acl_temp"
+  mv -f -- "$acl_temp" /etc/nftables.d/openmain-binat-acl.json
+  cat > /etc/systemd/system/openmain-binat-acl-sync.service <<'UNIT'
+[Unit]
+Description=Reconcile NetBird route ACL with managed BINAT (fail closed)
+After=netbird.service openmain-binat.service
+Requires=netbird.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/openmain-router/binat_acl.py
+UMask=0077
+UNIT
+  cat > /etc/systemd/system/openmain-binat-acl-sync.timer <<'UNIT'
+[Unit]
+Description=Reconcile NetBird route ACL after policy refresh
+[Timer]
+OnBootSec=20s
+OnUnitInactiveSec=30s
+Unit=openmain-binat-acl-sync.service
+[Install]
+WantedBy=timers.target
+UNIT
   systemctl daemon-reload
   systemctl enable --now openmain-binat.service >/dev/null
+  systemctl enable --now openmain-binat-acl-sync.timer >/dev/null
+  local ok=0
+  for _ in {1..12}; do
+    if systemctl start openmain-binat-acl-sync.service >/dev/null 2>&1; then
+      ok=1
+      break
+    fi
+    sleep 5
+  done
+  [[ "$ok" == 1 ]] || die "NetBird-Routing-Freigabe fuer BINAT fehlt oder ist inkompatibel; kein ACL-Bypass. Bestand bleibt erhalten."
 }
 
 setup_zabbix(){

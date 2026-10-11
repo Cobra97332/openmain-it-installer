@@ -73,8 +73,10 @@ run('nft','add','table','inet','foreign_fixture')
 for _ in range(2):run('bash','/src/netbird-router/common/apply-binat.sh')
 # Admission must recognize actual nft's normalized output, not just mocks.
 from preflight import inspect, Rejected
-state_dir=Path('/var/lib/netbird-kundenrouter');state_dir.mkdir(parents=True)
+state_dir=Path('/var/lib/netbird-kundenrouter');state_dir.mkdir(parents=True,mode=0o700,exist_ok=True)
+state_dir.chmod(0o700)
 (state_dir/'state.json').write_text(json.dumps(dict(customer='Synthetic',role='primary',lan='192.168.50.0/24',virtual='10.30.1.0/24')))
+(state_dir/'state.json').chmod(0o600)
 inspect(desired=dict(customer='Synthetic',role='primary',lan_interface='enp1s0'),command=run)
 run('nft','add','rule','ip','openmain_binat','postrouting','counter')
 try:

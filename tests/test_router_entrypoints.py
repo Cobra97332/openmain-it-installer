@@ -259,6 +259,11 @@ class DHCPRecoveryTests(Sandbox):
         devices=self.root/'interfaces';(devices/'enp1s0').mkdir(parents=True)
         source=(ROOT/'netbird-router/common/dhcp-recovery.sh').read_text()
         source=source.replace('/sys/class/net/*',str(devices/'*')).replace('/run/openmain-dhcp-recovery.lock',str(self.root/'dhcp.lock'))
+        configuration=self.root/'interfaces.conf'
+        configuration.write_text('auto enp1s0\niface enp1s0 inet static\n')
+        self.configuration=configuration
+        helper=self.root/'runtime.py'
+        helper.write_text((ROOT/'netbird-router/common/runtime.py').read_text().replace("configuration='/etc/network/interfaces'",f'configuration={str(configuration)!r}'))
         self.script=self.root/'dhcp.sh';self.script.write_text(source)
         self.executable('systemctl','#!/bin/sh\nexit 1\n')
         self.executable('ifquery','#!/bin/sh\nprintf "iface enp1s0 inet %s\\n" "${MOCK_ADDRESS_MODE:-static}"\n')
@@ -271,6 +276,7 @@ class DHCPRecoveryTests(Sandbox):
         self.assertEqual(self.run_recovery().returncode,0)
         self.assertFalse((self.root/'retries').exists())
         self.env['MOCK_ADDRESS_MODE']='dhcp'
+        self.configuration.write_text('auto enp1s0\niface enp1s0 inet dhcp\n')
         self.assertEqual(self.run_recovery('--detect').returncode,0)
         self.env['MOCK_HAS_ADDRESS']='1'
         self.assertEqual(self.run_recovery().returncode,0)
@@ -278,3 +284,31 @@ class DHCPRecoveryTests(Sandbox):
         self.env['MOCK_HAS_ADDRESS']='0'
         self.assertEqual(self.run_recovery().returncode,0)
         self.assertEqual((self.root/'retries').read_text(),'retry\n')
+
+    def test_classic_ifquery_empty_output_is_dhcp_and_existing_ipv4_is_untouched(self):
+        self.configuration.write_text('auto enp1s0\niface enp1s0 inet dhcp\n')
+        self.executable('ifquery','#!/bin/sh\nexit 0\n')
+        self.env['MOCK_HAS_ADDRESS']='1'
+        before=self.configuration.read_bytes()
+        self.assertEqual(self.run_recovery('--detect').returncode,0)
+        self.assertEqual(self.run_recovery().returncode,0)
+        self.assertFalse((self.root/'retries').exists())
+        self.assertEqual(self.configuration.read_bytes(),before)
+
+    def test_networkd_detection_needs_no_jq_and_does_not_renew_existing_address(self):
+        network=self.root/'eth0.network';network.write_text('[Network]\nDHCP=ipv4\n')
+        self.executable('systemctl','#!/bin/sh\n[ "$3" = systemd-networkd ]\n')
+        self.env['MOCK_NETWORK_FILE']=str(network)
+        self.executable('networkctl', """#!/usr/bin/env python3
+import json,os,sys
+from pathlib import Path
+if 'status' in sys.argv:print(json.dumps({'NetworkFile':os.environ['MOCK_NETWORK_FILE']}))
+else:
+ (Path(os.environ['MOCK_ROOT'])/'retries').write_text('forbidden')
+ sys.exit(98)
+""")
+        self.executable('jq','#!/bin/sh\necho forbidden >> "$MOCK_ROOT/jq-calls"\nexit 98\n')
+        self.env['MOCK_HAS_ADDRESS']='1'
+        self.assertEqual(self.run_recovery('--detect').returncode,0)
+        self.assertEqual(self.run_recovery().returncode,0)
+        self.assertFalse((self.root/'retries').exists());self.assertFalse((self.root/'jq-calls').exists())

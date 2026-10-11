@@ -558,9 +558,18 @@ save_state(){
 }
 
 checkpoint(){
-  jq -nc --arg phase "$1" --arg customer "$CUSTOMER" --arg role "$ROLE" \
-    '{phase:$phase,customer:$customer,role:$role}' > "${STATE_FILE%/*}/progress.tmp"
-  mv "${STATE_FILE%/*}/progress.tmp" "${STATE_FILE%/*}/progress.json"
+  python3 "$RUNTIME" checkpoint -- "${STATE_FILE%/*}/progress.json" "$1" "$CUSTOMER" "$ROLE"
+}
+
+installation_exit(){
+  local status=$1
+  # Capture failures including explicit die/exit, without a recursive trap.
+  trap - EXIT ERR
+  if (( status != 0 )); then
+    checkpoint failed || warn "Fehlerstatus konnte nicht gespeichert werden."
+    warn "Installation unterbrochen. Mit denselben Angaben erneut starten."
+  fi
+  exit "$status"
 }
 
 preflight(){
@@ -578,7 +587,7 @@ main(){
   exec 9>"${STATE_FILE%/*}/install.lock"
   flock -n 9 || die "Ein Installer laeuft bereits."
   preflight
-  trap 'checkpoint failed; warn "Installation unterbrochen. Mit denselben Angaben erneut starten."' ERR
+  trap 'installation_exit "$?"' EXIT
   checkpoint preflight
   install_packages
   setup_access

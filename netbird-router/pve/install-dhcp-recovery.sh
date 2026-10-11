@@ -11,6 +11,8 @@ if ! bash "$SOURCE" --detect; then
   echo 'Kein verwaltetes DHCP-Interface: Recovery nicht aktiviert.'
   exit 0
 fi
+install -d -m 0755 /usr/local/lib/openmain-router
+install -m 0644 "$(dirname -- "${BASH_SOURCE[0]}")/../common/runtime.py" /usr/local/lib/openmain-router/runtime.py
 install -m 0755 "$(dirname -- "${BASH_SOURCE[0]}")/../common/dhcp-recovery.sh" /usr/local/sbin/openmain-dhcp-recovery
 cat > /etc/systemd/system/openmain-dhcp-recovery.service <<'UNIT'
 [Unit]

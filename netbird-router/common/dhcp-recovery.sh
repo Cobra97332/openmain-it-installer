@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+RUNTIME="$(dirname -- "${BASH_SOURCE[0]}")/runtime.py"
+[[ -f "$RUNTIME" ]] || RUNTIME=/usr/local/lib/openmain-router/runtime.py
 # Ask the active network manager; never run a competing DHCP client.
 dhcp_manager(){
   local iface="$1" connection details file
@@ -10,11 +12,14 @@ dhcp_manager(){
     echo NetworkManager
   elif command -v networkctl >/dev/null && systemctl is-active --quiet systemd-networkd; then
     details=$(networkctl --json=short status "$iface" 2>/dev/null || true)
-    file=$(jq -r '.NetworkFile // empty' <<<"$details" 2>/dev/null || true)
+    file=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("NetworkFile", ""))' <<<"$details" 2>/dev/null || true)
     [[ -f "$file" ]] || return 1
     grep -Eq '^[[:space:]]*DHCP[[:space:]]*=[[:space:]]*(yes|ipv4|true)[[:space:]]*$' "$file" || return 1
     echo networkd
-  elif command -v ifquery >/dev/null && ifquery "$iface" 2>/dev/null | grep -Eq "iface[[:space:]]+${iface}[[:space:]]+inet[[:space:]]+dhcp"; then
+  elif command -v ifquery >/dev/null && ifquery --no-mappings --no-scripts "$iface" >/dev/null 2>&1; then
+    # Classic ifquery prints only options, often nothing for DHCP. Query success
+    # establishes ownership; inspect the method without scripts or DHCP probes.
+    python3 "$RUNTIME" dhcp-ifupdown "$iface" >/dev/null 2>&1 || return 1
     echo ifupdown
   else
     return 1

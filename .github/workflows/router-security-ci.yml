@@ -46,6 +46,10 @@ jobs:
         run: docker build -f tests/Dockerfile.router -t openmain-router-test:debian13 .
       - name: Debian 13 offline regression tests
         run: docker run --rm --network none -v "$PWD:/src:ro" openmain-router-test:debian13
+      - name: Debian 13 bootstrap with jq absent
+        run: |
+          docker run --rm --network none -v "$PWD:/src:ro" openmain-router-test:debian13 bash -c \
+            'dpkg --remove jq >/dev/null && ! command -v jq && python3 -m unittest discover -s tests -p test_router_bootstrap.py -v'
       - name: Isolated real nftables packet and rollback tests
         run: >-
           docker run --rm --network none --cap-add NET_ADMIN

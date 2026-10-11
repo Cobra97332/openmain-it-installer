@@ -70,11 +70,19 @@ Offline-Regressionen sind erfolgreich; reale Laborpruefungen stehen noch aus.
     wird abgewiesen. Keine PSK-/Token-Ausgabe. Im Laborgast vor Wiederholung eine
     geschuetzte lokale Referenz des Test-PSK anlegen; anschliessend mit cmp -s
     vergleichen, nur PASS/FAIL protokollieren (keine Keys oder Hashes ausgeben).
+[ ] Bootstrap ohne jq: vor Paketinstallation muss progress.json mit Phase
+    preflight gueltig, atomar geschrieben und 0600 in einem 0700-Verzeichnis sein.
+    Synthetischen Paketfehler ausloesen: Phase failed und urspruenglicher Exit-Code;
+    kein complete, keine rekursive Fehlerbehandlung. Danach gleicher CT/Retry.
 [ ] Wiederholung/Abbruch: denselben Installer zweimal starten; CTID, Peer-ID,
     Mapping, Proxy-/Host-IDs, TLS-Identitaet und PSK bleiben erhalten. Keine
     Duplikate, keine verlorenen SQLite-Testdaten oder entfernten Zusatzparameter.
     Abbruch nach CT-Erstellung sowie absichtlich nicht erreichbare Labor-API
     muessen ohne Erfolgsmarker enden; Retry verwendet denselben Bestand.
+[ ] DHCP-Erkennung: klassisches Debian-ifquery kann bei inet dhcp leer ausgeben.
+    Methode wird deshalb aus interfaces samt source/source-directory rein lesend
+    erkannt. Bestehende eth0-IPv4 muss dabei erhalten bleiben, ohne ifup/renew.
+    Kein verwaltetes DHCP-Interface ist bei statischer/unbekannter Methode sicher.
 [ ] DHCP: Vergabe zunaechst blockieren, dann freigeben: Recovery ohne Neustart
     eines konkurrierenden DHCP-Clients. Vorhandene IPv4 wird nicht verworfen.
     Statische CTs erhalten keinen Recovery-Timer. Nach DHCP-IP-Wechsel innerhalb

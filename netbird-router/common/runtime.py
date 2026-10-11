@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Pure validation and atomic local operations shared by every platform."""
 import argparse
+import glob
 import ipaddress
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -32,6 +34,41 @@ def atomic(path, text, mode=0o600, owner=None):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def checkpoint(path, phase, customer, role):
+    if phase not in ('preflight', 'netbird', 'network', 'zabbix', 'failed', 'complete') or not customer or role not in ('primary', 'backup'):
+        raise Invalid('Ungueltiger Installationsstatus.')
+    Path(path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    atomic(path, json.dumps({'phase': phase, 'customer': customer, 'role': role}) + '\n')
+
+
+def ifupdown_dhcp(interface, configuration='/etc/network/interfaces'):
+    """Read iface methods (classic ifquery omits them), including data-only sources."""
+    methods, seen = [], set()
+    def read(path):
+        path = Path(path)
+        if path in seen or path.is_symlink() or not path.is_file():
+            raise Invalid('Mehrdeutige Interface-Konfiguration.')
+        seen.add(path)
+        for line in path.read_text().splitlines():
+            words = shlex.split(line, comments=True)
+            if not words:
+                continue
+            if words[0] == 'iface' and len(words) >= 4 and words[1:3] == [interface, 'inet']:
+                methods.append(words[3])
+            elif words[0] in ('source', 'source-directory'):
+                for pattern in words[1:]:
+                    pattern = str(path.parent / pattern) if not pattern.startswith('/') else pattern
+                    for match in sorted(glob.glob(pattern)):
+                        if words[0] == 'source':
+                            read(match)
+                        else:
+                            for child in sorted(Path(match).iterdir()):
+                                if re.fullmatch(r'[a-zA-Z0-9_-]+', child.name) and child.is_file():
+                                    read(child)
+    read(configuration)
+    return methods == ['dhcp']
 
 
 def config(path):
@@ -139,12 +176,17 @@ def nft_config(iface, overlay, virtual, network):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('operation', choices=['config', 'platform', 'lan', 'mapping', 'nft'])
+    parser.add_argument('operation', choices=['config', 'platform', 'lan', 'mapping', 'nft', 'checkpoint', 'dhcp-ifupdown'])
     parser.add_argument('args', nargs='*')
     args = parser.parse_args()
     if args.operation == 'config':
         for key, value in config(args.args[0]).items():
             sys.stdout.write(key + '=' + value + '\0')
+    elif args.operation == 'dhcp-ifupdown':
+        if not ifupdown_dhcp(*args.args):
+            sys.exit(1)
+    elif args.operation == 'checkpoint':
+        checkpoint(*args.args)
     elif args.operation == 'platform':
         values = dict(line.strip().split('=', 1) for line in Path('/etc/os-release').read_text().splitlines() if '=' in line)
         values = {k: v.strip('"') for k, v in values.items()}

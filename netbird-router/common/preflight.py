@@ -79,6 +79,10 @@ def url(value):
     return parsed.hostname.lower(), parsed.port or 443, parsed.path.rstrip('/')
 
 
+def unsafe_firewall(text):
+    return re.search(r'(?<![\w])(mein_binat|openmain_binat|netbird|masquerade|redirect)(?![\w])|type\s+nat(?![\w])|(?:dnat|snat)\s+(?:ip6?\s+)?(?:prefix\s+)?to(?![\w])', text) is not None
+
+
 def inspect(root=Path('/'), desired=None, command=run, available=shutil.which):
     desired = desired or {}
     def path(name):
@@ -94,6 +98,7 @@ def inspect(root=Path('/'), desired=None, command=run, available=shutil.which):
         raise Rejected('Legacy BINAT')
     pending = [path('/etc/nftables.conf'), *path('/etc/nftables.d').glob('**/*')]
     seen_rules = set()
+    saved_firewall = []
     while pending:
         p = pending.pop()
         if p in seen_rules:
@@ -103,6 +108,7 @@ def inspect(root=Path('/'), desired=None, command=run, available=shutil.which):
             raise Rejected('Ambiguous firewall configuration')
         if p.is_file():
             text = p.read_text()
+            saved_firewall.append(text)
             if re.search(r'\bmein_binat\b', text):
                 raise Rejected('Legacy BINAT configuration')
             for include in re.findall(r'(?m)^\s*include\s+"([^"]+)"', text):
@@ -132,6 +138,11 @@ def inspect(root=Path('/'), desired=None, command=run, available=shutil.which):
             else:
                 progress = data
     owned = bool(state or progress)
+    if not owned:
+        if any(unsafe_firewall(text) for text in saved_firewall):
+            raise Rejected('Unmanaged NAT configuration')
+        if available('nft') and unsafe_firewall(command('nft', '-nn', 'list', 'ruleset')):
+            raise Rejected('Unmanaged active NAT')
     lan_interface = desired.get('lan_interface', '')
     if owned:
         if not available('ip'):

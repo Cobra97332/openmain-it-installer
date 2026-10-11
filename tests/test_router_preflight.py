@@ -31,6 +31,7 @@ class AdmissionTests(Sandbox):
         self.calls.append(args)
         if args==('nft','-j','list','tables'):
             return json.dumps({'nftables':[{'table':{'name':name}} for name in self.tables]})
+        if args==('nft','-nn','list','ruleset'):return self.live
         if args==('nft','-s','list','table','ip','openmain_binat'):return self.live
         if args==('netbird','status','--json'):return json.dumps({'management':{'connected':self.connected}})
         if args==('ip','-j','-4','route','show','default'):return '[{"dst":"default","dev":"eth0"}]'
@@ -68,6 +69,18 @@ class AdmissionTests(Sandbox):
         for _ in range(2):self.inspect()
         self.assertEqual(self.snapshot(),before)
         self.assertIn(('netbird','status','--json'),self.calls)
+    def test_unconfigured_resume_preserves_filter_rules_and_rejects_nat(self):
+        good='table inet filter { chain input { type filter hook input priority 0; policy drop; ct status dnat accept; } }'
+        self.live=good;self.tables=['filter']
+        file=self.put('/etc/nftables.d/filter.nft',good)
+        before=self.snapshot();self.inspect();self.assertEqual(self.snapshot(),before)
+        for bad in ('table ip other { chain x { type nat hook prerouting priority -100; } }',
+                    'table inet netbird { chain input { accept } }',
+                    'table ip other { chain x { dnat to 192.0.2.2 } }'):
+            with self.subTest(rules=bad):
+                self.live=bad;self.rejected()
+        self.live=good;file.write_text('table ip other { chain x { masquerade } }');self.rejected()
+
     def test_disabled_unowned_alternate_and_disconnected_profiles_rejected(self):
         self.managed()
         profile=self.fs/'etc/netbird/config.json'
@@ -153,6 +166,41 @@ class PristineBootstrapTests(Sandbox):
         env=dict(self.env,PATH=str(empty))
         def check():return subprocess.run(['/bin/bash',str(script)],env=env,capture_output=True,text=True,timeout=5)
         self.assertEqual(check().returncode,0)
-        for name in ('etc/netbird','etc/zabbix','etc/nftables.d','var/lib/netbird-kundenrouter'):
+        for name in ('etc/netbird','etc/zabbix','var/lib/netbird-kundenrouter','etc/nftables.d/netbird-kundenrouter.nft','etc/nftables.d/openmain-binat.nft'):
             p=fs/name;p.parent.mkdir(parents=True,exist_ok=True);p.mkdir()
             self.assertNotEqual(check().returncode,0);self.assertTrue(p.is_dir());p.rmdir()
+
+    def test_filter_rules_preserved_and_nat_or_legacy_rejected_without_writes(self):
+        fs=self.root/'guest';fs.mkdir()
+        source=(ROOT/'netbird-router/common/pristine.sh').read_text()
+        source=re.sub(r'/(?:etc|var)/',lambda m:str(fs)+m[0],source)
+        script=self.root/'pristine.sh';script.write_text(source)
+        # Use only real shell/grep and intercepted nft; client sentinels are absent.
+        isolated=self.root/'isolated-bin';isolated.mkdir()
+        (isolated/'grep').symlink_to('/usr/bin/grep')
+        nft=isolated/'nft';nft.write_text('#!/bin/sh\n[ "$*" = "-nn list ruleset" ] || exit 98\ncat "$MOCK_ROOT/rules"\n')
+        nft.chmod(0o755);(isolated/'cat').symlink_to('/bin/cat')
+        env=dict(self.env,PATH=str(isolated))
+        live=self.root/'rules'
+        conf=fs/'etc/nftables.conf';conf.parent.mkdir(parents=True)
+        snippets=fs/'etc/nftables.d';snippets.mkdir()
+        rulefile=snippets/'filter.nft'
+        rulefile.write_text('table inet filter { chain input { type filter hook input priority 0; policy drop; ct state established accept; } }\n')
+        conf.write_text('include "'+str(rulefile)+'"\n')
+        # Avoid remapping an already absolute test fixture Include a second time.
+        rules=rulefile.read_text();live.write_text(rules)
+        def check():return subprocess.run(['/bin/bash',str(script)],env=env,capture_output=True,text=True,timeout=5)
+        before={p:p.read_bytes() for p in (conf,rulefile,live)}
+        self.assertEqual(check().returncode,0)
+        for text in ('table ip mein_binat {}','table ip openmain_binat {}','table inet netbird {}',
+                     'table ip other { chain x { type nat hook prerouting priority -100; } }',
+                     'table ip other { chain x { ip daddr 192.0.2.1 dnat to 192.0.2.2 } }',
+                     'table ip other { chain x { masquerade } }'):
+            with self.subTest(rules=text):
+                live.write_text(text);self.assertNotEqual(check().returncode,0)
+                self.assertEqual(rulefile.read_bytes(),before[rulefile]);self.assertEqual(conf.read_bytes(),before[conf])
+                self.assertEqual(live.read_text(),text)
+        live.write_text(rules)
+        rulefile.write_text('table ip legacy { chain x { type nat hook postrouting priority 100; } }')
+        self.assertNotEqual(check().returncode,0)
+        self.assertIn('type nat',rulefile.read_text())

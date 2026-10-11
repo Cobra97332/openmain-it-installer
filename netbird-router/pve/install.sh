@@ -60,7 +60,12 @@ fi
 ip link show "$BRIDGE" >/dev/null
 if pct status "$CTID" >/dev/null 2>&1; then
   EXISTING_CT=1
-  pct config "$CTID" | grep -Fxq "description: OpenMain managed $ID" || { echo 'Vorhandener CT gehoert nicht zu diesem Auftrag.' >&2; exit 1; }
+  CT_CONFIG=$(pct config "$CTID")
+  mapfile -t descriptions < <(sed -n 's/^description: //p' <<< "$CT_CONFIG")
+  # PVE renders the stored trailing LF as %0A. Accept only that exact suffix,
+  # never arbitrary URL decoding, whitespace trimming or substring matching.
+  [[ ${#descriptions[@]} == 1 && ( "${descriptions[0]}" == "OpenMain managed $ID" || "${descriptions[0]}" == "OpenMain managed $ID%0A" ) ]] \
+    || { echo 'Vorhandener CT gehoert nicht zu diesem Auftrag.' >&2; exit 1; }
   pct status "$CTID" | grep -q running || { echo 'Bestehender CT ist gestoppt; keine automatische Aktivierung vor Bestandspruefung.' >&2; exit 1; }
   readarray -t admission < <(python3 - "$TMP/customer.json" <<'PYCHECK'
 import json,sys

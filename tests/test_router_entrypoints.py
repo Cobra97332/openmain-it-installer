@@ -20,7 +20,7 @@ class PVEWrapperTests(Sandbox):
         source=source.replace('/var/lib/openmain-router-pve',str(self.root/'pve-state'))
         self.script=self.root/'install.sh';self.script.write_text(source)
         self.executable('pct', '''#!/usr/bin/env python3
-import json,os,sys
+import json,os,sys,subprocess
 from pathlib import Path
 p=Path(os.environ['MOCK_ROOT']);state=p/'ct.json';a=sys.argv[1:]
 with (p/'pct-calls').open('a') as f:f.write(json.dumps(a)+'\\n')
@@ -33,8 +33,13 @@ elif a[0]=='create':
  (p/'pct-create-umask').write_text(oct(mask))
  if os.environ.get('MOCK_CREATE_FAIL'):sys.exit(2)
  state.write_text(json.dumps({'id':a[1],'description':a[a.index('--description')+1]}))
-elif a[0]=='config':print('description: '+s['description'])
+elif a[0]=='config':print('description: '+s['description']+os.environ.get('MOCK_DESCRIPTION_SUFFIX',''))
 elif a[0]=='exec' and a[3:5]==['python3','-c'] and os.environ.get('MOCK_REJECT_PREFLIGHT'):sys.exit(1)
+elif a[0]=='exec' and a[3:5]==['bash','-c'] and 'Read-only bootstrap gate' in a[5] and os.environ.get('MOCK_REJECT_PRISTINE'):sys.exit(1)
+elif a[0]=='exec' and a[3:5]==['python3','-c'] and os.environ.get('MOCK_PREFLIGHT_ROOT'):
+ code=a[5].replace("root=Path('/')", "root=Path("+repr(os.environ['MOCK_PREFLIGHT_ROOT'])+")")
+ code=code.replace('available=shutil.which', "available=lambda name: name in ('nft','ip')")
+ sys.exit(subprocess.run([sys.executable,'-c',code,*a[6:]]).returncode)
 elif a[0] in ('push','exec','start'):pass
 else:sys.exit(98)
 ''')
@@ -92,6 +97,49 @@ else:sys.exit(98)
                 self.assertTrue(all(x[0] in ('status','config') or (x[0]=='exec' and x[3:5]==['python3','-c']) for x in calls))
                 self.assertEqual((self.root/'ct.json').read_bytes(),before)
                 del self.env[env]
+
+    def test_encoded_terminal_newline_accepted_but_foreign_descriptions_refused(self):
+        self.assertEqual(self.run_wrapper('--ctid','110').returncode,0)
+        journal=self.root/'pct-calls'
+        for suffix,accepted in [('%0A',True),('%0Aextra',False),('%0A%0A',False),('%250A',False),('%0D%0A',False),(' extra',False),('\ndescription: forged',False)]:
+            with self.subTest(suffix=suffix):
+                journal.unlink();self.env['MOCK_DESCRIPTION_SUFFIX']=suffix
+                result=self.run_wrapper('--ctid','110')
+                self.assertEqual(result.returncode==0,accepted,result.stderr)
+                calls=[json.loads(x) for x in journal.read_text().splitlines()]
+                self.assertFalse(any(x[0] in ('create','start','destroy') for x in calls))
+                if not accepted:self.assertFalse(any(x[0] in ('push','exec') for x in calls))
+        del self.env['MOCK_DESCRIPTION_SUFFIX']
+
+    def test_resume_after_creation_before_guest_initialization_checks_before_push(self):
+        self.env['MOCK_REJECT_PRISTINE']='1'
+        result=self.run_wrapper('--ctid','110')
+        self.assertNotEqual(result.returncode,0)
+        journal=self.root/'pct-calls'
+        first=[json.loads(x) for x in journal.read_text().splitlines()]
+        self.assertEqual(len([x for x in first if x[0]=='create']),1)
+        self.assertFalse(any(x[0]=='push' for x in first))
+        before=(self.root/'ct.json').read_bytes()
+        journal.unlink();del self.env['MOCK_REJECT_PRISTINE']
+        self.env['MOCK_DESCRIPTION_SUFFIX']='%0A'
+        guest=self.root/'guest';guest.mkdir()
+        self.env['MOCK_PREFLIGHT_ROOT']=str(guest)
+        self.executable('nft', """#!/bin/sh
+case "$*" in
+ "-j list tables") echo '{"nftables":[{"table":{"family":"inet","name":"filter"}}]}';;
+ "-nn list ruleset") echo 'table inet filter { chain input { type filter hook input priority 0; policy drop; } }';;
+ *) exit 98;;
+esac
+""")
+        result=self.run_wrapper('--ctid','110')
+        self.assertEqual(result.returncode,0,result.stderr)
+        second=[json.loads(x) for x in journal.read_text().splitlines()]
+        self.assertFalse(any(x[0] in ('create','start','destroy') for x in second))
+        check=next(i for i,x in enumerate(second) if x[0]=='exec' and x[3:5]==['python3','-c'])
+        push=next(i for i,x in enumerate(second) if x[0]=='push')
+        self.assertLess(check,push)
+        self.assertEqual((self.root/'ct.json').read_bytes(),before)
+        self.assertEqual(next((self.root/'pve-state').glob('*.ctid')).read_text(),'110\n')
 
     def test_static_address_skips_dhcp_dependency(self):
         result=self.run_wrapper('--ip','192.0.2.20/24','--gateway','192.0.2.1')

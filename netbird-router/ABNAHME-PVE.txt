@@ -119,6 +119,15 @@ Offline-Regressionen sind erfolgreich; reale Laborpruefungen stehen noch aus.
   setzen; Abbruch bereits vor Bundle-/Credential-Push, DHCP und Paketinstallation.
   Gestoppte bestehende CTs werden nicht automatisch gestartet. Nur den eigenen
   Laborgast nach separater Kontrolle manuell starten, dann erneut pruefen.
+- PVE 9.2.21: den Marker mit genau einem abschliessenden %0A pruefen. Ein
+  eigener laufender, noch nicht initialisierter CT muss nach Abbruch direkt nach
+  pct create wiederaufgenommen werden: keine zweite Erstellung, kein Loeschen,
+  Bestandspruefung vor pct push. Marker mit Zusatztext/anderer ID ablehnen.
+- Frisches table inet filter samt Filterregeln bleibt bei Leerbestandspruefung
+  und Wiederaufnahme unveraendert. NAT-Chains, Translationen und NetBird-/BINAT-
+  Altbestand weiterhin vor Dateien/Paketen/Diensten ablehnen. Bei Abbruch keine
+  Marker loeschen oder Firewallregeln entfernen, sondern denselben Auftrag
+  nach Checkout des korrigierten PR-Heads erneut starten.
 - Neue Templates ohne Python passieren zuerst eine strengere, rein lesende
   Leerbestandspruefung; jeglicher Router-/Zabbix-Bestand stoppt den Bootstrap.
   Bei nicht eindeutig zuordenbaren Zwischenstaenden sicher abbrechen, Daten

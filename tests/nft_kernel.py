@@ -57,9 +57,16 @@ def receive(sock, source, dest):
 for a,b in [('wt0','overlay_peer'),('enp1s0','lan_peer')]:
     run('ip','link','add',a,'type','veth','peer','name',b)
     run('ip','link','set',a,'up');run('ip','link','set',b,'up')
+# Endpoint devices must not route injected frames back into the lab router.
+# AF_PACKET still observes them, without artificial TTL loops/socket backlog.
+run('nft','add','table','inet','lab_endpoints')
+run('nft','add','chain','inet','lab_endpoints','ingress',
+    '{ type filter hook prerouting priority -450; policy accept; }')
+for endpoint in ('overlay_peer','lan_peer'):
+    run('nft','add','rule','inet','lab_endpoints','ingress','iifname',endpoint,'drop')
 run('ip','addr','add','100.64.0.1/10','dev','wt0')
 run('ip','addr','add','192.168.50.1/24','dev','enp1s0')
-for ip,device,peer in [('100.64.0.10','wt0','overlay_peer'),('192.168.50.20','enp1s0','lan_peer')]:
+for ip,device,peer in [(address,'wt0','overlay_peer') for address in ('100.64.0.10','100.64.0.11','100.64.0.12')] + [('192.168.50.20','enp1s0','lan_peer')]:
     run('ip','neigh','replace',ip,'lladdr',':'.join(f'{n:02x}' for n in mac(peer)),'nud','permanent','dev',device)
 # A fresh Debian guest may already have an ordinary inet filter table.
 run('nft','add','table','inet','filter')
@@ -294,6 +301,67 @@ try:
     receive(lan,'192.168.50.1','192.168.50.20')
     denied('100.64.0.11',45708)
     assert foreign_rule()==foreign_before
+
+    # RELEASE GATE: the previous tests only change native policy between
+    # apply and observation. This generation arrives AFTER main has returned;
+    # no retry/read/timer runs before the next packet. A stale grant MUST NOT
+    # authorize either a new flow or the old tuple. Keep testing other gates
+    # before reporting all failures, so a red CI run is useful evidence.
+    security_failures = []
+    native_group('nb-aabbccdd')
+    for port in (45707, 45709):
+        lan.settimeout(0.5)
+        frame('overlay_peer','wt0','100.64.0.12','10.30.1.20',port,12345)
+        try: receive(lan,'192.168.50.1','192.168.50.20')
+        except socket.timeout: pass
+        else:
+            security_failures.append('P1_AFTER_FINAL_READ_STALE_GRANT:' + str(port))
+    # Baseline recovery, with no changes to native policy or foreign rules.
+    acl_module.main()
+    denied('100.64.0.12',45710)
+    lan.settimeout(3)
+    frame('overlay_peer','wt0','100.64.0.11','10.30.1.20',45711,12345)
+    receive(lan,'192.168.50.1','192.168.50.20')
+
+    # NetBird 0.80 insertReturnTrafficRule/getEstablishedExprs also inserts
+    # this unconditional established/related ACCEPT at the start of its route
+    # chain. A used UDP tuple is NOT established until a reply is observed.
+    run('nft','insert','rule','ip','netbird','netbird-rt-fwd',
+        'ct','state','established,related','counter','accept')
+    established = False
+    for attempt in range(3):
+        port = 45720 + attempt
+        lan.settimeout(3)
+        frame('overlay_peer','wt0','100.64.0.11','10.30.1.20',port,12345)
+        mapped_port, target_port = receive(lan,'192.168.50.1','192.168.50.20')
+        time.sleep(0.3)
+        frame('lan_peer','enp1s0','192.168.50.20','192.168.50.1',target_port,mapped_port)
+        overlay.settimeout(2)
+        try: receive(overlay,'10.30.1.20','100.64.0.11')
+        except (AssertionError, socket.timeout): continue
+        established = True
+        break
+    assert established, 'Bidirectional conntrack fixture did not establish'
+    run('nft','delete','element','ip','netbird','nb-aabbccdd','{ 100.64.0.11 }')
+    acl_module.main()
+    denied('100.64.0.11',45730)  # NEW tuple: native membership really is gone.
+    lan.settimeout(0.5)
+    frame('overlay_peer','wt0','100.64.0.11','10.30.1.20',port,12345)
+    try: receive(lan,'192.168.50.1','192.168.50.20')
+    except socket.timeout: pass
+    else: security_failures.append('P1_ESTABLISHED_CONNTRACK_BYPASSES_WITHDRAWAL')
+    # Returning data must also be subject to the documented revocation gate.
+    overlay.settimeout(0.5)
+    frame('lan_peer','enp1s0','192.168.50.20','192.168.50.1',target_port,mapped_port)
+    try: receive(overlay,'10.30.1.20','100.64.0.11')
+    except socket.timeout: pass
+    else: security_failures.append('P1_REPLY_CONTINUES_AFTER_WITHDRAWAL')
+    assert foreign_rule()==foreign_before
+    assert run('nft','-j','list','table','inet','filter')==filter_before
+    print('PASS: existing kernel regressions, current-set/new-flow denial and recovery',flush=True)
+    for failure in security_failures:
+        print('RELEASE BLOCKED: '+failure,flush=True)
+    assert not security_failures, 'Unsafe BINAT authorization; PR #33 MUST NOT MERGE'
 
 finally:
     lan.close();overlay.close()

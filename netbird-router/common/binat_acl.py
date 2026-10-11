@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Guarded NetBird 0.80 BINAT ACL compatibility.
+"""UNSAFE experimental NetBird 0.80 BINAT ACL compatibility; release blocked.
 
-NetBird's FORWARD ACL matches the virtual destination, after PREROUTING DNAT
-has translated it. Replace *only* the native authorization rule; never create
-an independent permit. The NetBird dynamic source set and ACL lifecycle remain
-authoritative. Unknown NetBird versions/layouts fail closed.
+The bounded reconciler does NOT share NetBird's policy transaction. A policy
+change after its last read can leave a stale grant, and native conntrack
+ESTABLISHED acceptance can bypass withdrawal. Do not deploy this helper.
+See BINAT-ACL-SECURITY.txt and the blocking nftables kernel release gates.
 """
 import ipaddress
 import json

@@ -13,7 +13,9 @@ StandardOutput=tty
 StandardError=tty
 TTYPath=/dev/tty1
 TTYReset=yes
-RemainAfterExit=yes
+# Release tty1 after success or failure; the DONE condition prevents reenrollment.
+# Defer until this conflicting unit's activation job has finished.
+ExecStopPost=/usr/bin/systemd-run --quiet --collect --on-active=1s --timer-property=AccuracySec=100ms /usr/bin/systemctl --no-block start getty@tty1.service
 
 [Install]
 WantedBy=multi-user.target

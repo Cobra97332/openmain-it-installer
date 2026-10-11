@@ -4,7 +4,9 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 OUTPUT_ISO="${OUTPUT_ISO:-$PWD/openmain-debian13-amd64-netinst.iso}"
 [[ ! -e "$OUTPUT_ISO" ]] || { echo 'Ausgabe existiert; neuen Dateinamen verwenden.' >&2; exit 1; }
-for tool in curl xorriso python3 gpgv sha512sum; do command -v "$tool" >/dev/null; done
+for tool in curl xorriso python3 sha512sum; do
+  command -v "$tool" >/dev/null || { printf 'Build-Voraussetzung fehlt: %s\n' "$tool" >&2; exit 1; }
+done
 BUILD_DIR=$(mktemp -d)
 trap 'rm -rf -- "$BUILD_DIR"' EXIT
 ISO_DIR="$BUILD_DIR/iso"
@@ -17,6 +19,7 @@ if [[ -n "${DEBIAN_ISO:-}" ]]; then
   ISO_FILE=$(realpath "$DEBIAN_ISO")
   [[ "$(sha512sum "$ISO_FILE" | cut -d ' ' -f1)" == "$DEBIAN_ISO_SHA512" ]] || die 'ISO-Pruefsumme falsch.'
 else
+  command -v gpgv >/dev/null || die 'Build-Voraussetzung fehlt: gpgv (Signaturpruefung erforderlich).'
   KEYRING="${DEBIAN_CD_KEYRING:-/usr/share/keyrings/debian-role-keys.gpg}"
   [[ -r "$KEYRING" ]] || die 'Debian-CD-Signaturschluesselring fehlt (debian-keyring installieren / DEBIAN_CD_KEYRING setzen).'
   curl -fsSL --max-time 60 "$BASE/SHA512SUMS" -o "$BUILD_DIR/SHA512SUMS"
@@ -147,7 +150,7 @@ done
 mv "$BUILD_DIR/md5sum.txt" "$ISO_DIR/md5sum.txt"
 xorriso -indev "$ISO_FILE" -outdev "$OUTPUT_ISO" -overwrite on \
   -update_r "$ISO_DIR" / -volid OPENMAIN_DEBIAN13 \
-  -append_partition all revoke - -boot_image any replay -commit
+  -boot_image any replay -commit
 [[ -s "$OUTPUT_ISO" ]] || die 'ISO-Build fehlgeschlagen.'
 xorriso -indev "$OUTPUT_ISO" -report_el_torito plain
 sha512sum "$OUTPUT_ISO" > "$OUTPUT_ISO.sha512"

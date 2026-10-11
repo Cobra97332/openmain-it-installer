@@ -18,6 +18,30 @@ class Invalid(ValueError):
     pass
 
 
+def bundle(source, destination):
+    """Stage only reviewed source files, never a checkout's runtime credentials."""
+    source, destination = Path(source).absolute(), Path(destination).absolute()
+    manifest = source / 'netbird-router/bundle.files'
+    if manifest.is_symlink() or not manifest.is_file():
+        raise Invalid('Unsicheres Bundle-Manifest.')
+    names = manifest.read_text().splitlines()
+    if not names or len(names) != len(set(names)):
+        raise Invalid('Leeres/mehrdeutiges Bundle-Manifest.')
+    entries = []
+    for name in names:
+        if not name or name.startswith('/') or '..' in Path(name).parts:
+            raise Invalid('Unsicherer Bundle-Pfad.')
+        src, dst = source / name, destination / name
+        if (not src.is_file() or any(p.is_symlink() for p in (src, *src.parents, dst, *dst.parents))
+            or (dst.exists() and not dst.is_file())):
+            raise Invalid('Unsichere Bundle-Datei.')
+        entries.append((src, dst))
+    # Validate the whole manifest before copying the first file.
+    for src, dst in entries:
+        dst.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        atomic(dst, src.read_text(), 0o644)
+
+
 def atomic(path, text, mode=0o600, owner=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -176,10 +200,12 @@ def nft_config(iface, overlay, virtual, network):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('operation', choices=['config', 'platform', 'lan', 'mapping', 'nft', 'checkpoint', 'dhcp-ifupdown'])
+    parser.add_argument('operation', choices=['config', 'platform', 'lan', 'mapping', 'nft', 'checkpoint', 'dhcp-ifupdown', 'bundle'])
     parser.add_argument('args', nargs='*')
     args = parser.parse_args()
-    if args.operation == 'config':
+    if args.operation == 'bundle':
+        bundle(*args.args)
+    elif args.operation == 'config':
         for key, value in config(args.args[0]).items():
             sys.stdout.write(key + '=' + value + '\0')
     elif args.operation == 'dhcp-ifupdown':

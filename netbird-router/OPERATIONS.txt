@@ -110,8 +110,14 @@ For an already downloaded ISO, supply DEBIAN_ISO and its independently trusted
 DEBIAN_ISO_SHA512. Set OUTPUT_ISO to a NEW output filename; existing images are
 not replaced. Secrets are collected on the installed machine at first boot,
 not in ISO/preseed/kernel arguments. Interrupted firstboot keeps its 0600 input.
-No actual Debian installer ISO was downloaded/built or BIOS/UEFI booted in this
-change's validation environment; the builder and boot-menu logic have mocks.
+The beta validation also executes real remastering and BIOS/UEFI QEMU boots of
+a SYNTHETIC Debian-kernel fixture. It does not execute Debian Installer or prove
+an official netinstall. See PLATFORM-TESTS.txt for exact evidence and open gates.
+
+VM default invocation saves hidden input in /etc/openmain-router/vm.json
+(root-only), and reuses it after interruption. Explicit --config persists missing
+credentials in that same supplied protected file. Legacy direct CLI options are
+forwarded unchanged; use default/JSON invocation for saved prompts.
 
 Resume, upgrades and deliberate stops
 Rerun the same entrypoint/configuration. PVE persists customer/role -> CTID before

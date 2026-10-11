@@ -2,8 +2,10 @@ firstboot-router.sh
 netbird-prometheus/enable-client-detail-metrics.sh
 netbird-prometheus/enable-client-metrics.sh
 netbird-prometheus/netbird-status-exporter.py
+netbird-router/bundle.files
 netbird-router/common/apply-binat.sh
 netbird-router/common/apt_repository.py
+netbird-router/common/binat_acl.py
 netbird-router/common/dhcp-recovery.sh
 netbird-router/common/network.py
 netbird-router/common/pi_firstboot.py

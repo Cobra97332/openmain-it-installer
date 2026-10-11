@@ -55,3 +55,31 @@ jobs:
           docker run --rm --network none --cap-add NET_ADMIN
           --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1
           -v "$PWD:/src:ro" openmain-router-test:debian13 python3 tests/nft_kernel.py
+
+  platform-lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build QEMU lab tools
+        run: docker build -f tests/Dockerfile.platform-lab -t openmain-platform-lab:debian13 .
+      - name: Prepare Debian 13 lab roots (Debian package mirrors only)
+        run: |
+          mkdir -p "$RUNNER_TEMP/openmain-platform-lab"
+          docker run --rm -v "$RUNNER_TEMP/openmain-platform-lab:/lab" openmain-platform-lab:debian13 \
+            debootstrap --variant=minbase \
+            --include=systemd-sysv,kmod,procps,python3,jq,nftables,iproute2,ifupdown,curl,gnupg,shellcheck,ca-certificates \
+            trixie /lab/amd64 http://deb.debian.org/debian
+          docker run --rm -v "$RUNNER_TEMP/openmain-platform-lab:/lab" openmain-platform-lab:debian13 \
+            debootstrap --foreign --arch=arm64 --variant=minbase --include=python3,jq \
+            trixie /lab/arm64 http://deb.debian.org/debian
+      - name: Actual QEMU VM and synthetic ISO BIOS/UEFI boots (offline APIs)
+        run: >-
+          docker run --rm --network none -e OPENMAIN_ISOLATED_TEST=1
+          -v "$RUNNER_TEMP/openmain-platform-lab:/lab" -v "$PWD:/src:ro"
+          openmain-platform-lab:debian13 python3 tests/qemu_platforms.py
+      - name: Actual ARM64 Python with simulated router APIs
+        run: >-
+          docker run --rm --network none -e OPENMAIN_ISOLATED_TEST=1
+          -v "$RUNNER_TEMP/openmain-platform-lab:/lab" -v "$PWD:/src:ro"
+          openmain-platform-lab:debian13 python3 tests/arm64_platforms.py

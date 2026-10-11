@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Run ONLY in a disposable --network none Docker container with NET_ADMIN.
+"""Run ONLY in disposable network-none Docker or the explicitly marked no-NIC
+QEMU lab guest. Docker requires NET_ADMIN; the QEMU guest uses its own kernel.
 Tests real forward/reverse prefix NAT and preservation of unrelated tables.
 """
 import json
@@ -10,8 +11,12 @@ import struct
 import subprocess
 import sys
 
-if os.environ.get('OPENMAIN_ISOLATED_TEST') != '1' or not Path('/.dockerenv').exists():
-    raise SystemExit('Requires the explicitly isolated Docker test environment')
+qemu_lab = (not Path('/.dockerenv').exists() and 'openmain.lab=vm' in Path('/proc/cmdline').read_text()
+            and Path('/sys/class/dmi/id/sys_vendor').exists()
+            and Path('/sys/class/dmi/id/sys_vendor').read_text().strip() == 'QEMU'
+            and {name for _, name in socket.if_nameindex()} == {'lo'})
+if os.environ.get('OPENMAIN_ISOLATED_TEST') != '1' or not (Path('/.dockerenv').exists() or qemu_lab):
+    raise SystemExit('Requires explicitly isolated Docker or a marked no-NIC QEMU lab')
 sys.path.insert(0, '/src/netbird-router/common')
 from runtime import nft_config
 

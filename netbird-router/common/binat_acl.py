@@ -82,13 +82,20 @@ def native(rule, cfg):
 def managed(rule, cfg):
     # In nft JSON comments may be rule attributes or expressions.
     text = json.dumps(rule, sort_keys=True)
+    def original_address(expr):
+        if not isinstance(expr, dict) or not isinstance(expr.get('match'), dict):
+            return False
+        left = expr['match'].get('left')
+        conntrack = left.get('ct') if isinstance(left, dict) else None
+        # Real nft JSON also includes "family": "ip" on conntrack addresses.
+        return (isinstance(conntrack, dict) and conntrack.get('key') == 'daddr'
+                and conntrack.get('dir') == 'original'
+                and conntrack.get('family', 'ip') == 'ip')
+
     return (MARKER in text and str(ipaddress.IPv4Network(cfg['virtual']).network_address) in text and
             str(ipaddress.IPv4Network(cfg['real']).network_address) in text and
             cfg['overlay'] in text and cfg['lan'] in text and
-            any(isinstance(x, dict) and
-                isinstance(x.get('match'), dict) and
-                x['match'].get('left') == {'ct': {'key': 'daddr', 'dir': 'original'}}
-                for x in rule.get('expr', [])))
+            any(original_address(x) for x in rule.get('expr', [])))
 
 
 def transaction(rules, cfg):

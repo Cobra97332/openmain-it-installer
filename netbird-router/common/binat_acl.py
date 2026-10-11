@@ -159,7 +159,7 @@ def transaction(rules, cfg):
             raise Refused('No customer source group in existing managed ACLs')
         return ''
     deletes = ''.join(
-        f'delete rule ip netbird netbird-rt-fwd handle {handle}\\n'
+        f'delete rule ip netbird netbird-rt-fwd handle {handle}\n'
         for handle in old_handles)
     # If NetBird has removed the customer group while retaining only an
     # explicit peer grant, revoke stale OpenMain authorizations now. The
@@ -175,7 +175,7 @@ def transaction(rules, cfg):
         f'iifname "{cfg["overlay"]}" oifname "{cfg["lan"]}" '
         f'ip saddr {source} ct status dnat '
         f'ct original daddr & {virtual.netmask} == {virtual.network_address} '
-        f'ip daddr {cfg["real"]} counter accept comment "{MARKER}"\\n'
+        f'ip daddr {cfg["real"]} counter accept comment "{MARKER}"\n'
         for handle, source in candidates)
     return deletes + rewritten
 

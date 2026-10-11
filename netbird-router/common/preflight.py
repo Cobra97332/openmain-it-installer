@@ -223,6 +223,49 @@ def unsafe_firewall(text):
     return re.search(r'(?<![\w])(mein_binat|openmain_binat|netbird|masquerade|redirect)(?![\w])|type\s+nat(?![\w])|(?:dnat|snat)\s+(?:ip6?\s+)?(?:prefix\s+)?to(?![\w])', text) is not None
 
 
+def recover_interrupted_binat(root, desired, progress, profile, lan_interface, networks):
+    """Read-only recovery for the exact partially-written OpenMain BINAT stage.
+
+    Never synthesize ownership from progress alone. Require an active verified
+    NetBird profile, root-protected intent, and consistent installed rule file;
+    later inspect() compares its syntax against the active kernel NAT table.
+    """
+    if not isinstance(progress, dict) or set(progress) != {'phase', 'customer', 'role'} or progress['phase'] != 'failed':
+        raise Rejected('Incomplete BINAT state without failed installer intent')
+    directory = root / 'var/lib/netbird-kundenrouter'
+    progress_file = directory / 'progress.json'
+    if (directory.is_symlink() or directory.stat().st_uid != PROFILE_UID or
+        stat.S_IMODE(directory.stat().st_mode) != 0o700):
+        raise Rejected('Untrusted installer state directory')
+    meta = progress_file.stat()
+    if (progress_file.is_symlink() or not progress_file.is_file() or
+        meta.st_uid != PROFILE_UID or meta.st_nlink != 1 or
+        stat.S_IMODE(meta.st_mode) != 0o600):
+        raise Rejected('Untrusted incomplete installer intent')
+    if not profile or not lan_interface or len(networks) != 1:
+        raise Rejected('Incomplete BINAT lacks connected profile/LAN identity')
+    manifest = root / 'etc/nftables.d/openmain-binat-acl.json'
+    if (manifest.is_symlink() or not manifest.is_file() or
+        manifest.stat().st_uid != PROFILE_UID or manifest.stat().st_nlink != 1 or
+        stat.S_IMODE(manifest.stat().st_mode) != 0o600 or
+        manifest.stat().st_size > 4096):
+        raise Rejected('Missing/unsafe BINAT ownership manifest')
+    data = read_json(manifest)
+    if set(data) != {'overlay', 'lan', 'virtual', 'real'}:
+        raise Rejected('Invalid incomplete BINAT ownership manifest')
+    try:
+        virtual = ipaddress.IPv4Network(data['virtual'], strict=True)
+        real = ipaddress.IPv4Network(data['real'], strict=True)
+    except (TypeError, ValueError):
+        raise Rejected('Invalid incomplete BINAT address allocation') from None
+    if (data['overlay'] != profile['interface'] or data['lan'] != lan_interface or
+        str(real) != networks[0] or virtual.prefixlen != real.prefixlen or
+        virtual.overlaps(real) or virtual.subnet_of(ipaddress.IPv4Network('100.64.0.0/10'))):
+        raise Rejected('Incomplete BINAT conflicts with active LAN/peer')
+    return {'customer': desired['customer'], 'role': desired['role'],
+            'lan': str(real), 'virtual': str(virtual)}
+
+
 def inspect(root=Path('/'), desired=None, command=run, available=shutil.which, report=False):
     desired = desired or {}
     def path(name):
@@ -317,6 +360,8 @@ def inspect(root=Path('/'), desired=None, command=run, available=shutil.which, r
 
     own_rules = path('/etc/nftables.d/openmain-binat.nft')
     if own_rules.exists() or own_rules.is_symlink() or 'openmain_binat' in tables:
+        if owned and not state and not own_rules.is_symlink() and own_rules.is_file():
+            state = recover_interrupted_binat(root, desired, progress, profile, lan_interface, networks)
         if not owned or not state.get('lan') or not state.get('virtual') or own_rules.is_symlink() or not own_rules.is_file():
             raise Rejected('Unowned/incomplete BINAT state')
         text = own_rules.read_text()

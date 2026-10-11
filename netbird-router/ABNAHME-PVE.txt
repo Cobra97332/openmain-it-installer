@@ -70,6 +70,22 @@ Offline-Regressionen sind erfolgreich; reale Laborpruefungen stehen noch aus.
     Zwei eindeutige Hosts ueber diese Gruppe, richtige Agent-IP/10050, passives
     Linux-Template und aktiver Heartbeat. Echte aktuelle Werte in Latest data
     fuer BEIDE Check-Arten; reine Dienst-/API-Erreichbarkeit reicht nicht.
+[ ] Zabbix-Zugriffskontrolle: Router automatisch zu Zabbix-Kunden-Proxies
+    hinzufuegen und ueber erneutes NetBird-GET bestaetigen, bevor Registrierung
+    beginnt. Bestehende Zabbix Proxy to Server prueft den echten Serverpeer auf
+    TCP/10051. API-DNS/Reverse-Proxy und HTTPS-Forward-Proxy separat testen:
+    API kann ein anderer Peer als der Server sein; dessen tatsaechlicher Weg
+    muss freigegeben sein (direkt HTTPS/443, beim CONNECT-Proxy dessen TCP-Port).
+    Keine Policy- oder Zusatzregel-Ueberschreibung. CA-validierter HTTPS-Aufruf
+    von apiinfo.version muss aus JEDEM Router erfolgreich Zabbix 7.4 bestaetigen.
+    Uebernahme im Labor kurz verzoegern: automatisch ohne manuelle Gruppen-
+    aenderung fortsetzen. Zugriff wird maximal 12-mal mit 5 s Pause geprueft
+    (Probe-/API-Timeouts kommen hinzu). Port 443 dauerhaft sperren: Fehler statt
+    Registrierungs-/Erfolgsmarker; Peer, Gruppen, PSK und Wiederaufnahmedaten
+    bleiben erhalten. Nur Rechte zum Serverpeer reichen bei getrenntem API-
+    Ziel nicht. Nach Freigabe denselben Auftrag wiederholen; keine Duplikate.
+    Mitgliedschaft entfernen: Registrierung und spaetere Timer-API-Aenderungen
+    sicher ablehnen. PSKs/Status nur lokal per cmp -s vergleichen.
 [ ] TLS: Proxy->Server und Agent<->Proxy funktionieren mit PSK. Eine falsche
     Wegwerf-PSK bzw. unverschluesselte Verbindung in einem separaten Testclient
     wird abgewiesen. Keine PSK-/Token-Ausgabe. Im Laborgast vor Wiederholung eine

@@ -100,6 +100,66 @@ PEER_ID=new-peer
                            "sources": ["monitor"], "destinations": [{"id": "metrics"}],
                            "ports": ["9191", "9192"]}, {"name": "keep-extra", "enabled": False}]}
 
+    def test_zabbix_source_membership_is_confirmed_before_policy_and_repeat_is_noop(self):
+        source=dict(id='source',name='Zabbix-Kunden-Proxies',peers=['old-peer'],peers_count=1,
+                    resources=[dict(id='keep-resource',type='network')],resources_count=1)
+        server=dict(id='server',name='Zabbix-Server',peers=['server-peer'],peers_count=1,
+                    resources=None,resources_count=0)
+        policy=dict(self.policy(),name='Zabbix Proxy to Server')
+        policy['rules'][0].update(sources=['source'],destinations=[dict(id='server')],ports=['10051'])
+        data=dict(groups=[source,server],peers=[dict(id='server-peer',ip='100.64.0.20')],policies=[policy])
+        state=self.root/'access.json';state.write_text(json.dumps(data))
+        self.executable('mock-api', r'''#!/usr/bin/env python3
+import json,os,sys
+from pathlib import Path
+root=Path(os.environ['MOCK_ROOT']);state=root/'access.json'
+m,path=sys.argv[1:3];s=json.loads(state.read_text())
+with (root/'access-calls').open('a') as log:log.write(m+' '+path+'\n')
+if path=='/groups':r=s['groups']
+elif path=='/peers':r=s['peers']
+elif path=='/policies':r=s['policies']
+else:
+ r=next(g for g in s['groups'] if g['id']==path.rsplit('/',1)[1])
+ if m=='PUT':
+  p=json.loads(sys.argv[3]);r.update(p,peers_count=len(p['peers']),resources_count=len(p['resources']))
+  state.write_text(json.dumps(s))
+print(json.dumps(r))
+''')
+        helper=self.root/'netbird-router/common/zabbix_access.py';helper.parent.mkdir(parents=True)
+        helper.write_text('''import json,os
+from pathlib import Path
+s=json.loads((Path(os.environ['MOCK_ROOT'])/'access.json').read_text())
+assert 'new-peer' in s['groups'][0]['peers']
+''')
+        body=functions('router-install.sh',['die','valid_group','ensure_group','ensure_peer_in_group',
+                                           'ensure_metrics_policy','setup_zabbix_access'])
+        r=self.bash('set -Eeuo pipefail\n'+body+'''
+api(){ mock-api "$@"; }
+log(){ :; }
+ZABBIX_ENABLED=1
+ZABBIX_SERVER=100.64.0.20
+ZABBIX_PROXY_GROUP=Zabbix-Kunden-Proxies
+ZABBIX_SERVER_GROUP=Zabbix-Server
+ZABBIX_POLICY_NAME='Zabbix Proxy to Server'
+MGMT_URL=https://netbird.invalid
+API_TOKEN=$NB_API_TOKEN
+PEER_ID=new-peer
+SCRIPT_DIR=$MOCK_ROOT
+setup_zabbix_access
+[[ "$PEER_ID" == new-peer ]]
+setup_zabbix_access
+''')
+        self.assertEqual(r.returncode,0,r.stderr);self.clean_output(r)
+        journal=(self.root/'access-calls').read_text().splitlines()
+        self.assertEqual([x for x in journal if x.startswith(('PUT','POST'))],['PUT /groups/source'])
+        update=journal.index('PUT /groups/source');policy_read=journal.index('GET /policies')
+        self.assertEqual(journal[update+1],'GET /groups/source')
+        self.assertLess(update+1,policy_read)
+        after=json.loads(state.read_text())
+        self.assertEqual(after['groups'][0]['peers'],['new-peer','old-peer'])
+        self.assertEqual(after['groups'][0]['resources'],source['resources'])
+        self.assertEqual(after['policies'],data['policies'])
+
     def test_existing_policy_and_posture_untouched(self):
         result = self.run_function("ensure_metrics_policy", [self.policy()])
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -372,6 +432,10 @@ connect_netbird
 class ZabbixAPITests(Sandbox):
     def setUp(self):
         super().setUp()
+        bundle=self.root/'bundle';helper=bundle/'netbird-router/common/zabbix_access.py'
+        helper.parent.mkdir(parents=True)
+        helper.write_text('import os,sys\nsys.exit(int(os.environ.get("MOCK_ACCESS_DENIED","0")))\n')
+        self.env['NB_BUNDLE_DIR']=str(bundle)
         self.psk = self.root / "key.psk"
         self.psk.write_text(PSK)
         self.pending = self.root / "psk.pending"
@@ -417,6 +481,35 @@ print(json.dumps({'jsonrpc':'2.0','id':1,'result':result}))
                      proxy_groupid='g', local_address='192.0.2.10', local_port='10051')
         proxy.update(kwargs)
         self.state.write_text(json.dumps({'proxies':[proxy], 'groups':[{'proxy_groupid':'g','name':'customer'}], 'writes':[]}))
+
+    def test_access_denied_preserves_psk_pending_and_status_without_any_api_call(self):
+        self.existing();self.pending.write_text('pending');self.psk.chmod(0o600)
+        status=self.root/'progress.json';status.write_text('{"phase":"netbird"}');status.chmod(0o600)
+        files=[self.psk,self.pending,status,self.state]
+        before=[(p.read_bytes(),p.stat().st_mode,p.stat().st_ino) for p in files]
+        self.env['MOCK_ACCESS_DENIED']='1'
+        self.executable('curl', '#!/bin/sh\ntouch "$MOCK_ROOT/unexpected-api"\nexit 98\n')
+        r=self.run_api()
+        self.assertNotEqual(r.returncode,0);self.assertIn('Freigabe nicht bestaetigt',r.stderr)
+        self.assertFalse((self.root/'unexpected-api').exists())
+        self.assertEqual([(p.read_bytes(),p.stat().st_mode,p.stat().st_ino) for p in files],before)
+
+    def test_access_revoked_after_reads_blocks_proxy_update(self):
+        self.existing()
+        state=json.loads(self.state.read_text());state['groups'][0].update(min_online='1',failover_delay='1m')
+        self.state.write_text(json.dumps(state))
+        helper=Path(self.env['NB_BUNDLE_DIR'])/'netbird-router/common/zabbix_access.py'
+        helper.write_text('''import os,sys
+from pathlib import Path
+marker=Path(os.environ['MOCK_ROOT'])/'gate-count'
+n=int(marker.read_text())+1 if marker.exists() else 1
+marker.write_text(str(n))
+sys.exit(0 if n==1 else 1)
+''')
+        r=self.run_api();self.assertNotEqual(r.returncode,0)
+        self.assertEqual(json.loads(self.state.read_text())['writes'],[])
+        self.assertEqual((self.root/'gate-count').read_text(),'2')
+        self.assertEqual(self.psk.read_text(),PSK)
 
     def test_create_then_repeat_preserves_tls(self):
         self.pending.touch()

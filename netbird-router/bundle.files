@@ -11,6 +11,7 @@ netbird-router/common/preflight.py
 netbird-router/common/prepare_config.py
 netbird-router/common/pristine.sh
 netbird-router/common/runtime.py
+netbird-router/common/zabbix_access.py
 netbird-router/common/zabbix_sync.py
 netbird-router/install.sh
 netbird-router/pve/install-dhcp-recovery.sh

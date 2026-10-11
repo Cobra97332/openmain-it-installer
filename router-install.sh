@@ -349,6 +349,7 @@ setup_zabbix_access(){
     || die "Zabbix-Server muss eine NetBird-IPv4 sein: $ZABBIX_SERVER"
 
   ZABBIX_PROXY_GROUP_ID=$(ensure_group "$ZABBIX_PROXY_GROUP")
+  ensure_peer_in_group "$ZABBIX_PROXY_GROUP_ID"
   ZABBIX_SERVER_GROUP_ID=$(ensure_group "$ZABBIX_SERVER_GROUP")
 
   # Identify destination using its current overlay IP, never hostname.
@@ -365,13 +366,16 @@ setup_zabbix_access(){
   METRICS_POLICY_NAME="$ZABBIX_POLICY_NAME" MONITORING_GROUP_ID="$ZABBIX_PROXY_GROUP_ID" \
     METRICS_GROUP_ID="$ZABBIX_SERVER_GROUP_ID" METRICS_PORT=10051 METRICS_DETAIL_PORT=10051 ensure_metrics_policy
 
-  ensure_peer_in_group "$ZABBIX_PROXY_GROUP_ID"
   saved_peer_id="$PEER_ID"
   PEER_ID="$server_id"
   ensure_peer_in_group "$ZABBIX_SERVER_GROUP_ID"
   PEER_ID="$saved_peer_id"
 
-  log "Bestehende Zabbix-Policy verifiziert: $ZABBIX_POLICY_NAME (TCP/10051)"
+  NB_MANAGEMENT_URL="$MGMT_URL" NB_API_TOKEN="$API_TOKEN" NB_ZABBIX_SERVER="$ZABBIX_SERVER" \
+    NB_ZABBIX_PROXY_GROUP="$ZABBIX_PROXY_GROUP" NB_ZABBIX_POLICY_NAME="$ZABBIX_POLICY_NAME" \
+    python3 "$SCRIPT_DIR/netbird-router/common/zabbix_access.py" \
+    || die "Zabbix-Zugriff nicht freigegeben: Gruppenmitgliedschaft, TCP/10051 und HTTPS/443 pruefen. Bestand bleibt erhalten; Auftrag erneut starten."
+  log "Zabbix-Zugriff bestaetigt: Mitgliedschaft, Server TCP/10051 und tatsaechlicher HTTPS-API-Zugriffsweg"
   log "Gruppen: Router=$ZABBIX_PROXY_GROUP, Server=$ZABBIX_SERVER_GROUP"
 }
 
@@ -569,6 +573,7 @@ setup_zabbix(){
       --arg host "router-${COMPANY_GROUP_ID}-${ROLE}" '{customer:$customer,proxy:$proxy,host:$host}' > "${STATE_FILE%/*}/zabbix-intent.tmp"
     mv "${STATE_FILE%/*}/zabbix-intent.tmp" "${STATE_FILE%/*}/zabbix-intent.json"
   fi
+  NB_MANAGEMENT_URL="$MGMT_URL" NB_API_TOKEN="$API_TOKEN" NB_ZABBIX_SERVER="$ZABBIX_SERVER" NB_ZABBIX_PROXY_GROUP="$ZABBIX_PROXY_GROUP" NB_ZABBIX_POLICY_NAME="$ZABBIX_POLICY_NAME" \
   NB_LAN_INTERFACE="$LAN_IF" NB_BUNDLE_DIR="$SCRIPT_DIR" NB_ZABBIX_REGISTER_HOST=1 NB_ZABBIX_PROXY_NAME="proxy-${COMPANY_GROUP_ID}-${ROLE}" NB_ZABBIX_AGENT_HOST="router-${COMPANY_GROUP_ID}-${ROLE}" bash "$helper" \
     --customer "$CUSTOMER" --role "$ROLE" \
     --server "$ZABBIX_SERVER" --hostname "$HOSTNAME_LOCAL"

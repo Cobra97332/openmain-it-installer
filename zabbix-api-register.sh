@@ -26,8 +26,16 @@ GROUP_NAME="${NB_ZABBIX_PROXYGROUP_NAME:-$CUSTOMER}"
 python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$LAN_IP" >/dev/null 2>&1 \
   || { echo 'Ungueltige LAN-Adresse.' >&2; exit 1; }
 
+ACCESS_HELPER="${NB_BUNDLE_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}/netbird-router/common/zabbix_access.py"
+[[ -f "$ACCESS_HELPER" ]] || ACCESS_HELPER=/usr/local/lib/openmain-router/zabbix_access.py
+[[ -f "$ACCESS_HELPER" ]] || { echo 'Zabbix-Zugriffspruefer fehlt; vollstaendiges Installer-Bundle erforderlich.' >&2; exit 1; }
+python3 "$ACCESS_HELPER" || { echo 'Keine Zabbix-Registrierung: NetBird-/HTTPS-Freigabe nicht bestaetigt. PSK und Bestand bleiben erhalten.' >&2; exit 1; }
+
 api(){
   local method="$1" params="$2" payload
+  if [[ "$method" == *.create || "$method" == *.update ]]; then
+    python3 "$ACCESS_HELPER" || { echo 'Zabbix-Aenderung abgebrochen: NetBird-/HTTPS-Freigabe nicht bestaetigt; Bestand bleibt erhalten.' >&2; return 1; }
+  fi
   payload=$(jq -nc --arg method "$method" --argjson params "$params" '{jsonrpc:"2.0",method:$method,params:$params,id:1}')
   # A server/proxy error can echo request secrets. Never relay raw diagnostics.
   curl -fsS --connect-timeout 8 --max-time 30 "$API_URL" \

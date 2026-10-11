@@ -184,7 +184,8 @@ class NetworkTests(unittest.TestCase):
 
 class ZabbixHostTests(unittest.TestCase):
     def setUp(self):
-        self.c={'customer':'Example','host':'router-example-primary','proxy':'proxy-example-primary',
+        access=patch.object(zabbix_sync,'require_access');access.start();self.addCleanup(access.stop)
+        self.c={'url':'https://api.invalid','customer':'Example','host':'router-example-primary','proxy':'proxy-example-primary',
                 'identity':'test-only-identity','psk_file':'/tmp/mock.psk','network':'192.168.50.0/24'}
         self.proxy={'proxyid':'p1','proxy_groupid':'g1','local_address':'192.168.50.10',
                     'local_port':'10051','tls_psk_identity':self.c['identity']}

@@ -8,15 +8,18 @@ import subprocess
 import sys
 import urllib.request
 from runtime import Invalid, atomic, lan
+from zabbix_access import context, require_access
 
 
 class API:
-    def __init__(self, url, token):
+    def __init__(self, url, token, access=None):
         if not url.startswith('https://'):
             raise Invalid('HTTPS required')
-        self.url, self.token = url, token
+        self.url, self.token, self.access = url, token, access
 
     def __call__(self, method, params):
+        if method.endswith(('.create', '.update')):
+            require_access(self.url, self.access)
         data = json.dumps({'jsonrpc': '2.0', 'method': method, 'params': params, 'id': 1}).encode()
         request = urllib.request.Request(self.url, data=data, headers={
             'Content-Type': 'application/json-rpc', 'Authorization': 'Bearer ' + self.token})
@@ -42,6 +45,7 @@ def ensure_group(api, name):
 
 
 def register_host(api, c, address, psk):
+    require_access(c['url'], c.get('access'))
     proxy = unique(api('proxy.get', {'output': 'extend', 'filter': {'name': [c['proxy']]}}))
     if not proxy or proxy.get('proxy_groupid', '0') == '0' or proxy.get('tls_psk_identity') != c['identity']:
         raise Invalid('Proxy group/TLS conflict')
@@ -150,7 +154,7 @@ def merge_agent(old, c, addresses):
 
 
 def sync(c, api=None):
-    api = api or API(c['url'], c['token'])
+    api = api or API(c['url'], c['token'], c.get('access'))
     addresses = json.loads(subprocess.check_output(['ip', '-j', '-4', 'addr', 'show']))
     routes = json.loads(subprocess.check_output(['ip', '-j', '-4', 'route', 'show', 'table', 'main']))
     detected = lan(routes, addresses, c['interface'])
@@ -192,6 +196,7 @@ def main():
             'customer', 'host', 'proxy', 'identity', 'psk_file', 'interface', 'network', 'agent_config')}
         c.update(url=os.environ.get('NB_ZABBIX_API_URL', 'https://zabbix.openmain-it.de/api_jsonrpc.php'),
                  token=os.environ['NB_ZABBIX_API_TOKEN'])
+        c['access'] = context()
         c['initial_agent'] = os.environ.get('SYNC_INITIAL_AGENT') == '1'
         sync(c)
         c.pop('initial_agent')
@@ -208,5 +213,5 @@ if __name__ == '__main__':
     try:
         main()
     except Exception:
-        print('Zabbix-Abgleich fehlgeschlagen: API-, LAN- oder Bestandskonflikt; Details zum Schutz der Secrets unterdrueckt.', file=sys.stderr)
+        print('Zabbix-Abgleich fehlgeschlagen: NetBird-/HTTPS-Zugriff, API-, LAN- oder Bestandskonflikt; Details zum Schutz der Secrets unterdrueckt.', file=sys.stderr)
         sys.exit(1)

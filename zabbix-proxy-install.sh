@@ -266,7 +266,7 @@ if [[ "${NB_ZABBIX_REGISTER_HOST:-0}" == 1 ]]; then
   export SYNC_IDENTITY="$PSK_IDENTITY" SYNC_PSK_FILE="$PSK_FILE" SYNC_INTERFACE="$LAN_IF" SYNC_NETWORK="$LAN_NETWORK" SYNC_AGENT_CONFIG="$AGENT_CONF"
   SYNC_INITIAL_AGENT=$(( 1 - AGENT_EXISTED )) python3 "$NB_BUNDLE_DIR/netbird-router/common/zabbix_sync.py" install || die "Host-/Agent-Abgleich nicht bestaetigt."
   install -d -m 0755 /usr/local/lib/openmain-router
-  install -m 0644 "$NB_BUNDLE_DIR/netbird-router/common/"{runtime,zabbix_sync}.py /usr/local/lib/openmain-router/
+  install -m 0644 "$NB_BUNDLE_DIR/netbird-router/common/"{runtime,preflight,zabbix_access,zabbix_sync}.py /usr/local/lib/openmain-router/
   cat > /etc/systemd/system/openmain-zabbix-sync.service <<'UNIT'
 [Unit]
 Description=Update customer proxy LAN addresses and agent failover members

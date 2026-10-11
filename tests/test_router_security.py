@@ -750,6 +750,11 @@ Path(sys.argv[sys.argv.index('-o')+1]).write_text('fake package')
         self.assertRegex(generated, r'^[0-9a-f]{64}\n$')
         self.assertNotIn(generated.strip(), result.stdout + result.stderr)
         self.assertEqual(self.key.stat().st_mode & 0o777, 0o600)
+        agent=self.agent.read_text()
+        self.assertIn('TLSConnect=psk\nTLSAccept=psk\n',agent)
+        self.assertIn('TLSPSKIdentity=',agent)
+        self.assertIn('TLSPSKFile='+str(self.key)+'\n',agent)
+        self.assertNotIn(generated.strip(),agent)
         self.assertTrue((self.fs / 'var/lib/netbird-kundenrouter/zabbix-psk.pending').exists())
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -807,6 +812,18 @@ exit 0
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn('restart zabbix', (self.root / 'commands').read_text())
         self.assertEqual(self.key.read_text(), PSK+'\n')
+
+    def test_fresh_api_abort_keeps_tls_agent_and_reuses_key_on_retry(self):
+        helper=self.fs/'usr/local/sbin/zabbix-api-register'
+        helper.write_text('#!/bin/sh\nexit 1\n')
+        result=self.run_installer()
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('TLSConnect=psk\nTLSAccept=psk\n',self.agent.read_text())
+        self.assertNotIn('systemctl',(self.root/'commands').read_text())
+        before={p:p.read_bytes() for p in (self.agent,self.proxy,self.key)}
+        helper.write_text('#!/bin/sh\nexit 0\n')
+        self.assertEqual(self.run_installer().returncode,0)
+        self.assertEqual({p:p.read_bytes() for p in before},before)
 
 
 class PrometheusSyncTests(unittest.TestCase):

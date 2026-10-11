@@ -169,6 +169,18 @@ write_nft
         before=self.snapshot()
         with self.assertRaises((admission.Rejected,ValueError,OSError)):self.inspect()
         self.assertEqual(self.snapshot(),before)
+
+    def test_own_incomplete_agent_is_readonly_and_manual_changes_are_rejected(self):
+        self.zabbix()
+        (self.fs/'etc/openmain-router/zabbix-sync.json').unlink()
+        intent=self.put('/var/lib/netbird-kundenrouter/zabbix-intent.json',dict(customer='Synthetic',proxy='proxy-test-primary',host='router-test-primary'))
+        intent.parent.chmod(0o700)
+        agent=self.put('/etc/zabbix/zabbix_agent2.conf',admission.incomplete_agent_config('router-test-primary'))
+        before=self.snapshot();self.inspect();self.assertEqual(before,self.snapshot())
+        original=agent.read_text()
+        for changed in (original+'Timeout=15\n',original+'TLSConnect=psk\n',original.replace('127.0.0.1:10051','192.0.2.10:10051')):
+            agent.write_text(changed);self.rejected()
+        agent.write_text(original);intent.chmod(0o644);self.rejected()
     def test_pristine_and_supported_connected_router_are_read_only(self):
         before=self.snapshot();self.inspect();self.assertEqual(before,self.snapshot())
         self.zabbix()

@@ -255,6 +255,122 @@ class ZabbixHostTests(unittest.TestCase):
             with self.assertRaises(runtime.Invalid) as error:zabbix_sync.API('https://api.invalid','test-only-secret')('host.get',{})
             self.assertNotIn('test-only-secret',str(error.exception))
 
+    def agent_resume_fixture(self):
+        root = Path(self.c['receipt_file']).parent
+        self.c.update(psk_file=str(root/'proxy.psk'), agent_config=str(root/'agent.conf'),
+                      sync_file=str(root/'sync.json'), interface='eth0')
+        runtime.atomic(self.c['psk_file'], 'ab'*32+'\n')
+        runtime.atomic(root/'zabbix-intent.json', json.dumps({k:self.c[k] for k in ('customer','proxy','host')}))
+        runtime.atomic(self.c['agent_config'], zabbix_sync.incomplete_agent_config(self.c['host']), 0o644)
+        def network_read(args):
+            if args == ['ip','-j','-4','addr','show']:
+                return json.dumps([dict(ifname='eth0',addr_info=[dict(family='inet',scope='global',local='192.168.50.10',prefixlen=24)])]).encode()
+            self.assertEqual(args, ['ip','-j','-4','route','show','table','main'])
+            return b'[{"dst":"default","dev":"eth0"}]'
+        read=patch.object(zabbix_sync.subprocess,'check_output',side_effect=network_read)
+        read.start();self.addCleanup(read.stop)
+        run=patch.object(zabbix_sync.subprocess,'run')
+        self.run=run.start();self.addCleanup(run.stop);self.run.return_value.returncode=0
+        return root
+
+    def test_resume_after_proxy_registration_before_host_creation_is_idempotent(self):
+        root=self.agent_resume_fixture()
+        agent=Path(self.c['agent_config']);original=agent.read_bytes()
+        key=Path(self.c['psk_file']);key_before=(key.read_bytes(),key.stat().st_ino,key.stat().st_mode)
+        proxy_before=copy.deepcopy(zabbix_registration.TLSStore(self.c['receipt_file'],self.c,'ab'*32).entry('proxy'))
+        created={};fail=True
+        def api(method,params):
+            nonlocal fail
+            if method=='template.get' and params['filter']['host']==['OpenMain router active']:
+                return [{'templateid':'t2'}] if 'template.create' in created else []
+            if method=='item.get':return [{'itemid':'item1','type':'7','value_type':'3'}] if 'item.create' in created else []
+            if method=='templategroup.get':return [{'groupid':'tg1'}]
+            if method=='hostgroup.get':return [{'groupid':'hg1'}] if 'hostgroup.create' in created else []
+            if method in ('template.create','item.create','hostgroup.create'):
+                self.assertNotIn(method,created);created[method]=copy.deepcopy(params)
+                field,oid={'template.create':('templateids','t2'),'item.create':('itemids','item1'),
+                           'hostgroup.create':('groupids','hg1')}[method]
+                return {field:[oid]}
+            if method=='host.create' and fail:
+                fail=False
+                raise zabbix_registration.RPCError('Zabbix-API JSON-RPC -32500: simulierter Abbruch.')
+            return self.api(method,params)
+        with self.assertRaises(zabbix_registration.RPCError):zabbix_sync.sync(self.c,api)
+        self.assertEqual(agent.read_bytes(),original);self.assertIsNone(self.host);self.run.assert_not_called()
+        self.assertEqual(zabbix_registration.TLSStore(self.c['receipt_file'],self.c,'ab'*32).entry('proxy'),proxy_before)
+        zabbix_sync.sync(self.c,api)
+        completed=agent.read_bytes()
+        self.assertIn(b'TLSConnect=psk\nTLSAccept=psk\n',completed)
+        self.assertEqual(self.run.call_count,2)
+        store=zabbix_registration.TLSStore(self.c['receipt_file'],self.c,'ab'*32)
+        self.assertEqual(store.entry('host')['id'],'301');self.assertEqual(store.entry('proxy'),proxy_before)
+        self.assertEqual((key.read_bytes(),key.stat().st_ino,key.stat().st_mode),key_before)
+        call_count=len(self.calls);self.run.reset_mock()
+        zabbix_sync.sync(self.c,api)
+        self.assertEqual(agent.read_bytes(),completed);self.run.assert_not_called()
+        self.assertFalse(any(m.endswith(('.create','.update')) for m,p in self.calls[call_count:]))
+        self.assertEqual(len(created),3)
+        self.assertEqual(store.path.stat().st_mode & 0o777,0o600)
+
+    def test_incomplete_agent_requires_unchanged_intent_and_proxy_receipt(self):
+        root=self.agent_resume_fixture()
+        agent=Path(self.c['agent_config']);original=agent.read_text()
+        intent=root/'zabbix-intent.json';intent_text=intent.read_text()
+        receipt=Path(self.c['receipt_file']);receipt_text=receipt.read_text()
+        def rejected(code):
+            before=agent.read_bytes();self.calls.clear();self.run.reset_mock()
+            with self.assertRaisesRegex(zabbix_sync.SyncError,code) as error:zabbix_sync.sync(self.c,self.api)
+            self.assertNotIn('ab'*32,str(error.exception));self.assertNotIn(self.c['identity'],str(error.exception))
+            self.assertEqual(agent.read_bytes(),before);self.assertEqual(self.calls,[]);self.run.assert_not_called()
+        for changed in ('',original+'Timeout=15\n',original.replace('Server=127.0.0.1','Server=192.168.50.10'),
+                        original+'TLSConnect=psk\n',original+'TLSConnect=cert\n',original.replace('# OpenMain','# foreign')):
+            agent.write_text(changed);rejected('AGENT_INITIAL_CONFIG_MODIFIED|AGENT_TLS_OR_HOSTNAME_CONFLICT|AGENT_FILE_UNMANAGED')
+        agent.write_text(original)
+        intent.unlink();rejected('AGENT_INITIAL_INTENT_UNVERIFIED')
+        runtime.atomic(intent,intent_text,0o644);rejected('AGENT_INITIAL_INTENT_UNVERIFIED')
+        runtime.atomic(intent,json.dumps(dict(customer='Other',proxy=self.c['proxy'],host=self.c['host'])));rejected('AGENT_INITIAL_INTENT_UNVERIFIED')
+        runtime.atomic(intent,intent_text.replace('{','{"customer":"Other",',1));rejected('AGENT_INITIAL_INTENT_UNVERIFIED')
+        runtime.atomic(intent,intent_text)
+        receipt.unlink();rejected('AGENT_INITIAL_PROXY_UNCONFIRMED')
+        data=json.loads(receipt_text);data['objects']['proxy']['id']=None
+        runtime.atomic(receipt,json.dumps(data));rejected('AGENT_INITIAL_PROXY_UNCONFIRMED')
+        data=json.loads(receipt_text);data['binding']['identity']='other-identity'
+        runtime.atomic(receipt,json.dumps(data));rejected('TLS_RECEIPT_INVALID')
+        runtime.atomic(receipt,receipt_text)
+        runtime.atomic(self.c['sync_file'],'{}');rejected('AGENT_INITIAL_ALREADY_COMPLETED')
+        Path(self.c['sync_file']).unlink()
+        store=zabbix_registration.TLSStore(self.c['receipt_file'],self.c,'ab'*32)
+        store.prepare('host','other-host','201')
+        runtime.atomic(receipt,json.dumps(store.data));rejected('AGENT_INITIAL_HOST_CONFLICT')
+
+    def test_confirmed_host_with_failed_agent_validation_can_resume_without_duplicates(self):
+        self.agent_resume_fixture();agent=Path(self.c['agent_config']);before=agent.read_bytes()
+        self.run.return_value.returncode=1
+        with self.assertRaisesRegex(zabbix_sync.SyncError,'AGENT_VALIDATION_FAILED'):zabbix_sync.sync(self.c,self.api)
+        self.assertEqual(agent.read_bytes(),before)
+        self.assertFalse(Path(self.c['sync_file']).exists())
+        self.assertEqual(zabbix_registration.TLSStore(self.c['receipt_file'],self.c,'ab'*32).entry('host')['id'],'301')
+        call_count=len(self.calls);self.run.reset_mock();self.run.return_value.returncode=0
+        zabbix_sync.sync(self.c,self.api)
+        self.assertIn('TLSAccept=psk',agent.read_text())
+        self.assertFalse(any(m.endswith(('.create','.update')) for m,p in self.calls[call_count:]))
+
+    def test_resume_revalidates_remote_proxy_before_agent_write_or_service_start(self):
+        self.agent_resume_fixture();agent=Path(self.c['agent_config']);before=agent.read_bytes()
+        self.proxy['description']='foreign marker'
+        with self.assertRaisesRegex(zabbix_sync.SyncError,'PROXY_TLS_RECEIPT_UNVERIFIED'):
+            zabbix_sync.sync(self.c,self.api)
+        self.assertEqual(agent.read_bytes(),before);self.run.assert_not_called()
+        self.assertFalse(any(m.endswith(('.create','.update')) for m,p in self.calls))
+
+    def test_agent_symlinks_and_shared_files_are_rejected_without_api_writes(self):
+        root=self.agent_resume_fixture();agent=Path(self.c['agent_config']);before=agent.read_bytes()
+        os.link(agent,root/'shared')
+        with self.assertRaisesRegex(zabbix_sync.SyncError,'AGENT_FILE_UNSAFE'):zabbix_sync.sync(self.c,self.api)
+        agent.unlink();agent.symlink_to(root/'shared')
+        with self.assertRaisesRegex(zabbix_sync.SyncError,'AGENT_FILE_UNSAFE'):zabbix_sync.sync(self.c,self.api)
+        self.assertEqual((root/'shared').read_bytes(),before);self.assertEqual(self.calls,[]);self.run.assert_not_called()
+
 
 class BundleTests(unittest.TestCase):
     def test_iso_bundle_is_explicit_and_contains_all_shared_dependencies(self):

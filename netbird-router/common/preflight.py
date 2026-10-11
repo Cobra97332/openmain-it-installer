@@ -23,6 +23,15 @@ class Rejected(ValueError):
     pass
 
 
+def incomplete_agent_config(host):
+    """Exact legacy first-install skeleton; never accept arbitrary TLS-less files."""
+    return '\n'.join([
+        '# OpenMain managed agent configuration v1', 'PidFile=/run/zabbix/zabbix_agent2.pid',
+        'LogFile=/var/log/zabbix/zabbix_agent2.log', 'LogFileSize=0',
+        'Server=127.0.0.1', 'ServerActive=127.0.0.1:10051', 'Hostname=' + host,
+        'Include=/etc/zabbix/zabbix_agent2.d/*.conf', 'ControlSocket=/tmp/agent.sock', ''])
+
+
 def run(*args):
     try:
         return subprocess.check_output(args, stderr=subprocess.DEVNULL, text=True, timeout=15)
@@ -364,12 +373,23 @@ def inspect(root=Path('/'), desired=None, command=run, available=shutil.which, r
             raise Rejected('Changed TLS ownership')
         if not agent.is_file() or agent.is_symlink() or not agent.read_text().startswith('# OpenMain managed agent configuration v1\n'):
             raise Rejected('Unmanaged agent')
+        info = agent.stat()
+        if info.st_uid != PROFILE_UID or info.st_nlink != 1 or info.st_mode & 0o022:
+            raise Rejected('Unsafe agent configuration')
         av = settings(agent)
         if single(av, 'Hostname') != owner['host']:
             raise Rejected('Agent hostname conflict')
         # A core-owned interrupted initial install may not have added TLS yet.
         initial = intent_path.exists() and not sync_path.exists()
-        for k, expected in {'TLSConnect':'psk', 'TLSAccept':'psk', 'TLSPSKIdentity':identity, 'TLSPSKFile':single(v, 'TLSPSKFile')}.items():
+        tls_fields = {'TLSConnect':'psk', 'TLSAccept':'psk', 'TLSPSKIdentity':identity, 'TLSPSKFile':single(v, 'TLSPSKFile')}
+        if any(k not in av for k in tls_fields):
+            info = intent_path.parent.stat()
+            if (not initial or any(p.is_symlink() for p in (intent_path.parent, *intent_path.parent.parents))
+                or info.st_uid != PROFILE_UID or stat.S_IMODE(info.st_mode) != 0o700
+                or profile_json(intent_path) != {k: owner[k] for k in ('customer', 'proxy', 'host')}
+                or agent.read_text() != incomplete_agent_config(owner['host'])):
+                raise Rejected('Incomplete agent differs from owned initial configuration')
+        for k, expected in tls_fields.items():
             if not (initial and k not in av) and single(av, k) != expected:
                 raise Rejected('Agent TLS conflict')
         for binary, filename in [('zabbix_proxy', proxy), ('zabbix_agent2', agent)]:

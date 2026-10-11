@@ -193,6 +193,16 @@ Offline-Regressionen sind erfolgreich; reale Laborpruefungen stehen noch aus.
   sein. Keine automatische Bauer-Migration oder automatische Wiederverbindung.
 
 6. Merge-Gate und Nachweis
+Zusaetzlicher Wiederaufnahmetest (nur isoliertes Labor): Nach bestaetigter
+Proxy-Registrierung vor host.create abbrechen. Derselbe Auftrag muss die eigene
+unveraenderte alte Agent-Initialdatei anhand rootgeschuetzter Intent-/TLS-Daten
+erkennen, TLS ergaenzen und genau einen Host/eine Hostgruppe anlegen. PSK/Peer
+bleiben identisch; dritter Lauf erzeugt nichts doppelt. Eine veraenderte
+TLS-lose Agent-Datei oder fehlender Nachweis muss ohne Agent-Schreibzugriff und
+Dienststart abbrechen, mit fester Fehlerklasse (AGENT_INITIAL_*, TLS_RECEIPT_*).
+Auch Abbruch nach Host-Bestaetigung vor erfolgreicher Agent-Validierung testen:
+kein erfolgreicher Installationsstatus; Wiederaufnahme verwendet denselben Host.
+
 MERGE ERST, WENN alle Pflichtfelder oben PASS sind, insbesondere Legacy-Guard,
 TUN/nftables im realen unprivilegierten LXC, echte TLS-Checks und beide Failover-
 Tests. Alle CI-Checks muessen fuer den getesteten finalen Code-Commit gruen sein.

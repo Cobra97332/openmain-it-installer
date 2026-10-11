@@ -268,6 +268,10 @@ LogFileSize=0
 Server=$AGENT_SERVER
 ServerActive=$AGENT_ACTIVE
 Hostname=${NB_ZABBIX_AGENT_HOST:-$HOSTNAME_LOCAL}
+TLSConnect=psk
+TLSAccept=psk
+TLSPSKIdentity=$PSK_IDENTITY
+TLSPSKFile=$PSK_FILE
 Include=/etc/zabbix/zabbix_agent2.d/*.conf
 ControlSocket=/tmp/agent.sock
 EOF
@@ -309,7 +313,7 @@ if [[ "${NB_ZABBIX_REGISTER_HOST:-0}" == 1 ]]; then
   LAN_NETWORK=$(python3 -c 'import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network)' "$LAN_NETWORK")
   export SYNC_CUSTOMER="$CUSTOMER" SYNC_HOST="${NB_ZABBIX_AGENT_HOST:-$HOSTNAME_LOCAL}" SYNC_PROXY="$PROXY_NAME"
   export SYNC_IDENTITY="$PSK_IDENTITY" SYNC_PSK_FILE="$PSK_FILE" SYNC_INTERFACE="$LAN_IF" SYNC_NETWORK="$LAN_NETWORK" SYNC_AGENT_CONFIG="$AGENT_CONF"
-  SYNC_INITIAL_AGENT=$(( 1 - AGENT_EXISTED )) python3 "$NB_BUNDLE_DIR/netbird-router/common/zabbix_sync.py" install || die "Host-/Agent-Abgleich nicht bestaetigt."
+  python3 "$NB_BUNDLE_DIR/netbird-router/common/zabbix_sync.py" install || die "Zabbix-Abgleich abgebrochen; Fehlerklasse siehe oben. Kein Dienststart."
   install -d -m 0755 /usr/local/lib/openmain-router
   install -m 0644 "$NB_BUNDLE_DIR/netbird-router/common/"{runtime,preflight,zabbix_access,zabbix_registration,zabbix_sync}.py /usr/local/lib/openmain-router/
   cat > /etc/systemd/system/openmain-zabbix-sync.service <<'UNIT'

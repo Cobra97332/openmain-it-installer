@@ -122,9 +122,10 @@ try:
     assert not transaction(observed,acl)
     run('python3','/src/netbird-router/common/binat_acl.py')  # idempotent
     lan.settimeout(3)
-    frame('overlay_peer','wt0','100.64.0.10','10.30.1.20',45678,12345)
+    # Use a new conntrack tuple, not the UDP flow dropped before ACL repair.
+    frame('overlay_peer','wt0','100.64.0.10','10.30.1.20',45679,12345)
     receive(lan,'192.168.50.1','192.168.50.20')
-    frame('lan_peer','enp1s0','192.168.50.20','192.168.50.1',12345,45678)
+    frame('lan_peer','enp1s0','192.168.50.20','192.168.50.1',12345,45679)
     receive(overlay,'10.30.1.20','100.64.0.10')
 finally:
     lan.close();overlay.close()

@@ -1,6 +1,9 @@
 """Exercise wrapper control flow with intercepted system commands and fake data."""
 import json
 import os
+import pty
+import select
+import time
 from pathlib import Path
 import subprocess
 import tempfile
@@ -235,8 +238,12 @@ class FirstbootTests(Sandbox):
         self.config=self.fs/'etc/openmain-router/firstboot.json';self.config.parent.mkdir(parents=True)
         checker=self.bundle/'netbird-router/common/preflight.py'
         checker.parent.mkdir(parents=True)
-        checker.write_text('import os,sys; sys.exit(int(os.environ.get("MOCK_REJECT_PREFLIGHT", "0")))')
+        checker.write_text('import json,os,sys; print(json.dumps({"path":os.environ.get("MOCK_PROFILE_PATH","")})); sys.exit(int(os.environ.get("MOCK_REJECT_PREFLIGHT", "0")))')
+        (checker.parent/'prepare_config.py').write_text((ROOT/'netbird-router/common/prepare_config.py').read_text())
+        (checker.parent/'runtime.py').write_text((ROOT/'netbird-router/common/runtime.py').read_text().replace('info.st_uid != 0','info.st_uid != os.geteuid()'))
+        self.env['NB_ROLE']='primary'
         self.config.write_text('{"NB_CUSTOMER_NAME":"Synthetic"}')
+        self.config.chmod(0o600)
         self.done=self.fs/'var/lib/openmain-router-firstboot.done'
         source=(ROOT/'firstboot-router.sh').read_text()
         for prefix in ('/var/','/etc/','/opt/'):
@@ -262,6 +269,58 @@ class FirstbootTests(Sandbox):
         self.assertFalse(self.config.exists());self.assertTrue(self.done.exists())
         self.assertEqual(self.run_wrapper().returncode,0)
         self.assertEqual((self.root/'core-calls').read_text().splitlines(),['run','run'])
+
+    def test_interactive_firstboot_hides_and_persists_all_credentials_for_retry(self):
+        for key in ('NB_API_TOKEN','NB_SETUP_KEY','NB_ZABBIX_API_TOKEN'):
+            self.env.pop(key,None)
+        self.env['MOCK_CORE_RESULT']='1'
+        master,slave=pty.openpty()
+        process=subprocess.Popen(['/bin/bash',str(self.script)],env=self.env,stdin=slave,stdout=slave,stderr=slave)
+        os.close(slave);output=b'';sent=0
+        answers=[(b'NetBird API-Token: ',b'synthetic-nb-api'),(b'NetBird Setup-Key: ',b'synthetic-setup'),
+                 (b'Zabbix API-Token: ',b'synthetic-zabbix-api')]
+        try:
+            deadline=time.monotonic()+10
+            while time.monotonic()<deadline:
+                if select.select([master],[],[],0.1)[0]:
+                    try:chunk=os.read(master,4096)
+                    except OSError:break
+                    if not chunk:break
+                    output+=chunk
+                    if sent<len(answers) and answers[sent][0] in output:
+                        os.write(master,answers[sent][1]+b'\n');sent+=1
+                if process.poll() is not None:break
+            self.assertEqual(process.wait(timeout=2),1)
+            self.assertEqual(sent,3)
+            for prompt,value in answers:
+                self.assertEqual(output.count(prompt),1)
+                self.assertNotIn(value,output)
+            saved=json.loads(self.config.read_text())
+            self.assertEqual(saved['NB_SETUP_KEY'],'synthetic-setup')
+            self.assertEqual(self.config.stat().st_mode & 0o777,0o600)
+            retry=self.run_wrapper()
+            self.assertEqual(retry.returncode,1,retry.stderr)
+            self.assertEqual(json.loads(self.config.read_text()),saved)
+            self.assertNotIn('API-Token:',retry.stderr);self.assertNotIn('Setup-Key:',retry.stderr)
+            self.assertFalse(self.done.exists())
+        finally:
+            os.close(master)
+            if process.poll() is None:process.kill();process.wait()
+
+    def test_existing_connected_profile_needs_no_setup_key_on_firstboot_retry(self):
+        self.env.pop('NB_SETUP_KEY');self.env['MOCK_PROFILE_PATH']='/var/lib/netbird/default.json'
+        self.env['MOCK_CORE_RESULT']='1'
+        result=self.run_wrapper();self.assertEqual(result.returncode,1,result.stderr)
+        self.assertNotIn('NB_SETUP_KEY',json.loads(self.config.read_text()))
+        self.assertTrue(self.config.exists());self.assertFalse(self.done.exists())
+
+    def test_dangling_input_symlink_is_admitted_to_checker_and_rejected_without_replacement(self):
+        self.config.unlink();self.config.symlink_to(self.root/'missing')
+        checker=self.bundle/'netbird-router/common/preflight.py'
+        checker.write_text((ROOT/'netbird-router/common/preflight.py').read_text())
+        result=self.run_wrapper();self.assertNotEqual(result.returncode,0)
+        self.assertTrue(self.config.is_symlink());self.assertFalse((self.root/'core-calls').exists())
+        self.assertFalse(self.done.exists())
 
 
 class FirewallTransactionTests(Sandbox):
@@ -294,6 +353,7 @@ class ISOBuilderTests(Sandbox):
 import json,os,sys
 from pathlib import Path
 a=sys.argv[1:];root=Path(os.environ['MOCK_ROOT'])
+if '-append_partition' in a and not a[a.index('-append_partition')+1].isdigit():sys.exit(5)
 if '-extract' in a:
  dest=Path(a[a.index('-extract')+2])
  for folder in ('.disk','isolinux','boot/grub','EFI/BOOT'):(dest/folder).mkdir(parents=True,exist_ok=True)

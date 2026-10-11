@@ -412,8 +412,10 @@ class BundleTests(unittest.TestCase):
             self.assertNotIn('..',name)
             self.assertNotIn('customer.json',name)
         for name in ('router-install.sh','netbird-router/common/runtime.py','netbird-router/common/network.py',
-                     'netbird-router/common/zabbix_sync.py','firstboot-router.sh'):
+                     'netbird-router/common/zabbix_sync.py','netbird-router/common/binat_acl.py','firstboot-router.sh'):
             self.assertIn(name,files)
+        for module in (ROOT/'netbird-router/common').glob('*.py'):
+            self.assertIn(str(module.relative_to(ROOT)),files)
     def test_preseed_requires_disk_confirmation_and_contains_no_credentials(self):
         seed=(ROOT/'preseed.cfg').read_text()
         self.assertNotIn('partman/confirm boolean true',seed)

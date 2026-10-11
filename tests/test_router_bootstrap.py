@@ -66,6 +66,21 @@ sys.exit(int(os.environ.get('MOCK_APT_RESULT','42')))
     def run_core(self):
         r=subprocess.run(['/bin/bash',str(self.script)],env=self.env,capture_output=True,text=True,timeout=15)
         self.clean_output(r);return r
+    def test_minimal_debian_installs_forwarding_dependency(self):
+        # Execute the real package step, intercepting only external actions.
+        source=(ROOT/'router-install.sh').read_text()
+        function=source[source.index('install_packages(){'):source.index('\nsetup_access(){')]
+        (self.bin/'python3').unlink()
+        self.executable('python3', '#!/bin/sh\nexit 0\n')
+        self.executable('netbird', '#!/bin/sh\nexit 0\n')
+        self.executable('apt-get', '#!/bin/sh\nprintf "%s\\n" "$*" >> "$MOCK_ROOT/apt-arguments"\n')
+        result=subprocess.run(['/bin/bash','-c',function+'\nSCRIPT_DIR=/fixture; install_packages'],
+                              env=self.env,capture_output=True,text=True,timeout=5)
+        self.assertEqual(result.returncode,0,result.stderr)
+        calls=(self.root/'apt-arguments').read_text().splitlines()
+        self.assertEqual(calls[0],'update -y')
+        self.assertIn('procps',calls[1].split())
+
     def test_no_jq_initial_checkpoint_failure_and_retry_are_safe(self):
         for _ in range(2):
             r=self.run_core();self.assertEqual(r.returncode,42,r.stderr)

@@ -145,7 +145,7 @@ install_packages(){
   python3 "$SCRIPT_DIR/netbird-router/common/apt_repository.py" repair \
     || die "NetBird-Paketquelle nicht sicher reparierbar; kein APT-Update."
   apt-get update -y
-  DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg jq nftables python3 iproute2 openssh-server sudo
+  DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg jq nftables python3 iproute2 procps openssh-server sudo
   if ! command -v netbird >/dev/null 2>&1; then
     python3 "$SCRIPT_DIR/netbird-router/common/apt_repository.py" install \
       || die "NetBird-Paketquelle nicht verifiziert; kein APT-Update."

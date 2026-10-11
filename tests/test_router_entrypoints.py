@@ -113,6 +113,7 @@ else:sys.exit(98)
         create=[x for x in calls if x[0]=='create']
         self.assertEqual(len(create),1)
         self.assertEqual(create[0][create[0].index('--unprivileged')+1],'1')
+        self.assertEqual(create[0][create[0].index('--features')+1],'nesting=1')
         self.assertIn('firewall=1',create[0][create[0].index('--net0')+1])
         self.assertEqual((self.root/'pct-create-umask').read_text(),'0o22')
         self.assertNotIn('--password',create[0])

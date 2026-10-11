@@ -66,13 +66,16 @@ class NetBirdBINATPolicyTests(unittest.TestCase):
         rule = native_rule()
         rule['comment'] = acl.MARKER
         rule['expr'] = [
-            {'comment': acl.MARKER},
+            {'match': {'op': '==', 'left': {'meta': {'key': 'iifname'}}, 'right': 'wt0'}},
+            {'match': {'op': '==', 'left': {'meta': {'key': 'oifname'}}, 'right': 'eth0'}},
+            {'match': {'op': '==', 'left': {'payload': {'protocol': 'ip', 'field': 'saddr'}}, 'right': '@nb-7d0b7d19'}},
+            {'match': {'op': 'in', 'left': {'ct': {'key': 'status'}}, 'right': 'dnat'}},
             {'match': {'op': '==', 'left': {'ct': {'key': 'daddr', 'dir': 'original'}},
                        'right': {'prefix': {'addr': '10.30.2.0', 'len': 24}}}},
             {'match': {'op': '==', 'left': {'payload': {'protocol': 'ip', 'field': 'daddr'}},
                        'right': {'prefix': {'addr': '192.168.178.0', 'len': 24}}}},
-            {'meta': {'key': 'iifname', 'name': 'wt0'}},
-            {'meta': {'key': 'oifname', 'name': 'eth0'}}]
+            {'counter': {'packets': 0, 'bytes': 0}},
+            {'accept': None}]
         self.assertEqual('', acl.transaction(output(rule), CFG))
         with self.assertRaises(acl.Refused):
             acl.transaction(output(rule, native_rule()), CFG)

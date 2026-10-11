@@ -227,6 +227,37 @@ class ZabbixHostTests(unittest.TestCase):
         self.assertIn('ServerActive=192.168.50.10:10051;192.168.50.11:10051',conf)
         self.assertIn('Server=127.0.0.1,192.168.50.10,192.168.50.11',conf)
         self.assertIn('TLSAccept=psk',conf)
+    def test_host_get_extra_tag_metadata_is_idempotent_and_wrong_customer_denied(self):
+        zabbix_sync.register_host(self.api,self.c,'192.168.50.10','ab'*32)
+        self.host['tags'] = [dict(tag=tag['tag'],value=tag['value'],
+                                  hosttagid=str(i + 100),automatic='0')
+                             for i,tag in enumerate(self.host['tags'])]
+        before = len(self.calls)
+        zabbix_sync.register_host(self.api,self.c,'192.168.50.10','ab'*32)
+        self.assertFalse(any(method.endswith(('.create','.update'))
+                             for method,params in self.calls[before:]))
+        for bad_tags in (
+            [dict(tag='OpenMain customer',value='Other'),
+             self.host['tags'][1]],
+            [self.host['tags'][0],self.host['tags'][0],self.host['tags'][1]],
+            [self.host['tags'][1]]
+        ):
+            with self.subTest(tags=bad_tags):
+                self.host['tags'] = bad_tags
+                before = len(self.calls)
+                with self.assertRaisesRegex(zabbix_sync.SyncError,
+                                            'HOST_OWNERSHIP_TLS_OR_MONITORING_CONFLICT'):
+                    zabbix_sync.register_host(self.api,self.c,'192.168.50.10','ab'*32)
+                self.assertFalse(any(method.endswith(('.create','.update'))
+                                     for method,params in self.calls[before:]))
+        # Restore real metadata for a final successful lookup.
+        store=zabbix_registration.TLSStore(self.c['receipt_file'],self.c,'ab'*32)
+        self.host['tags']=[
+            dict(tag='OpenMain customer',value='Example',hosttagid='100',automatic='0'),
+            dict(tag='OpenMain registration',value=store.entry('host')['marker'],
+                 hosttagid='101',automatic='0')]
+        zabbix_sync.register_host(self.api,self.c,'192.168.50.10','ab'*32)
+
     def test_dhcp_address_update_without_tls_update(self):
         zabbix_sync.register_host(self.api,self.c,'192.168.50.10','ab'*32)
         zabbix_sync.register_host(self.api,self.c,'192.168.50.20','ab'*32)

@@ -200,18 +200,102 @@ try:
         pass
     else:
         raise AssertionError('Stale explicit peer grant not revoked')
-    # Simulate NetBird revoking toweri5 membership: the managed ACL must
+    # Revoke membership from the CURRENT source set: the managed ACL must
     # immediately stop forwarding new flows even though its rule still exists.
-    run('nft','delete','element','ip','netbird','nb-7d0b7d19','{ 100.64.0.10 }')
+    run('nft','delete','element','ip','netbird','nb-ffeeddcc','{ 100.64.0.12 }')
     lan.settimeout(1)
-    frame('overlay_peer','wt0','100.64.0.10','10.30.1.20',45680,12345)
+    frame('overlay_peer','wt0','100.64.0.12','10.30.1.20',45680,12345)
     try:
         receive(lan,'192.168.50.1','192.168.50.20')
     except socket.timeout:
         pass
     else:
         raise AssertionError('BINAT bypasses NetBird source-group revocation')
+    # The current source-set withdrawal also denies the previously used flow.
+    lan.settimeout(0.5)
+    frame('overlay_peer','wt0','100.64.0.12','10.30.1.20',45694,12345)
+    try:receive(lan,'192.168.50.1','192.168.50.20')
+    except socket.timeout:pass
+    else:raise AssertionError('Current source-set revocation retains existing tuple')
+    # Deterministic concurrent writer: inject a real native generation AFTER
+    # the first actual nft commit and BEFORE main's post-apply chain read.
+    # nft itself is never simulated here; only refresh timing is controlled.
+    import binat_acl as acl_module
+    from unittest.mock import patch
+    def native_group(name):
+        run('nft','add','rule','ip','netbird','netbird-rt-fwd',
+            'ip','saddr','@'+name,'ip','daddr','10.30.1.0/24','counter','accept')
+    def denied(peer,port):
+        lan.settimeout(0.5)
+        frame('overlay_peer','wt0',peer,'10.30.1.20',port,12345)
+        try:receive(lan,'192.168.50.1','192.168.50.20')
+        except socket.timeout:return
+        raise AssertionError('Revoked peer retained forwarding: '+peer)
+    run('nft','add','rule','ip','netbird','netbird-rt-fwd',
+        'ip','saddr','192.0.2.200','return','comment','foreign-acl-fixture')
+    def foreign_rule():
+        return [entry['rule'] for entry in _json.loads(run('nft','-j','list','chain',
+                    'ip','netbird','netbird-rt-fwd'))['nftables']
+                if entry.get('rule',{}).get('comment')=='foreign-acl-fixture']
+    foreign_before=foreign_rule();assert len(foreign_before)==1
+    run('nft','add','element','ip','netbird','nb-ffeeddcc','{ 100.64.0.12 }')
+    run('nft','add','set','ip','netbird','nb-aabbccdd','{ type ipv4_addr; }')
+    run('nft','add','element','ip','netbird','nb-aabbccdd','{ 100.64.0.11 }')
+    native_group('nb-ffeeddcc')
+    real_nft=acl_module.nft
+    injected=[]
+    def refresh_after_commit(*args):
+        result=real_nft(*args)
+        if args[:1]==('-f',) and not injected:
+            injected.append(True)
+            native_group('nb-aabbccdd')
+            # Prove the race snapshot still permits the now-stale peer.
+            lan.settimeout(3)
+            frame('overlay_peer','wt0','100.64.0.12','10.30.1.20',45701,12345)
+            receive(lan,'192.168.50.1','192.168.50.20')
+        return result
+    with patch.object(acl_module,'nft',side_effect=refresh_after_commit):
+        acl_module.main()
+    assert injected==[True]
+    denied('100.64.0.12',45701)  # already-used UDP tuple
+    denied('100.64.0.12',45702)  # new flow; no timer/sleep/restart
+    lan.settimeout(3)
+    frame('overlay_peer','wt0','100.64.0.11','10.30.1.20',45703,12345)
+    receive(lan,'192.168.50.1','192.168.50.20')
+    assert foreign_rule()==foreign_before
+    # Every apply races again: bound retries, then revoke verified grants.
+    native_group('nb-aabbccdd')
+    changes=[]
+    def continuous_refresh(*args):
+        command=Path(args[-1]).read_text() if args[:1]==('-f',) else ''
+        result=real_nft(*args)
+        if 'replace rule ' in command:
+            group='nb-ffeeddcc' if '@nb-aabbccdd' in command else 'nb-aabbccdd'
+            changes.append(group);native_group(group)
+        return result
+    with patch.object(acl_module,'nft',side_effect=continuous_refresh):
+        try:acl_module.main()
+        except acl_module.RevocationFailed:raise AssertionError('Kernel revocation not confirmed')
+        except acl_module.Refused:pass
+        else:raise AssertionError('Continuous policy churn reported success')
+    assert len(changes)==acl_module.MAX_RECONCILE_ATTEMPTS
+    final_chain=run('nft','list','chain','ip','netbird','netbird-rt-fwd')
+    assert acl_module.MARKER not in final_chain
+    assert changes[-1] in final_chain  # untouched native authorization
+    assert foreign_rule()==foreign_before
+    for peer,port in [('100.64.0.10',45704),('100.64.0.11',45705),('100.64.0.12',45706)]:
+        denied(peer,port)
+    denied('100.64.0.11',45703)  # previously authorized UDP tuple
+    # Recovery after the external writer settles uses its native rule only.
+    run('python3','/src/netbird-router/common/binat_acl.py')
+    run('python3','/src/netbird-router/common/binat_acl.py')
+    lan.settimeout(3)
+    frame('overlay_peer','wt0','100.64.0.12','10.30.1.20',45707,12345)
+    receive(lan,'192.168.50.1','192.168.50.20')
+    denied('100.64.0.11',45708)
+    assert foreign_rule()==foreign_before
+
 finally:
     lan.close();overlay.close()
 assert run('nft','-j','list','table','inet','filter')==filter_before
-print('PASS: prefix NAT, NetBird ACL fail-closed repro/fix, idempotent ACL reconciliation, reverse translation, foreign firewall preservation')
+print('PASS: prefix NAT, NetBird ACL fail-closed repro/fix, idempotent ACL reconciliation, current-set revocation, concurrent refresh, bounded-churn revocation/recovery, reverse translation, foreign firewall preservation')

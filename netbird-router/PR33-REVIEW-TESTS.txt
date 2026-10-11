@@ -1,0 +1,54 @@
+PR #33: remaining Codex review findings
+======================================
+Scope: fix/beta-codex-security-review, based on e716b0092d5b9dcc110ea466dbe127273d5f7eaf.
+Only ACL reconciliation and its tests changed; beta/main, live systems and
+CT 110/111 were not modified or contacted. No merge or actual credentials.
+
+P1 correction
+- Re-read rules/handles and current source sets on at most three reconciliation
+  attempts. A new native generation observed after apply is reconciled now,
+  without waiting for the 30-second timer. Never replay an old failed batch.
+- Unknown layouts, vanished sets/handles and exhaustion trigger removal of
+  ONLY freshly verified OpenMain rules. Native/foreign rules remain unchanged.
+  Removal is atomic and checked afterwards; cleanup also has at most three
+  attempts. Delete-only cleanup does not depend on the old source set existing.
+- Failed cleanup produces an explicit 'Entzug ... nicht bestaetigt' error,
+  never success or a fallback permit. Individual nft calls retain an 8s limit.
+- Private temporary batches are deleted even after validation/apply errors.
+
+P2 correction
+- After switching to nb-ffeeddcc, establish that 100.64.0.12 can forward,
+  remove THAT address from THAT current set and verify denial for new and
+  already-used UDP tuples. Obsolete-group and stale explicit-peer denial
+  remain separate checks.
+
+Executed locally
+- Bash syntax + ShellCheck: PASS.
+- All Python regressions in network-none Debian 13: 201 PASS, no skips.
+- Native static/regression run: 201 PASS, 2 capability skips (_apt/ifquery);
+  these contracts ran without skips in the Debian 13 container.
+- Debian 13 without jq: 7 bootstrap tests PASS.
+- Real nftables kernel packet tests in disposable Docker --network none with
+  NET_ADMIN and IPv4 forwarding: PASS. No host networking or production access.
+- Deterministic native-rule insertion AFTER an actual nft commit and BEFORE
+  verification reproduces the concurrent policy-refresh race. On return from
+  reconciliation, revoked peers cannot forward new or previously used tuples.
+  Continuous refresh exhausts the limit, removes managed permits, preserves
+  the latest native rule/foreign rules and denies all fixture peers. Subsequent
+  stable reconciliation recovers only currently authorized access.
+- Check PR #33's final commit CI logs for the repeated static, Debian, jq-free,
+  real-kernel, QEMU VM/synthetic BIOS/UEFI and ARM64 checks.
+
+Simulated and remaining limits
+- NetBird policy timing/layout is a controlled fixture. Kernel rules, batches,
+  sockets, NAT, packet forwarding and revocation are real; no live NetBird or
+  Zabbix controller/daemon was exercised. Unit tests simulate nft read/apply
+  failures, missing source sets, vanished handles and malformed responses.
+- The observed concurrent refresh is repaired within one invocation. This is
+  not a global transaction with the independent NetBird policy writer; changes
+  after final observation still rely on NetBird's own lifecycle/next sync.
+- If the kernel cannot be read/updated, safe revocation cannot be confirmed.
+  The helper fails visibly; local administrative diagnosis is then required.
+- Before release, repeat against disposable self-hosted NetBird 0.80 lab
+  controllers and supported newer layouts. Production/Bauer migration is out
+  of scope; real hardware and official netinstall gates remain unchanged.

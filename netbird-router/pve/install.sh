@@ -121,7 +121,7 @@ else
    pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$TEMPLATE" --hostname "$HOSTNAME_CT" \
      --description "OpenMain managed $ID" --ostype debian --arch amd64 --unprivileged 1 \
      --memory "$MEMORY" --cores "$CORES" --rootfs "$STORAGE:$DISK" --net0 "$NET" --onboot 1 \
-     --dev0 /dev/net/tun)
+     --features nesting=1 --dev0 /dev/net/tun)
 fi
 if [[ "$EXISTING_CT" == 0 ]]; then
   pct status "$CTID" | grep -q running || pct start "$CTID"

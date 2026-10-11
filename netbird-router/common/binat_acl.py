@@ -17,7 +17,9 @@ import sys
 import tempfile
 
 MARKER = 'openmain-binat-ct-original-v1'
-SOURCE_RE = re.compile(r'@nb-[0-9a-f]{8}
+SOURCE_RE = re.compile(r'@nb-[0-9a-f]{8}$')
+NETBIRD_OVERLAY = ipaddress.IPv4Network('100.64.0.0/10')
+MAX_MANAGED_ACLS = 8
 IFACE_RE = re.compile(r'[a-zA-Z0-9_.:-]{1,15}$')
 CONFIG = '/etc/nftables.d/openmain-binat-acl.json'
 

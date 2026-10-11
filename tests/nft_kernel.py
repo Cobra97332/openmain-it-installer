@@ -100,12 +100,17 @@ try:
         'iifname','wt0','drop')
     run('nft','add','rule','ip','netbird','netbird-rt-fwd',
         'ip','saddr','@nb-7d0b7d19','ip','daddr','10.30.1.0/24','counter','accept')
+    run('nft','add','rule','ip','netbird','netbird-rt-fwd',
+        'ip','saddr','100.64.0.11','ip','daddr','10.30.1.0/24','counter','accept')
     from binat_acl import transaction, configuration
     acl=dict(overlay='wt0',lan='enp1s0',virtual='10.30.1.0/24',real='192.168.50.0/24')
     netbird_acl=run('nft','-j','list','chain','ip','netbird','netbird-rt-fwd')
     import json as _json
     command=transaction(_json.loads(netbird_acl),acl)
-    assert 'ct original daddr & 255.255.255.0 == 10.30.1.0' in command
+    assert len(command.strip().splitlines()) == 2
+    assert 'ip saddr @nb-7d0b7d19' in command
+    assert 'ip saddr 100.64.0.11' in command
+    assert command.count('ct original daddr & 255.255.255.0 == 10.30.1.0') == 2
     lan.settimeout(1)
     frame('overlay_peer','wt0','100.64.0.10','10.30.1.20',45678,12345)
     try:
@@ -140,6 +145,18 @@ try:
         reverse_ok = True
         break
     assert reverse_ok, 'Kernel reverse NAT failed with NetBird ACL'
+    # The separately authorized backup-to-primary overlay peer must still pass.
+    frame('overlay_peer','wt0','100.64.0.11','10.30.1.20',45691,12345)
+    receive(lan,'192.168.50.1','192.168.50.20')
+    # A third unrelated peer is NOT allowed by either NetBird rule.
+    lan.settimeout(1)
+    frame('overlay_peer','wt0','100.64.0.12','10.30.1.20',45692,12345)
+    try:
+        receive(lan,'192.168.50.1','192.168.50.20')
+    except socket.timeout:
+        pass
+    else:
+        raise AssertionError('BINAT grants unauthorized third NetBird peer')
     # Simulate NetBird revoking toweri5 membership: the managed ACL must
     # immediately stop forwarding new flows even though its rule still exists.
     run('nft','delete','element','ip','netbird','nb-7d0b7d19','{ 100.64.0.10 }')

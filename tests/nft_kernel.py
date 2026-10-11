@@ -105,7 +105,7 @@ try:
     netbird_acl=run('nft','-j','list','chain','ip','netbird','netbird-rt-fwd')
     import json as _json
     command=transaction(_json.loads(netbird_acl),acl)
-    assert 'ct original daddr 10.30.1.0/24' in command
+    assert 'ct original daddr & 255.255.255.0 == 10.30.1.0' in command
     lan.settimeout(1)
     frame('overlay_peer','wt0','100.64.0.10','10.30.1.20',45678,12345)
     try:

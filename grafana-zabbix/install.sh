@@ -63,7 +63,8 @@ install -d -m 0755 "$DASHBOARD_DIR"
 install -d -m 0755 "$PROVISIONING_DIR/dashboards"
 
 curl -fsSL "$BASE_URL/generate-dashboards.py" -o "$INSTALL_DIR/generate-dashboards.py"
-curl -fsSL "$BASE_URL/sync-zabbix-groups.py" -o "$INSTALL_DIR/sync-zabbix-groups.py"\ncurl -fsSL "$BASE_URL/inspect-zabbix-host.py" -o "$INSTALL_DIR/inspect-zabbix-host.py"
+curl -fsSL "$BASE_URL/sync-zabbix-groups.py" -o "$INSTALL_DIR/sync-zabbix-groups.py"
+curl -fsSL "$BASE_URL/inspect-zabbix-host.py" -o "$INSTALL_DIR/inspect-zabbix-host.py"
 curl -fsSL "$BASE_URL/provisioning/dashboards/openmain.yaml" -o "$PROVISIONING_DIR/dashboards/openmain.yaml"
 curl -fsSL "$BASE_URL/openmain-zabbix-metadata.env.example" -o "$INSTALL_DIR/openmain-zabbix-metadata.env.example"
 

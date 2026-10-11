@@ -1,0 +1,230 @@
+PR #30 - Abnahme Proxmox LXC (Stand 11.10.2026)
+=============================================
+Status: Testplan vorbereitet, NICHT im Proxmox-Labor ausgefuehrt.
+Referenz: finalen PR-Head auschecken und dessen SHA im Abnahmeprotokoll festhalten.
+Offline-Regressionen sind erfolgreich; reale Laborpruefungen stehen noch aus.
+
+1. Labor und Schutzgrenzen
+- Separater Proxmox-Laborhost/Cluster, keine produktiven Nodes oder Bridges.
+  Zwei NEUE Debian-13-LXC fuer Primary/Backup, mindestens je 1 GB RAM/8 GB Disk.
+  Eine einzelne CT reicht fuer Installation, nicht fuer echten Failover.
+- Eigene isolierte Bridge/VLAN mit DHCP und einem LAN-Testziel (z.B. HTTP).
+  Eigene NetBird-Self-Hosted-Instanz und Zabbix 7.4 samt eigenem NetBird-Serverpeer;
+  niemals nur eine Testgruppe im produktiven Management verwenden.
+  Zwei separate Overlay-Testclients: einer berechtigt, einer unberechtigt.
+- Keine Routen/VPNs zum Kunden-/Managementnetz. Ausgehend nur Labor-Dienste,
+  DNS/NTP und benoetigte Paket-/Downloadquellen zulassen. Produktivziele sperren.
+  TLS-Zertifikate der Labordienste muessen gueltig/vertraut sein; kein -k/Insecure.
+- Keine bestehenden Secrets/Backups importieren. Fuer den spaeteren Labortest
+  ausschliesslich neu erzeugte, kurzlebige Wegwerf-Testzugangsdaten verwenden;
+  hier wurden keine Zugangsdaten erzeugt, gelesen oder Dienste kontaktiert.
+- Bauer ist Legacy und KEIN Testziel: keine bestehenden CTIDs, Kundennamen,
+  Peer-IDs, PSKs, API-Objekte oder Konfigurationsexporte verwenden. Kein Installer,
+  Upgrade, DHCP-Helfer oder Zabbix-Sync-Timer auf einem Bauer-Router starten.
+
+2. Start (nur nach bestaetigter Laborisolation)
+- Reviewten PR-Commit auschecken. pveversion -v, Kernel, pct-Version und spaeter
+  NetBird-/Zabbix-Paketversionen festhalten. pct muss --dev0 unterstuetzen.
+- Zwei lokale JSON-Dateien /root/abnahme-primary.json und ...-backup.json mit
+  root:root 0600 in einem rootgeschuetzten Verzeichnis erstellen. Eingaben:
+  NB_CUSTOMER_NAME = ABNAHME-P30-<eindeutige Laufkennung> (beide gleich),
+  NB_ROLE = primary bzw. backup; NB_SETUP_KEY, NB_API_TOKEN, NB_ZABBIX_API_TOKEN
+  nur mit Wegwerf-Laborwerten; NB_METRICS_ENABLED = "0", NB_ZABBIX_ENABLED = "1".
+  ZWINGEND eigene Laborwerte setzen fuer NB_MANAGEMENT_URL, NB_ZABBIX_API_URL
+  und NB_ZABBIX_SERVER (Overlay-IP des Labor-Zabbix-Servers). Die eingebauten
+  OpenMain-Produktivdefaults duerfen nicht verwendet werden. Keine uebernommenen
+  NB_* Umgebungsvariablen: diese koennen die JSON-Werte ueberschreiben.
+- Vor dem Anlegen: pvesm status und lvs -o lv_name,lv_size,data_percent,metadata_percent
+  read-only pruefen. Bei Platz-/Metadatenmangel oder Thin-Pool-Warnungen Labor
+  stoppen und Storage administrativ klaeren; keine automatischen LVM-Aenderungen.
+- Freie CTIDs, LAB_BRIDGE und LAB_STORAGE vorab separat verifizieren. Folgenden
+  Aufruf im Checkout nur mit diesen vorher gesetzten Laborvariablen ausfuehren:
+  bash netbird-router/pve/install.sh --config /root/abnahme-primary.json \
+    --ctid "$LAB_PRIMARY_CTID" --bridge "$LAB_BRIDGE" --storage "$LAB_STORAGE"
+  Danach gleicher Aufruf mit Backup-Datei und LAB_BACKUP_CTID. Serialisieren.
+  Zuerst DHCP, spaeter in frischen Test-CTs auch --ip <LAN-IP/Praefix> --gateway
+  <LAB-Gateway> testen. Niemals bestehende Container auf die Test-CTIDs umbenennen.
+
+3. Pflichtpruefungen / erwartetes Ergebnis
+[ ] APT/Wiederaufnahme: unter umask 077 gehoeren NetBird-Keyring und netbird.list
+    root:root mit 0644. Im isolierten Laborgast beide auf 0600 setzen und denselben
+    Auftrag wiederholen: Reparatur vor erstem apt-get update, Inhalt unveraendert,
+    Signaturpruefung aktiv. Fremde Quellen/Keyrings unveraendert; Symlinks oder
+    abweichende Inhalte sicher ablehnen. PSKs, Tokens und Status bleiben 0600.
+[ ] LXC/TUN: pct config zeigt unprivileged: 1, nur benoetigtes TUN-Device und
+    firewall=1. Im Gast: test -c /dev/net/tun, NetBird verbunden, wt0 vorhanden.
+    NetBird kann TUN und nftables unter normalen LXC/AppArmor-Beschraenkungen
+    nutzen. Auch nach Gast- und Laborhost-Neustart. Kein privileged-Fallback,
+    kein unconfined-Profil und kein Abschalten von PVE-/NetBird-Firewall erlaubt.
+[ ] API/Bestand: genau zwei Routerpeers, ein Kundennetz/ein BINAT-Mapping;
+    Primary-Metrik 100, Backup 200. Gruppen/Policy korrekt zugeordnet. Zusätzliche
+    synthetische Regeln, Gruppenmitglieder und Ressourcen bleiben unveraendert.
+[ ] BINAT/Zugriff: Vom berechtigten Overlay-Client mindestens zwei LAN-Adressen
+    ueber deren virtuelle Adressen erreichen; Hostanteil und Rueckweg stimmen.
+    Unberechtigter Client und fremde Kundengruppe erreichen diese Ziele NICHT.
+    Kein unbeabsichtigter Zugriff auf Router-Management. NetBird-Regeln und
+    fremde nftables-Testtabelle bleiben erhalten. Auf breites All->All in einem
+    frischen Testtenant achten; es darf den Negativtest nicht entwerten.
+[ ] Zabbix: automatisch zwei aktive Proxys, kundennamige Proxy-Gruppe mit
+    min_online=1 und Failover-Delay 1m; local_address jeweils die echte LAN-IP.
+    Zwei eindeutige Hosts ueber diese Gruppe, richtige Agent-IP/10050, passives
+    Linux-Template und aktiver Heartbeat. Echte aktuelle Werte in Latest data
+    fuer BEIDE Check-Arten; reine Dienst-/API-Erreichbarkeit reicht nicht.
+[ ] Zabbix-Zugriffskontrolle: Router automatisch zu Zabbix-Kunden-Proxies
+    hinzufuegen und ueber erneutes NetBird-GET bestaetigen, bevor Registrierung
+    beginnt. Bestehende Zabbix Proxy to Server prueft den echten Serverpeer auf
+    TCP/10051. API-DNS/Reverse-Proxy und HTTPS-Forward-Proxy separat testen:
+    API kann ein anderer Peer als der Server sein; dessen tatsaechlicher Weg
+    muss freigegeben sein (direkt HTTPS/443, beim CONNECT-Proxy dessen TCP-Port).
+    Keine Policy- oder Zusatzregel-Ueberschreibung. CA-validierter HTTPS-Aufruf
+    von apiinfo.version muss aus JEDEM Router erfolgreich Zabbix 7.4 bestaetigen.
+    Uebernahme im Labor kurz verzoegern: automatisch ohne manuelle Gruppen-
+    aenderung fortsetzen. Zugriff wird maximal 12-mal mit 5 s Pause geprueft
+    (Probe-/API-Timeouts kommen hinzu). Port 443 dauerhaft sperren: Fehler statt
+    Registrierungs-/Erfolgsmarker; Peer, Gruppen, PSK und Wiederaufnahmedaten
+    bleiben erhalten. Nur Rechte zum Serverpeer reichen bei getrenntem API-
+    Ziel nicht. Eine Reverse-Proxy-Service-IP ohne Peer-Eintrag separat pruefen:
+    Router-/Server-Peers bleiben eindeutig. Falls vorhanden, Dienst unter
+    /api/reverse-proxies/services auf exakte Domain, Aktivierung und private
+    access_groups pruefen; explizite Ablehnung oder Duplikate stoppen den Auftrag.
+    Bei fehlendem Dienstinventar bleiben DNS-Domainbindung, HTTPS/443 ueber das
+    aktive NetBird-Interface, gueltiges TLS und HTTP 200 mit Zabbix 7.4 zwingend.
+    Keine IP-URL, fremde Domain, Redirects oder Route ueber eth0/anderes VPN
+    zulassen; falsches Zertifikat muss stoppen. TCP/10051 bleibt ausschliesslich
+    am echten Serverpeer. Weder Dienst/Policy aendern noch oeffentliche Ports
+    oeffnen. Nach Freigabe denselben Auftrag wiederholen; keine Duplikate.
+    Mitgliedschaft entfernen: Registrierung und spaetere Timer-API-Aenderungen
+    sicher ablehnen. PSKs/Status nur lokal per cmp -s vergleichen.
+[ ] Zabbix 7.4.15 API-Vertrag: proxy.get/host.get fordern weder tls_psk_identity
+    noch tls_psk an; diese Felder sind write-only. apiinfo.version verwendet []
+    ohne Authentifizierung. Rootgeschuetzter Registrierungsnachweis (0600/0700)
+    bindet Kunde, API, Objekt-IDs, lokale Identitaet/Key und lesbaren Marker.
+    Abbruch nach proxy.create vor Antwort/Readback simulieren: beim Retry genau
+    denselben Proxy und PSK anhand persistierter Absicht/Marker wiederverwenden;
+    Pending-Marker erst nach bestaetigtem Readback entfernen. Fremde Proxys ohne
+    Nachweis nicht uebernehmen; fehlende/veraenderte Nachweise erfordern manuelle
+    Pruefung. Kein PSK-Update. JSON-RPC -32602 wird mit sicherer Klassifikation
+    gemeldet, nie mit Serverdaten. Ohne bestaetigte Registrierung keine Dienste
+    starten/neustarten. Auch Debian-Paket-Hooks werden waehrend apt install mit
+    einer temporaeren policy-rc.d-Dienstblockade angehalten; vorhandene fremde
+    Policies werden nicht ersetzt. Nur statische, eindeutige exit-101-Policies
+    sind unterstuetzt. Unbekannte Policies stoppen vor Paketinstallation; nach
+    hartem Abbruch wird nur die eigene Blockade bei Wiederaufnahme entfernt.
+    Gilt auch fuer Host-Registrierung und LAN-Abgleich.
+    Der lokale Nachweis belegt die urspruenglich geschriebene TLS-Zuordnung;
+    nachtraegliche externe PSK-Aenderungen sind mit write-only-Feldern NICHT
+    nachlesbar. Echten TLS-Handshake daher weiterhin separat nachweisen.
+[ ] TLS: Proxy->Server und Agent<->Proxy funktionieren mit PSK. Eine falsche
+    Wegwerf-PSK bzw. unverschluesselte Verbindung in einem separaten Testclient
+    wird abgewiesen. Keine PSK-/Token-Ausgabe. Im Laborgast vor Wiederholung eine
+    geschuetzte lokale Referenz des Test-PSK anlegen; anschliessend mit cmp -s
+    vergleichen, nur PASS/FAIL protokollieren (keine Keys oder Hashes ausgeben).
+[ ] Bootstrap ohne jq: vor Paketinstallation muss progress.json mit Phase
+    preflight gueltig, atomar geschrieben und 0600 in einem 0700-Verzeichnis sein.
+    Synthetischen Paketfehler ausloesen: Phase failed und urspruenglicher Exit-Code;
+    kein complete, keine rekursive Fehlerbehandlung. Danach gleicher CT/Retry.
+[ ] Wiederholung/Abbruch: denselben Installer zweimal starten; CTID, Peer-ID,
+    Mapping, Proxy-/Host-IDs, TLS-Identitaet und PSK bleiben erhalten. Keine
+    Duplikate, keine verlorenen SQLite-Testdaten oder entfernten Zusatzparameter.
+    Abbruch nach CT-Erstellung sowie absichtlich nicht erreichbare Labor-API
+    muessen ohne Erfolgsmarker enden; Retry verwendet denselben Bestand.
+[ ] DHCP-Erkennung: klassisches Debian-ifquery kann bei inet dhcp leer ausgeben.
+    Methode wird deshalb aus interfaces samt source/source-directory rein lesend
+    erkannt. Bestehende eth0-IPv4 muss dabei erhalten bleiben, ohne ifup/renew.
+    Kein verwaltetes DHCP-Interface ist bei statischer/unbekannter Methode sicher.
+[ ] DHCP: Vergabe zunaechst blockieren, dann freigeben: Recovery ohne Neustart
+    eines konkurrierenden DHCP-Clients. Vorhandene IPv4 wird nicht verworfen.
+    Statische CTs erhalten keinen Recovery-Timer. Nach DHCP-IP-Wechsel innerhalb
+    desselben LANs werden Zabbix-Adresse, Hostinterface und Gruppenendpunkte
+    innerhalb von 180 s aktualisiert; PSK und BINAT bleiben erhalten.
+
+4. Echten Failover messen (keine bestehende TCP-Sitzung als Erfolgskriterium)
+- Berechtigter Client startet jede Sekunde eine NEUE Verbindung zum BINAT-Ziel.
+  Vorher nachweisen, dass Verkehr ueber den Primary laeuft (Zaehler/Paketpfad).
+- Nur den verifizierten Labor-Primary abschalten. Backup muss ohne manuelle
+  Route/API-Aenderung neue Verbindungen innerhalb von 60 s uebernehmen.
+  Primary starten: neue Verbindungen binnen 60 s wieder bevorzugt ueber 100.
+  Keine Conntrack-/Sitzungssynchronisation behaupten; laufende Sessions koennen
+  abbrechen. Adressen/Objekte duerfen beim Umschalten nicht wechseln.
+- Separat nur den aktiven Zabbix-Proxy stoppen: Hosts werden vom anderen Proxy
+  uebernommen; aktive UND passive Werte binnen 180 s wieder aktuell. Dafuer
+  einen separaten ueberlebenden Labor-Agent verwenden: der Agent eines komplett
+  abgeschalteten Routers kann keine neuen Werte liefern. Recovery/Rueckkehr
+  pruefen; Zabbix-Lastverteilung hat keine NetBird-artige Primary-Praeferenz.
+- Zwei Ausfall-/Rueckkehrzyklen; Zeiten und neue Messwerte protokollieren.
+  60/180 s sind Abnahmeschwellen fuer dieses Labor, keine Hersteller-SLA.
+
+5. Legacy-Negativtest - nur kuenstliche Fixtures, keine Bauer-Kopie
+- Fremde CTID ohne OpenMain-Auftragsmarker anbieten: Abbruch vor pct push/exec,
+  unveraenderte Dateien/Dienste. Niemals den Marker zur Umgehung nachtragen.
+- In getrennten Wegwerf-Fixtures: alte netbird-kundenrouter.nft/ mein_binat;
+  bestehendes NetBird-Profil mit DisableFirewall=true OHNE alte NFT-Datei;
+  fremde Management-URL; manuelle Zabbix-Agent-Konfiguration/TLS-Identitaet.
+  Der direkte Core-Einstieg muss Bestand erkennen und VOR Paket-/SSH-/Dienst-,
+  Firewall- und schreibenden API-Aenderungen abbrechen. Nur neue Diagnose-/Lock-
+  Dateien sind toleriert. Mit Mock-Aufrufjournal und lokalen Vorher-/Nachher-
+  Vergleichen nachweisen, ohne Inhalte/Secrets zu veroeffentlichen.
+- Vorpruefung ist nun vor Paketinstallation, Dienststart, Enrollment und
+  Netzwerk-/Konfigurationsaenderungen vorgeschaltet. Negativtests fuehren den
+  Core mit isolierten Dateien und protokollierten Systemkommandos aus: Ablehnung
+  muss null Mutationen und unveraenderte Dateien/Rechte nachweisen.
+- Zusaetzlich: veraenderte aktive BINAT-Regel, anderer Kunde/Rolle/LAN,
+  verwaiste/mehrere Profile, fehlende Pruefwerkzeuge und fehlende/abweichende PSK.
+  Unterstuetzten verbundenen Bestand zweimal pruefen: kein NetBird down/up und
+  kein Start/Neustart des NetBird-Dienstes. Geheimnisse nur lokal vergleichen.
+- PVE-Wiederaufnahme: im markierten laufenden Test-CT synthetischen Konflikt
+  setzen; Abbruch bereits vor Bundle-/Credential-Push, DHCP und Paketinstallation.
+  Gestoppte bestehende CTs werden nicht automatisch gestartet. Nur den eigenen
+  Laborgast nach separater Kontrolle manuell starten, dann erneut pruefen.
+- PVE 9.2.21: den Marker mit genau einem abschliessenden %0A pruefen. Ein
+  eigener laufender, noch nicht initialisierter CT muss nach Abbruch direkt nach
+  pct create wiederaufgenommen werden: keine zweite Erstellung, kein Loeschen,
+  Bestandspruefung vor pct push. Marker mit Zusatztext/anderer ID ablehnen.
+- Frisches table inet filter samt Filterregeln bleibt bei Leerbestandspruefung
+  und Wiederaufnahme unveraendert. NAT-Chains, Translationen und NetBird-/BINAT-
+  Altbestand weiterhin vor Dateien/Paketen/Diensten ablehnen. Bei Abbruch keine
+  Marker loeschen oder Firewallregeln entfernen, sondern denselben Auftrag
+  nach Checkout des korrigierten PR-Heads erneut starten.
+- Neue Templates ohne Python passieren zuerst eine strengere, rein lesende
+  Leerbestandspruefung; jeglicher Router-/Zabbix-Bestand stoppt den Bootstrap.
+  Bei nicht eindeutig zuordenbaren Zwischenstaenden sicher abbrechen, Daten
+  behalten und manuell pruefen. Keine Marker/Profile zur Umgehung loeschen.
+  Fuer saubere Wiederholungen muessen Profil und Management bereits verbunden
+  sein. Keine automatische Bauer-Migration oder automatische Wiederverbindung.
+
+6. Merge-Gate und Nachweis
+Zusaetzlicher Wiederaufnahmetest (nur isoliertes Labor): Nach bestaetigter
+Proxy-Registrierung vor host.create abbrechen. Derselbe Auftrag muss die eigene
+unveraenderte alte Agent-Initialdatei anhand rootgeschuetzter Intent-/TLS-Daten
+erkennen, TLS ergaenzen und genau einen Host/eine Hostgruppe anlegen. PSK/Peer
+bleiben identisch; dritter Lauf erzeugt nichts doppelt. Eine veraenderte
+TLS-lose Agent-Datei oder fehlender Nachweis muss ohne Agent-Schreibzugriff und
+Dienststart abbrechen, mit fester Fehlerklasse (AGENT_INITIAL_*, TLS_RECEIPT_*).
+Auch Abbruch nach Host-Bestaetigung vor erfolgreicher Agent-Validierung testen:
+kein erfolgreicher Installationsstatus; Wiederaufnahme verwendet denselben Host.
+
+MERGE ERST, WENN alle Pflichtfelder oben PASS sind, insbesondere Legacy-Guard,
+TUN/nftables im realen unprivilegierten LXC, echte TLS-Checks und beide Failover-
+Tests. Alle CI-Checks muessen fuer den getesteten finalen Code-Commit gruen sein.
+Kein offener P1-Befund, keine Secret-Ausgabe, keine ungepruefte Bestandsmutation;
+Labortester und zweiter Reviewer bestaetigen Ergebnis und Scope schriftlich.
+Protokoll: Commit, PVE/Kernel/Paketversionen, Test-CTIDs, PASS/FAIL je Punkt,
+gemessene Ausfallzeiten, anonymisierte Objektanzahlen und offene Abweichungen.
+Keine Roh-Konfigurationen, API-Antworten, Journaldumps oder Zugangsdaten an PRs.
+Bei FAIL: kein Merge; nur betroffene Tests nach Fix plus Regression wiederholen.
+Nach Ende nur Laborobjekte anhand der Laufkennung entfernen, Testzugangsdaten
+widerrufen und lokale Credential-/PSK-Referenzdateien entfernen.
+
+Ein bestandener LXC-Test ist keine Freigabe fuer Bauer-Migration, VM-Upgrades,
+ISO- oder Pi-Rollout. Diese benoetigen ihre getrennte Abnahme aus OPERATIONS.txt;
+sollen sie mit PR #30 als einsatzbereit freigegeben werden, sind ihre noch offenen
+Boot-/Hardwaretests ebenfalls Merge-Voraussetzung. Aktuell KEINE Merge-Freigabe.
+
+API-Referenzen fuer den 7.4-Vertrag:
+https://www.zabbix.com/documentation/7.4/en/manual/api/reference/proxy/object
+https://www.zabbix.com/documentation/7.4/en/manual/api/reference/proxy/get
+https://www.zabbix.com/documentation/7.4/en/manual/api/reference/proxy/create
+https://www.zabbix.com/documentation/7.4/en/manual/api/reference/proxygroup/get
+https://www.zabbix.com/documentation/7.4/en/manual/api/reference/proxygroup/create
+https://www.zabbix.com/documentation/7.4/en/manual/api/reference/apiinfo/version
+https://www.zabbix.com/documentation/7.4/en/manual/api/reference/host/object

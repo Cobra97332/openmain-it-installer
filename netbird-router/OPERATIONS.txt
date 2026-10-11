@@ -1,0 +1,186 @@
+OpenMain customer router - shared installer
+=========================================
+
+Supported targets
+- Debian 13 amd64/arm64 VM: netbird-router/vm/install.sh
+- Proxmox with pct --dev0 support: netbird-router/pve/install.sh
+  Creates an unprivileged Debian 13 amd64 LXC, 1 GB RAM / 8 GB disk by default.
+  TUN is passed as a device; existing unrelated containers are never adopted.
+- Debian 13 amd64 netinstall ISO: build-iso.sh + preseed.cfg + firstboot-router.sh.
+  The builder preserves the original BIOS/UEFI boot structures using xorriso.
+  Disk formatting and account creation require Debian Installer confirmation.
+- Raspberry Pi 3 Model B/B+, 4 or 5, ARM64, nominal RAM >=1 GB:
+  install a current official Raspberry Pi OS Lite 64-bit Trixie (Debian 13)
+  image using Raspberry Pi Imager and verify the image publisher's checksum.
+  On that booted image run netbird-router/raspberry-pi/install-router.sh.
+  This is a firstboot preparation mechanism, not an amd64 ISO for Raspberry Pi.
+  Pi Zero/2, 32-bit userspace and Bookworm are rejected. Hardware boot still
+  requires the acceptance tests below.
+
+Deployment
+Use a reviewed checkout of this PUBLIC repository, at one immutable commit.
+Run entrypoints with bash as root. Example (no credentials on the command line):
+  bash netbird-router/vm/install.sh --config /root/customer.json
+  bash netbird-router/pve/install.sh --config /root/customer.json --bridge vmbr0
+  bash netbird-router/raspberry-pi/install-router.sh --config /root/customer.json
+
+Alternatively netbird-router/install.sh downloads one public GitHub commit:
+  NB_PLATFORM=vm|pve|raspberry-pi
+  NB_INSTALLER_REF=<reviewed full 40-character commit SHA>
+When no SHA is supplied, main is resolved once before fetching the bundle.
+Prerequisites for that bootstrap: root, curl, Python >=3.12 (Debian 13 supplies
+3.13). The VM entrypoint requires Python before admission; it never installs
+dependencies on an uninspected existing host. Other packages follow admission.
+Existing secret-bearing command-line flags remain compatibility options;
+prefer protected configuration or hidden terminal prompts.
+
+Configuration is JSON, never executable shell. The file must be a regular,
+non-symlink file owned by root, mode 0600, in a root-controlled directory.
+Required string keys: NB_CUSTOMER_NAME, NB_ROLE (primary or backup),
+NB_SETUP_KEY (new enrollment), NB_API_TOKEN, NB_ZABBIX_API_TOKEN.
+Optional keys: NB_MANAGEMENT_URL, NB_ZABBIX_API_URL, NB_ZABBIX_SERVER,
+NB_LAN_INTERFACE, NB_VIRTUAL_NETWORK, NB_HOSTNAME, NB_SSH_PUBLIC_KEY,
+NB_METRICS_ENABLED, NB_ZABBIX_ENABLED (both string 0/1).
+Endpoints default to the existing OpenMain self-hosted deployment addresses.
+They are used ONLY when an administrator runs the installer. Tests substitute
+synthetic data and have no production connections.
+Optional Prometheus integration is off by default; enabling it on an existing
+client without local metrics requires a planned NetBird configuration change.
+No common installer rewrites SSH policy, passwords, or existing authorized_keys.
+An explicitly supplied public key is added without removing existing entries.
+
+LAN, API and access prerequisites
+Exactly one usable LAN interface/address must be identifiable. Multiple default
+interfaces require NB_LAN_INTERFACE. Supported prefix lengths are /16 through
+/24. No interface renaming, DHCP-to-static conversion or VM OS reinstall occurs.
+The management API needs network/group/policy/peer CRUD permissions; the Zabbix
+API account needs proxy, proxy group, host, host group, template, template group
+and item permissions. The existing Zabbix server must be an enrolled NetBird
+peer. Zabbix 7.4 must include the standard Linux by Zabbix agent template and
+Templates/Operating systems template group.
+
+Customer resource access is scoped to the customer group. Existing broad
+account-wide NetBird policies are not deleted; administrators must review their
+account's access model. NetBird's own firewall stays enabled. The additional
+openmain_binat table performs prefix DNAT and narrowly scoped masquerading;
+conntrack supplies reverse translation. Existing tables are never flushed.
+Mappings account for LAN, local routes, legacy API routes and other resources.
+A new resource is reserved disabled, rechecked for overlap, then activated.
+NetBird does not expose a transaction/CAS for multiple API objects. Provision
+customers serially per management tenant (especially with eventually consistent
+API replicas); local flock prevents concurrent runs on the same machine/controller.
+No claim of distributed atomic allocation is made.
+
+Primary/backup and Zabbix
+Create the Primary first, then the Backup with exactly the same customer name
+and LAN prefix. Routing metrics are 100 and 200. A second enabled peer at the
+same role/metric is refused. Existing policies and resource groups are checked,
+not replaced. A manually disabled resource/router is not silently re-enabled.
+The customer-named Zabbix proxy group requires min_online=1; new groups use a
+1-minute failover delay. Existing incompatible groups are rejected, not reset.
+New router proxy/host names incorporate the unique customer group ID and role.
+Proxy TLS identity/key are read from existing config, including Include files.
+Hosts use the customer proxy group, PSK and a LAN agent interface. Passive Linux
+checks and a separate active heartbeat avoid duplicate template item keys.
+An automatic 2-minute timer refreshes DHCP LAN addresses and discovers sibling
+proxy LAN endpoints; Agent 2 uses the semicolon-delimited proxy group list.
+The timer stores ONLY its necessary Zabbix credential in
+/etc/openmain-router/zabbix-sync.json (root 0600 in a 0700 directory). Keep the
+Zabbix API token valid and rotate that local credential file when needed.
+No NetBird API token is needed for this recurring task.
+
+Raspberry Pi preparation
+Preparation retains office prefix, gateway and gateway MAC. Deployment waits
+until this fingerprint differs, a LAN address exists, and the management HTTPS
+endpoint is reachable. Credentials remain root-only for retries and are deleted
+after core success (the minimal Zabbix refresh credential remains as above).
+An indistinguishable office/customer gateway fingerprint safely keeps waiting;
+prepare on a distinguishable office network. Do not move an already deployed
+router to another customer by rerunning preparation; use a separate migration.
+The selected LAN interface is retained. Recovery asks NetworkManager, networkd
+or ifupdown about DHCP and never starts a competing client or releases leases.
+Static/unknown configurations do not enable the recovery timer.
+
+ISO build
+Install xorriso, curl, python3, gpgv and debian-keyring on the build machine.
+The builder downloads only an official Debian 13 NETINSTALL, verifies signed
+SHA512SUMS with DEBIAN_CD_KEYRING (default Debian role keyring), and copies an
+explicit source-only bundle manifest. It never accepts customer credentials.
+For an already downloaded ISO, supply DEBIAN_ISO and its independently trusted
+DEBIAN_ISO_SHA512. Set OUTPUT_ISO to a NEW output filename; existing images are
+not replaced. Secrets are collected on the installed machine at first boot,
+not in ISO/preseed/kernel arguments. Interrupted firstboot keeps its 0600 input.
+No actual Debian installer ISO was downloaded/built or BIOS/UEFI booted in this
+change's validation environment; the builder and boot-menu logic have mocks.
+
+Resume, upgrades and deliberate stops
+Rerun the same entrypoint/configuration. PVE persists customer/role -> CTID before
+creation and verifies its ownership marker. The core locks installation and
+writes progress.json and state.json under /var/lib/netbird-kundenrouter.
+Existing NetBird identity is reused without down/up. The core refuses another
+management endpoint, an unconnected existing profile, customer/LAN reassignment,
+ambiguous API objects, incompatible TLS or unmanaged agent configuration.
+New configs and NAT replacements are validated; managed agent updates retain a
+.previous copy and restore it if restart fails. Existing proxy configuration,
+PSK, TLS identity and database are not regenerated or deleted on retries. An
+online SQLite snapshot is taken before upgrading an existing proxy package; a
+failed snapshot stops the upgrade. Managed Agent 2 updates retain custom tuning,
+file ownership and permissions and refuse conflicting TLS/hostname changes.
+
+IMPORTANT legacy migration limits:
+Installations made with --disable-firewall / old mein_binat rules must undergo
+an explicitly reviewed migration. All router entrypoints inspect local ownership,
+NetBird profiles/DisableFirewall/connected status, saved and active BINAT, LAN,
+and Zabbix identity/PSK/configuration before package, service or network changes.
+Rejected state remains untouched. Existing running PVE guests are inspected
+before file transfer; stopped existing guests are not automatically started.
+Only pristine new templates pass the shell bootstrap gate before Python is
+available. Unidentifiable interrupted state needs manual review without deleting
+profiles, keys or ownership markers. See ABNAHME-PVE.txt for the two-container gate.
+Existing manually configured agents are retained and require migration before
+the new managed host/agent automation can take ownership. A proxy-create response
+lost after server commit leaves a pending-key marker: it stops for TLS identity/key
+verification rather than attaching a possibly different PSK. Do not delete that
+marker or regenerate keys blindly. These cases are intentionally not advertised
+as automatic upgrades. Secrets cannot be recovered from an ambiguous API response.
+
+Validation and remaining acceptance
+- bash tests/check-router.sh: Bash syntax, ShellCheck, offline API/wrapper tests.
+- tests/Dockerfile.router: same tests on Debian 13/Python 3.13, network disabled.
+- tests/nft_kernel.py: real kernel forward/reverse NAT, repeat application,
+  malformed-candidate rollback and preservation of a foreign table. Run only in
+  a disposable Docker container with --network none --cap-add NET_ADMIN,
+  --sysctl net.ipv4.ip_forward=1 and OPENMAIN_ISOLATED_TEST=1.
+- Mocks cover LAN ambiguity, mapping overlap/prefix/exhaustion, malformed API
+  responses, interruption/retry, PSK preservation, Primary/Backup metrics,
+  host/group/TLS conflicts, DHCP IP changes, PVE adoption rejection and firstboot.
+
+Still required on isolated lab equipment before customer rollout:
+1. Proxmox supported versions: fresh DHCP/static LXC, TUN, package/service startup,
+   interruption after CT creation, repeated installer, host/guest reboots.
+2. Existing Debian 13 amd64/arm64 VM with preexisting SSH/firewall/SQLite data:
+   verify access, monitored values, PSK handshake and retained configuration.
+3. Build the real signed netinstall image; boot BIOS and UEFI, install to a
+   disposable disk, interrupt firstboot and retry. Verify no credentials on media.
+4. Pi 3/4/5 with the actual Trixie image: cold boot, memory, storage, DHCP failure,
+   office/customer move, equal RFC1918 prefixes, alternate interface names.
+5. Real isolated NetBird/Zabbix services: policy enforcement, TLS handshake,
+   actual active/passive item arrival, Primary power loss and Backup takeover,
+   Primary return, Zabbix proxy-group failover timing and both routers' DHCP renewal.
+Mocks establish reconciliation behavior; they do not prove real service failover.
+
+Audit findings disposition (original 24-item report)
+1/7/8/9/20: secret suppression, retained TLS/config, failure propagation covered.
+2/18: NetBird firewall enabled; own-table atomic NAT plus real packet tests.
+3/11/12: preserve/check existing policies/resources; customer policy; metric repair.
+4/5/6/15: resume/ownership, manager-aware DHCP, strict LAN/allocation guards;
+  distributed concurrency remains the explicit operational restriction above.
+10/16/17/19: additive explicit SSH key, validated addresses/bounded API calls,
+  one source bundle/signed ISO base, retained Pi interface and non-destructive retry.
+13/14: periodic LAN/group sync, host registration, active/passive checks,
+  non-privileged service-state UserParameter instead of privileged nft invocation.
+21: fixed literal backslash-n separating the two Grafana download commands.
+22: cross-repository backup/restore divergence remains outside this public-only
+  router task; no private repository or live restore behavior changed.
+23: PatchMon remote deployment quoting is a separate subsystem and remains open.
+24: expanded CI paths, ShellCheck, API/wrapper and isolated Debian/kernel tests.

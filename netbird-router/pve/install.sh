@@ -1,216 +1,136 @@
 #!/usr/bin/env bash
+set +xv
 set -Eeuo pipefail
-
-ROLE="primary"
-CTID=""
-HOSTNAME_CT=""
-CUSTOMER=""
-BRIDGE="vmbr0"
-ROOTFS_STORAGE=""
-TEMPLATE_STORAGE=""
-MEMORY="512"
-SWAP="256"
-CORES="1"
-DISK_GB="4"
-IP_CONFIG="dhcp"
-GATEWAY=""
-MGMT_URL="https://netbird.openmain-it.de"
-SETUP_KEY="${NB_SETUP_KEY:-}"
-API_TOKEN="${NB_API_TOKEN:-}"
-CT_PASSWORD="${NB_CT_PASSWORD:-}"
-SSH_KEY_URL="${NB_CT_SSH_KEY_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-router/pve/authorized_keys}"
-PRIMARY_METRIC="100"
-BACKUP_METRIC="200"
-COMMON_URL="${NETBIRD_ROUTER_COMMON_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/router-install.sh}"
-ZABBIX_URL="${NETBIRD_ROUTER_ZABBIX_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/zabbix-proxy-install.sh}"
-ZABBIX_API_HELPER_URL="${NETBIRD_ROUTER_ZABBIX_API_HELPER_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/zabbix-api-register.sh}"
-ZABBIX_SERVER="${NB_ZABBIX_SERVER:-100.107.91.6}"
-ZABBIX_API_TOKEN="${NB_ZABBIX_API_TOKEN:-}"
-ZABBIX_API_URL="${NB_ZABBIX_API_URL:-https://zabbix.openmain-it.de/api_jsonrpc.php}"
-ZABBIX_PROXYGROUP_NAME="${NB_ZABBIX_PROXYGROUP_NAME:-}"
-ZABBIX_AGENT_GROUP_IPS="${NB_ZABBIX_AGENT_GROUP_IPS:-}"
-METRICS_ENABLED="${NB_METRICS_ENABLED:-1}"
-METRICS_PORT="${NB_METRICS_PORT:-9191}"
-METRICS_DETAIL_PORT="${NB_METRICS_DETAIL_PORT:-9192}"
-METRICS_GROUP="${NB_METRICS_GROUP:-NetBird-Metrics}"
-MONITORING_GROUP="${NB_MONITORING_GROUP:-Monitoring}"
-PROMETHEUS_NETBIRD_IP="${NB_PROMETHEUS_NETBIRD_IP:-100.107.91.6}"
-
-log(){ printf '\033[1;32m[+]\033[0m %s\n' "$*"; }
-die(){ printf '\033[1;31m[FEHLER]\033[0m %s\n' "$*" >&2; exit 1; }
-
+umask 077
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+EXISTING_CT=0
+CTID='' CONFIG='' BRIDGE=vmbr0 STORAGE='' TEMPLATE_STORAGE=local
+MEMORY=1024 CORES=2 DISK=8 IP_CONFIG=dhcp GATEWAY=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --role) ROLE="$2"; shift 2;;
-    --ctid) CTID="$2"; shift 2;;
-    --hostname) HOSTNAME_CT="$2"; shift 2;;
-    --customer) CUSTOMER="$2"; shift 2;;
-    --bridge) BRIDGE="$2"; shift 2;;
-    --storage) ROOTFS_STORAGE="$2"; shift 2;;
-    --template-storage) TEMPLATE_STORAGE="$2"; shift 2;;
-    --memory) MEMORY="$2"; shift 2;;
-    --swap) SWAP="$2"; shift 2;;
-    --cores) CORES="$2"; shift 2;;
-    --disk) DISK_GB="$2"; shift 2;;
-    --ip) IP_CONFIG="$2"; shift 2;;
-    --gateway) GATEWAY="$2"; shift 2;;
-    --management-url) MGMT_URL="$2"; shift 2;;
-    --setup-key) SETUP_KEY="$2"; shift 2;;
-    --api-token) API_TOKEN="$2"; shift 2;;
-    --ct-password) CT_PASSWORD="$2"; shift 2;;
-    --ssh-key-url) SSH_KEY_URL="$2"; shift 2;;
-    --zabbix-server) ZABBIX_SERVER="$2"; shift 2;;
-    --zabbix-api-url) ZABBIX_API_URL="$2"; shift 2;;
-    --zabbix-proxygroup) ZABBIX_PROXYGROUP_NAME="$2"; shift 2;;
-    --zabbix-agent-group-ips) ZABBIX_AGENT_GROUP_IPS="$2"; shift 2;;
-    --metrics-port) METRICS_PORT="$2"; shift 2;;
-    --metrics-detail-port) METRICS_DETAIL_PORT="$2"; shift 2;;
-    --prometheus-netbird-ip) PROMETHEUS_NETBIRD_IP="$2"; shift 2;;
-    --metrics-group) METRICS_GROUP="$2"; shift 2;;
-    --monitoring-group) MONITORING_GROUP="$2"; shift 2;;
-    --no-metrics) METRICS_ENABLED=0; shift;;
-    *) die "Unbekannte Option: $1";;
+    --config) CONFIG=$2; shift 2;;
+    --role) export NB_ROLE="$2"; shift 2;;
+    --customer) export NB_CUSTOMER_NAME="$2"; shift 2;;
+    --hostname) export NB_HOSTNAME="$2"; shift 2;;
+    --management-url) export NB_MANAGEMENT_URL="$2"; shift 2;;
+    --setup-key) export NB_SETUP_KEY="$2"; shift 2;;
+    --api-token) export NB_API_TOKEN="$2"; shift 2;;
+    --zabbix-api-url) export NB_ZABBIX_API_URL="$2"; shift 2;;
+    --zabbix-server) export NB_ZABBIX_SERVER="$2"; shift 2;;
+    --no-metrics) export NB_METRICS_ENABLED=0; shift;;
+    --ctid) CTID=$2; shift 2;;
+    --bridge) BRIDGE=$2; shift 2;;
+    --storage) STORAGE=$2; shift 2;;
+    --template-storage) TEMPLATE_STORAGE=$2; shift 2;;
+    --memory) MEMORY=$2; shift 2;;
+    --cores) CORES=$2; shift 2;;
+    --disk) DISK=$2; shift 2;;
+    --ip) IP_CONFIG=$2; shift 2;;
+    --gateway) GATEWAY=$2; shift 2;;
+    *) echo 'Unbekannte PVE-Option; Zugangsdaten ueber --config oder NB_ Variablen.' >&2; exit 1;;
   esac
 done
-
-[[ $EUID -eq 0 ]] || die "Als root auf dem PVE-Host ausführen."
-command -v pct >/dev/null || die "pct fehlt."
-[[ "$ROLE" == primary || "$ROLE" == backup ]] || die "Rolle muss primary oder backup sein."
-[[ "$METRICS_ENABLED" == 0 || "$METRICS_ENABLED" == 1 ]] || die "NB_METRICS_ENABLED muss 0 oder 1 sein."
-[[ "$METRICS_PORT" =~ ^[0-9]+$ ]] || die "Ungültiger Metrics-Port: $METRICS_PORT"
-(( METRICS_PORT >= 1 && METRICS_PORT <= 65535 )) || die "Ungültiger Metrics-Port: $METRICS_PORT"
-[[ "$METRICS_DETAIL_PORT" =~ ^[0-9]+$ ]] || die "Ungültiger Metrics-Detail-Port: $METRICS_DETAIL_PORT"
-(( METRICS_DETAIL_PORT >= 1 && METRICS_DETAIL_PORT <= 65535 )) || die "Ungültiger Metrics-Detail-Port: $METRICS_DETAIL_PORT"
-[[ -n "$CTID" ]] || CTID=$(pvesh get /cluster/nextid)
-[[ -n "$HOSTNAME_CT" ]] || read -r -p "Hostname: " HOSTNAME_CT
-[[ -n "$CUSTOMER" ]] || read -r -p "Firmenname: " CUSTOMER
-[[ -n "$ZABBIX_PROXYGROUP_NAME" ]] || ZABBIX_PROXYGROUP_NAME="$CUSTOMER"
-[[ -n "$SETUP_KEY" ]] || { read -r -s -p "NetBird Setup Key: " SETUP_KEY; echo; }
-[[ -n "$API_TOKEN" ]] || { read -r -s -p "NetBird API Token: " API_TOKEN; echo; }
-if [[ -z "$CT_PASSWORD" ]]; then
-  read -r -s -p "CT-Passwort (root + omadmin): " CT_PASSWORD; echo
-  read -r -s -p "CT-Passwort wiederholen: " CT_PASSWORD_CONFIRM; echo
-  [[ "$CT_PASSWORD" == "$CT_PASSWORD_CONFIRM" ]] || die "CT-Passwörter stimmen nicht überein."
-fi
-[[ -n "$CT_PASSWORD" ]] || die "CT-Passwort darf nicht leer sein."
-[[ -n "$ZABBIX_API_TOKEN" ]] || { read -r -s -p "Zabbix API Token: " ZABBIX_API_TOKEN; echo; }
-pct status "$CTID" >/dev/null 2>&1 && die "CT $CTID existiert bereits."
-
-case "$(uname -m)" in
-  x86_64) ARCH="amd64";;
-  aarch64|arm64) ARCH="arm64";;
-  *) die "Architektur nicht unterstützt.";;
-esac
-
-modprobe tun || true
-[[ -c /dev/net/tun ]] || die "/dev/net/tun fehlt."
-ip link show "$BRIDGE" >/dev/null 2>&1 || die "Bridge $BRIDGE fehlt."
-
-find_storage(){
-  local content="$1" preferred="${2:-}"
-  if [[ -n "$preferred" ]]; then
-    pvesm status --content "$content" --enabled 1 --storage "$preferred" 2>/dev/null | awk 'NR>1 && $3=="active"{print $1;exit}'
-  else
-    pvesm status --content "$content" --enabled 1 2>/dev/null | awk 'NR>1 && $3=="active"{print $1;exit}'
-  fi
-}
-
-[[ -n "$ROOTFS_STORAGE" ]] || ROOTFS_STORAGE=$(find_storage rootdir)
-[[ -n "$TEMPLATE_STORAGE" ]] || TEMPLATE_STORAGE=$(find_storage vztmpl local)
-[[ -n "$TEMPLATE_STORAGE" ]] || TEMPLATE_STORAGE=$(find_storage vztmpl)
-[[ -n "$ROOTFS_STORAGE" && -n "$TEMPLATE_STORAGE" ]] || die "Kein geeigneter PVE-Storage gefunden."
-
-pveam update >/dev/null
-TEMPLATE=$(pveam available --section system | awk -v a="$ARCH" '$2 ~ /^debian-13-standard_/ && $2 ~ ("_" a "\\.tar\\.") {print $2}' | sort -V | tail -n1)
-[[ -n "$TEMPLATE" ]] || die "Kein Debian-13-Template für $ARCH gefunden."
-TEMPLATE_PATH="$TEMPLATE_STORAGE:vztmpl/$TEMPLATE"
-pveam list "$TEMPLATE_STORAGE" | awk '{print $1}' | grep -Fxq "$TEMPLATE_PATH" || pveam download "$TEMPLATE_STORAGE" "$TEMPLATE"
-
-NET0="name=eth0,bridge=$BRIDGE,type=veth,firewall=0"
-if [[ "$IP_CONFIG" == dhcp ]]; then
-  NET0+=",ip=dhcp"
-else
-  NET0+=",ip=$IP_CONFIG"
-  [[ -n "$GATEWAY" ]] && NET0+=",gw=$GATEWAY"
-fi
-
+if [[ $EUID -ne 0 ]] || ! command -v pct >/dev/null; then { echo 'Auf dem Proxmox-Host als root starten.' >&2; exit 1; }; fi
+command -v python3 >/dev/null
+install -d -m 0700 /var/lib/openmain-router-pve
+exec 9>/var/lib/openmain-router-pve/install.lock
+flock -n 9 || { echo 'PVE-Installer laeuft bereits.' >&2; exit 1; }
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
-curl -fsSL "$SSH_KEY_URL" -o "$TMP/authorized_keys" || die "SSH Public Key konnte nicht geladen werden: $SSH_KEY_URL"
-grep -Eq '^ssh-(ed25519|rsa|ecdsa-[^ ]+) ' "$TMP/authorized_keys" || die "Ungültige authorized_keys-Datei."
-chmod 600 "$TMP/authorized_keys"
-
-log "Erstelle CT $CTID ($HOSTNAME_CT)"
-pct create "$CTID" "$TEMPLATE_PATH" \
-  --hostname "$HOSTNAME_CT" \
-  --arch "$ARCH" \
-  --unprivileged 0 \
-  --features nesting=1 \
-  --cores "$CORES" \
-  --memory "$MEMORY" \
-  --swap "$SWAP" \
-  --rootfs "$ROOTFS_STORAGE:$DISK_GB" \
-  --net0 "$NET0" \
-  --onboot 1 \
-  --ostype debian \
-  --password "$CT_PASSWORD" \
-  --ssh-public-keys "$TMP/authorized_keys"
-
-CONF="/etc/pve/lxc/$CTID.conf"
-grep -qF 'lxc.cgroup2.devices.allow: c 10:200 rwm' "$CONF" || echo 'lxc.cgroup2.devices.allow: c 10:200 rwm' >> "$CONF"
-grep -qF 'lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file' "$CONF" || echo 'lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file' >> "$CONF"
-
-pct start "$CTID"
-for _ in {1..30}; do pct exec "$CTID" -- true >/dev/null 2>&1 && break; sleep 1; done
-pct exec "$CTID" -- test -c /dev/net/tun || die "TUN nicht im Container."
-
-curl -fsSL "$COMMON_URL" -o "$TMP/router-install.sh" || die "router-install.sh konnte nicht von GitHub geladen werden."
-curl -fsSL "$ZABBIX_URL" -o "$TMP/zabbix-proxy-install.sh" || die "zabbix-proxy-install.sh konnte nicht von GitHub geladen werden."
-curl -fsSL "$ZABBIX_API_HELPER_URL" -o "$TMP/zabbix-api-register.sh" || die "zabbix-api-register.sh konnte nicht von GitHub geladen werden."
-curl -fsSL "https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-router/pve/install-dhcp-recovery.sh" -o "$TMP/install-dhcp-recovery.sh" || die "DHCP-Recovery-Skript konnte nicht geladen werden."
-chmod 700 "$TMP/install-dhcp-recovery.sh"
-pct push "$CTID" "$TMP/install-dhcp-recovery.sh" /root/install-dhcp-recovery.sh -perms 700
-chmod 700 "$TMP/router-install.sh" "$TMP/zabbix-proxy-install.sh" "$TMP/zabbix-api-register.sh"
-pct push "$CTID" "$TMP/router-install.sh" /root/router-install.sh -perms 700
-pct push "$CTID" "$TMP/zabbix-proxy-install.sh" /usr/local/sbin/zabbix-proxy-install -perms 755
-pct push "$CTID" "$TMP/zabbix-api-register.sh" /usr/local/sbin/zabbix-api-register -perms 755
-
-cat > "$TMP/secrets" <<EOF
-NB_SETUP_KEY=$(printf '%q' "$SETUP_KEY")
-NB_API_TOKEN=$(printf '%q' "$API_TOKEN")
-NB_CT_PASSWORD=$(printf '%q' "$CT_PASSWORD")
-NB_MANAGEMENT_URL=$(printf '%q' "$MGMT_URL")
-NB_ROLE=$(printf '%q' "$ROLE")
-NB_PRIMARY_METRIC=$(printf '%q' "$PRIMARY_METRIC")
-NB_BACKUP_METRIC=$(printf '%q' "$BACKUP_METRIC")
-NB_ZABBIX_SERVER=$(printf '%q' "$ZABBIX_SERVER")
-NB_ZABBIX_API_TOKEN=$(printf '%q' "$ZABBIX_API_TOKEN")
-NB_ZABBIX_API_URL=$(printf '%q' "$ZABBIX_API_URL")
-NB_ZABBIX_PROXYGROUP_NAME=$(printf '%q' "$ZABBIX_PROXYGROUP_NAME")
-NB_ZABBIX_AGENT_GROUP_IPS=$(printf '%q' "$ZABBIX_AGENT_GROUP_IPS")
-NB_METRICS_ENABLED=$(printf '%q' "$METRICS_ENABLED")
-NB_METRICS_PORT=$(printf '%q' "$METRICS_PORT")
-NB_METRICS_DETAIL_PORT=$(printf '%q' "$METRICS_DETAIL_PORT")
-NB_METRICS_GROUP=$(printf '%q' "$METRICS_GROUP")
-NB_MONITORING_GROUP=$(printf '%q' "$MONITORING_GROUP")
-NB_PROMETHEUS_NETBIRD_IP=$(printf '%q' "$PROMETHEUS_NETBIRD_IP")
-EOF
-chmod 600 "$TMP/secrets"
-pct push "$CTID" "$TMP/secrets" /root/.netbird-router-secrets -perms 600
-
-QC=$(printf '%q' "$CUSTOMER")
-QH=$(printf '%q' "$HOSTNAME_CT")
-pct exec "$CTID" -- /root/install-dhcp-recovery.sh || die "DHCP-Recovery konnte nicht eingerichtet werden."
-
-pct exec "$CTID" -- bash -lc "set -a; source /root/.netbird-router-secrets; set +a; /root/router-install.sh --role \"\$NB_ROLE\" --management-url \"\$NB_MANAGEMENT_URL\" --zabbix-server \"\$NB_ZABBIX_SERVER\" --customer $QC --hostname $QH; rc=\$?; rm -f /root/.netbird-router-secrets; exit \$rc"
-
-log "Fertig. Prüfen mit:"
-echo "pct exec $CTID -- netbird status"
-echo "pct exec $CTID -- nft list table ip mein_binat"
-echo "pct exec $CTID -- cat /proc/sys/net/ipv4/ip_forward"
-echo "pct exec $CTID -- systemctl status zabbix-proxy --no-pager"
-echo "pct exec $CTID -- systemctl status zabbix-agent2 --no-pager"
-if [[ "$METRICS_ENABLED" == 1 ]]; then
-  echo "pct exec $CTID -- curl -fsS http://127.0.0.1:$METRICS_PORT/metrics | grep '^netbird_' | head"
-  echo "pct exec $CTID -- systemctl status openmain-netbird-metrics-proxy.socket --no-pager"
+trap 'rm -rf -- "$TMP"' EXIT
+args=("$TMP/customer.json")
+[[ -z "$CONFIG" ]] || args+=("$CONFIG")
+python3 "$ROOT/netbird-router/common/prepare_config.py" "${args[@]}"
+readarray -t identity < <(python3 - "$TMP/customer.json" <<'PY'
+import hashlib,json,sys
+c=json.load(open(sys.argv[1]));identity=hashlib.sha256((c['NB_CUSTOMER_NAME']+'\0'+c['NB_ROLE']).encode()).hexdigest()[:20]
+print(identity);print(c['NB_ROLE']);print(c.get('NB_HOSTNAME') or 'router-'+identity)
+PY
+)
+ID=${identity[0]}
+HOSTNAME_CT=${identity[2]}
+STATE="/var/lib/openmain-router-pve/$ID.ctid"
+if [[ -s "$STATE" ]]; then
+  read -r SAVED < "$STATE"
+  [[ -z "$CTID" || "$CTID" == "$SAVED" ]] || { echo 'CTID weicht vom Wiederaufnahmestatus ab.' >&2; exit 1; }
+  CTID=$SAVED
 fi
+[[ -n "$CTID" ]] || CTID=$(pvesh get /cluster/nextid)
+[[ "$CTID" =~ ^[0-9]+$ && "$MEMORY" =~ ^[0-9]+$ && "$CORES" =~ ^[0-9]+$ && "$DISK" =~ ^[0-9]+$ ]] || exit 1
+(( MEMORY >= 512 && CORES >= 1 && DISK >= 4 )) || { echo 'Mindestens 512 MB, 1 CPU und 4 GB erforderlich.' >&2; exit 1; }
+ip link show "$BRIDGE" >/dev/null
+if pct status "$CTID" >/dev/null 2>&1; then
+  EXISTING_CT=1
+  CT_CONFIG=$(pct config "$CTID")
+  mapfile -t descriptions < <(sed -n 's/^description: //p' <<< "$CT_CONFIG")
+  # PVE renders the stored trailing LF as %0A. Accept only that exact suffix,
+  # never arbitrary URL decoding, whitespace trimming or substring matching.
+  [[ ${#descriptions[@]} == 1 && ( "${descriptions[0]}" == "OpenMain managed $ID" || "${descriptions[0]}" == "OpenMain managed $ID%0A" ) ]] \
+    || { echo 'Vorhandener CT gehoert nicht zu diesem Auftrag.' >&2; exit 1; }
+  pct status "$CTID" | grep -q running || { echo 'Bestehender CT ist gestoppt; keine automatische Aktivierung vor Bestandspruefung.' >&2; exit 1; }
+  readarray -t admission < <(python3 - "$TMP/customer.json" <<'PYCHECK'
+import json,sys
+c=json.load(open(sys.argv[1]))
+for k,default in [('NB_CUSTOMER_NAME',''),('NB_ROLE',''),('NB_MANAGEMENT_URL','https://netbird.openmain-it.de'),('NB_ZABBIX_SERVER','100.107.91.6'),('NB_LAN_INTERFACE',''),('NB_ZABBIX_ENABLED','1')]:
+    print(c.get(k,default))
+PYCHECK
+)
+  # Source travels as code, not a guest file; no bundle/credential push precedes it.
+  PROFILE_INFO=$(pct exec "$CTID" -- python3 -c "$(cat "$ROOT/netbird-router/common/preflight.py")" \
+    --customer "${admission[0]}" --role "${admission[1]}" --management-url "${admission[2]}" \
+    --zabbix-server "${admission[3]}" --lan-interface "${admission[4]}" --zabbix-enabled "${admission[5]}" --report-profile) \
+    || { echo 'Gast-Bestandspruefung abgelehnt; keine Dateien/Pakete/Dienste geaendert.' >&2; exit 1; }
+  ACTIVE_PROFILE=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["path"])' <<<"$PROFILE_INFO")
+  if [[ -z "$ACTIVE_PROFILE" ]]; then
+    python3 "$ROOT/netbird-router/common/prepare_config.py" "${args[@]}" --require-setup-key
+  fi
+else
+  python3 "$ROOT/netbird-router/common/prepare_config.py" "${args[@]}" --require-setup-key
+  modprobe tun
+  [[ -c /dev/net/tun ]]
+  [[ -n "$STORAGE" ]] || STORAGE=$(pvesm status --content rootdir --enabled 1 | awk 'NR>1 && $3=="active"{print $1;exit}')
+  [[ -n "$STORAGE" ]]
+  pveam update >/dev/null
+  TEMPLATE=$(pveam available --section system | awk '$2 ~ /^debian-13-standard_.*_amd64.tar./{print $2}' | sort -V | tail -n1)
+  [[ -n "$TEMPLATE" ]]
+  pveam download "$TEMPLATE_STORAGE" "$TEMPLATE"
+  NET="name=eth0,bridge=$BRIDGE,type=veth,firewall=1,ip=$IP_CONFIG"
+  [[ -z "$GATEWAY" ]] || NET+=",gw=$GATEWAY"
+  # Write intent before creation; a retry validates the CT ownership marker.
+  printf '%s\n' "$CTID" > "$STATE"
+  # pct creates the rootfs before extracting as UID 100000. Its parent must
+  # remain traversable for the unprivileged extractor; secrets stay under 077.
+  (umask 022
+   pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$TEMPLATE" --hostname "$HOSTNAME_CT" \
+     --description "OpenMain managed $ID" --ostype debian --arch amd64 --unprivileged 1 \
+     --memory "$MEMORY" --cores "$CORES" --rootfs "$STORAGE:$DISK" --net0 "$NET" --onboot 1 \
+     --dev0 /dev/net/tun)
+fi
+if [[ "$EXISTING_CT" == 0 ]]; then
+  pct status "$CTID" | grep -q running || pct start "$CTID"
+fi
+# A fresh Debian template may lack Python. The shell gate only admits an
+# entirely pristine guest, before file transfer or DHCP service installation.
+if [[ "$EXISTING_CT" == 0 ]]; then
+  pct exec "$CTID" -- bash -c "$(cat "$ROOT/netbird-router/common/pristine.sh")" \
+    || { echo 'Neuer Gast enthaelt Bestand; keine automatische Einrichtung.' >&2; exit 1; }
+fi
+# No credentials in pct arguments or shell snippets. Transfer protected file.
+tar -C "$ROOT" -czf "$TMP/bundle.tar.gz" router-install.sh zabbix-proxy-install.sh zabbix-api-register.sh netbird-router netbird-prometheus
+pct push "$CTID" "$TMP/bundle.tar.gz" /root/openmain-bundle.tar.gz --perms 600
+pct push "$CTID" "$TMP/customer.json" /root/openmain-customer.json --perms 600
+pct exec "$CTID" -- bash -c 'set +xv; set -eu; mkdir -p /opt/openmain-router; tar -xzf /root/openmain-bundle.tar.gz -C /opt/openmain-router; rm /root/openmain-bundle.tar.gz; bash /opt/openmain-router/netbird-router/pve/install-dhcp-recovery.sh'
+# Recovery is installed before any package/API access. Wait for usable IPv4.
+ready=0
+for _ in {1..90}; do
+  if pct exec "$CTID" -- bash -c 'ip -4 route show default | grep -q default'; then ready=1; break; fi
+  pct exec "$CTID" -- bash /opt/openmain-router/netbird-router/common/dhcp-recovery.sh >/dev/null 2>&1 || true
+  sleep 2
+done
+[[ "$ready" == 1 ]] || { echo "CT $CTID: Netzwerk ausstehend. Erneut mit gleicher Konfiguration starten." >&2; exit 1; }
+if ! pct exec "$CTID" -- python3 --version >/dev/null 2>&1; then
+  [[ "$EXISTING_CT" == 0 ]] || exit 1
+  pct exec "$CTID" -- bash -c 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y python3'
+fi
+pct exec "$CTID" -- bash /opt/openmain-router/router-install.sh --config /root/openmain-customer.json
+pct exec "$CTID" -- rm -f /root/openmain-customer.json
+printf 'CT %s erfolgreich. Wiederaufnahme-ID: %s\n' "$CTID" "$ID"

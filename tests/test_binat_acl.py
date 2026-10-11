@@ -12,7 +12,7 @@ spec.loader.exec_module(acl)
 CFG = dict(overlay='wt0', lan='eth0', virtual='10.30.2.0/24', real='192.168.178.0/24')
 
 
-def native_rule(source='@nb-7d0b7d19', extra=None):
+def native_rule(source='@nb-7d0b7d19', extra=None, handle=51):
     expr = [
         {'match': {'op': '==', 'left': {'payload': {'protocol': 'ip', 'field': 'saddr'}}, 'right': source}},
         {'match': {'op': '==', 'left': {'payload': {'protocol': 'ip', 'field': 'daddr'}},
@@ -21,7 +21,7 @@ def native_rule(source='@nb-7d0b7d19', extra=None):
         {'accept': None}]
     if extra is not None:
         expr.insert(2, extra)
-    return dict(family='ip', table='netbird', chain='netbird-rt-fwd', handle=51, expr=expr)
+    return dict(family='ip', table='netbird', chain='netbird-rt-fwd', handle=handle, expr=expr)
 
 
 def output(*rules):
@@ -52,9 +52,56 @@ class NetBirdBINATPolicyTests(unittest.TestCase):
             with self.subTest(rule=rule), self.assertRaises(acl.Refused):
                 acl.transaction(output(rule), CFG)
 
-    def test_policy_duplicates_are_rejected(self):
+    def test_two_native_backup_rules_are_preserved_atomically(self):
+        # CT 111 has a customer source set and a separate primary router IP.
+        rules = output(native_rule(handle=38),
+                       native_rule('100.107.35.72', handle=39))
+        command = acl.transaction(rules, CFG)
+        lines = command.strip().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertIn('handle 38', lines[0])
+        self.assertIn('ip saddr @nb-7d0b7d19', lines[0])
+        self.assertIn('handle 39', lines[1])
+        self.assertIn('ip saddr 100.107.35.72', lines[1])
+        for line in lines:
+            self.assertIn('ct status dnat', line)
+            self.assertIn('ct original daddr & 255.255.255.0 == 10.30.2.0', line)
+            self.assertIn('ip daddr 192.168.178.0/24', line)
+            self.assertNotIn('add rule', line)
+
+    def test_duplicate_or_unsafe_sources_are_rejected(self):
+        invalid = (
+            output(native_rule(), native_rule(handle=52)),
+            output(native_rule(), native_rule('100.107.35.72', handle=51)),
+            output(native_rule('100.107.35.72')),
+            output(native_rule(), native_rule('192.168.178.1', handle=52)),
+            output(native_rule(), native_rule('0.0.0.0/0', handle=52)),
+            output(native_rule(), native_rule('100.107.35.72;flush ruleset', handle=52)),
+        )
+        for rules in invalid:
+            with self.subTest(rules=rules), self.assertRaises(acl.Refused):
+                acl.transaction(rules, CFG)
+
+    def test_two_managed_backup_rules_are_clean_noop(self):
+        native = native_rule()
+        native['comment'] = acl.MARKER
+        native['expr'] = [
+            {'match': {'op': '==', 'left': {'meta': {'key': 'iifname'}}, 'right': 'wt0'}},
+            {'match': {'op': '==', 'left': {'meta': {'key': 'oifname'}}, 'right': 'eth0'}},
+            {'match': {'op': '==', 'left': {'payload': {'protocol': 'ip', 'field': 'saddr'}}, 'right': '@nb-7d0b7d19'}},
+            {'match': {'op': 'in', 'left': {'ct': {'key': 'status'}}, 'right': 'dnat'}},
+            {'match': {'op': '==', 'left': {'ct': {'dir': 'original', 'key': 'daddr'}},
+                       'right': {'prefix': {'addr': '10.30.2.0', 'len': 24}}}},
+            {'match': {'op': '==', 'left': {'payload': {'protocol': 'ip', 'field': 'daddr'}},
+                       'right': {'prefix': {'addr': '192.168.178.0', 'len': 24}}}},
+            {'counter': {'packets': 0, 'bytes': 0}}, {'accept': None}]
+        peer = {**native, 'handle': 39, 'expr': list(native['expr'])}
+        peer['expr'][2] = {'match': {'op': '==',
+            'left': {'payload': {'protocol': 'ip', 'field': 'saddr'}},
+            'right': '100.107.35.72'}}
+        self.assertEqual('', acl.transaction(output(native, peer), CFG))
         with self.assertRaises(acl.Refused):
-            acl.transaction(output(native_rule(), native_rule('@nb-ffeeddcc')), CFG)
+            acl.transaction(output(native, native_rule('100.107.35.72', handle=39)), CFG)
 
     def test_other_customer_destination_is_not_used(self):
         rule = native_rule()

@@ -40,6 +40,24 @@ trap 'rm -rf -- "$TMP"' EXIT
 args=("$TMP/customer.json")
 [[ -z "$CONFIG" ]] || args+=("$CONFIG")
 python3 "$ROOT/netbird-router/common/prepare_config.py" "${args[@]}"
+# Prompt for enrollment only when no NetBird Setup-Key is already supplied.
+# The second phase re-reads the root-only JSON instead of losing API tokens.
+ensure_setup_key(){
+  local setup_present
+  setup_present=$(python3 - "$TMP/customer.json" <<'PYSETUP'
+import json,sys
+with open(sys.argv[1]) as stream:
+    values=json.load(stream)
+value=values.get('NB_SETUP_KEY')
+if value is not None and not isinstance(value,str):
+    sys.exit(2)
+print('yes' if value else 'no')
+PYSETUP
+  ) || { echo 'Ungueltige gesicherte Setup-Key-Konfiguration.' >&2; return 1; }
+  if [[ "$setup_present" == no ]]; then
+    python3 "$ROOT/netbird-router/common/prepare_config.py" "$TMP/customer.json" "$TMP/customer.json" --require-setup-key
+  fi
+}
 readarray -t identity < <(python3 - "$TMP/customer.json" <<'PY'
 import hashlib,json,sys
 c=json.load(open(sys.argv[1]));identity=hashlib.sha256((c['NB_CUSTOMER_NAME']+'\0'+c['NB_ROLE']).encode()).hexdigest()[:20]
@@ -81,14 +99,10 @@ PYCHECK
     || { echo 'Gast-Bestandspruefung abgelehnt; keine Dateien/Pakete/Dienste geaendert.' >&2; exit 1; }
   ACTIVE_PROFILE=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["path"])' <<<"$PROFILE_INFO")
   if [[ -z "$ACTIVE_PROFILE" ]]; then
-    # Reuse the first protected stage's values (API tokens/customer/role).
-    # Otherwise prepare_config prompts for every field a second time.
-    python3 "$ROOT/netbird-router/common/prepare_config.py" "$TMP/customer.json" "$TMP/customer.json" --require-setup-key
+    ensure_setup_key
   fi
 else
-  # Reuse the first protected stage's values (API tokens/customer/role).
-  # Otherwise prepare_config prompts for every field a second time.
-  python3 "$ROOT/netbird-router/common/prepare_config.py" "$TMP/customer.json" "$TMP/customer.json" --require-setup-key
+  ensure_setup_key
   modprobe tun
   [[ -c /dev/net/tun ]]
   [[ -n "$STORAGE" ]] || STORAGE=$(pvesm status --content rootdir --enabled 1 | awk 'NR>1 && $3=="active"{print $1;exit}')

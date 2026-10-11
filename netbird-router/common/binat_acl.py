@@ -151,7 +151,9 @@ def transaction(rules, cfg):
     handles = [handle for handle, _ in chosen]
     old_handles = [rule.get('handle') for rule in existing]
     if (any(type(handle) is not int or handle <= 0 for handle in old_handles) or
-            len(set(handles + old_handles)) != len(handles + old_handles) or
+            len(set(handles)) != len(handles) or
+            len(set(old_handles)) != len(old_handles) or
+            (bool(candidates) and bool(set(handles) & set(old_handles))) or
             len(set(sources)) != len(sources)):
         raise Refused('Duplicate NetBird ACL source or handle')
     if existing and not candidates:

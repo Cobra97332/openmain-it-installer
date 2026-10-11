@@ -1,6 +1,9 @@
 """Admission regression: synthetic files only, read commands mocked, no APIs."""
 import importlib.util
 import json
+import base64
+import os
+from unittest.mock import patch
 from pathlib import Path
 import re
 import subprocess
@@ -18,11 +21,14 @@ spec.loader.exec_module(runtime)
 class AdmissionTests(Sandbox):
     def setUp(self):
         super().setUp()
+        owner=patch.object(admission,'PROFILE_UID',os.geteuid());owner.start();self.addCleanup(owner.stop)
         self.fs=self.root/'fs';self.fs.mkdir()
         self.desired=dict(customer='Synthetic',role='primary',management_url='https://api.invalid',
                           zabbix_server='100.64.0.20',zabbix_enabled='1',lan_interface='')
         self.calls=[];self.tables=[];self.connected=True;self.live='';self.network='192.0.2.10'
         self.binaries={'nft','ip'}
+        self.modern_status=None
+        self.overlay_interface='wt-lab'
     def put(self,name,value):
         p=self.fs/name.lstrip('/');p.parent.mkdir(parents=True,exist_ok=True)
         p.write_text(json.dumps(value) if isinstance(value,dict) else value);p.chmod(0o600)
@@ -33,10 +39,10 @@ class AdmissionTests(Sandbox):
             return json.dumps({'nftables':[{'table':{'name':name}} for name in self.tables]})
         if args==('nft','-nn','list','ruleset'):return self.live
         if args==('nft','-s','list','table','ip','openmain_binat'):return self.live
-        if args==('netbird','status','--json'):return json.dumps({'management':{'connected':self.connected}})
+        if args==('netbird','status','--json'):return json.dumps(self.modern_status or {'management':{'connected':self.connected}})
         if args==('ip','-j','-4','route','show','default'):return '[{"dst":"default","dev":"eth0"}]'
         if args==('ip','-j','-4','address','show'):
-            return json.dumps([{'ifname':'eth0','addr_info':[{'family':'inet','scope':'global','local':self.network,'prefixlen':24}]}])
+            return json.dumps([{'ifname':'eth0','addr_info':[{'family':'inet','scope':'global','local':self.network,'prefixlen':24}]}, {'ifname':self.overlay_interface,'addr_info':[{'family':'inet','scope':'global','local':'100.107.35.72','prefixlen':16}]}])
         if args[0] in ('zabbix_proxy','zabbix_agent2') and args[1:3]==('-T','-c'):return ''
         self.fail('Unexpected command: '+str(args))
     def inspect(self):
@@ -48,6 +54,109 @@ class AdmissionTests(Sandbox):
         self.put('/var/lib/netbird-kundenrouter/state.json',dict(customer='Synthetic',role='primary',lan='192.0.2.0/24',virtual='10.30.1.0/24',peer_id='synthetic-peer'))
         self.put('/etc/netbird/config.json',dict(ManagementURL='https://api.invalid',DisableFirewall=False))
         self.binaries.add('netbird')
+    def modern(self, name='default', user=''):
+        self.managed();(self.fs/'etc/netbird/config.json').unlink()
+        self.put('/var/lib/netbird-kundenrouter/progress.json',dict(customer='Synthetic',role='primary',phase='failed'))
+        config=dict(ManagementURL='https://api.invalid',DisableFirewall=False,WgIface='wt-lab',
+                    PrivateKey=base64.b64encode(bytes(range(32))).decode())
+        filename='/var/lib/netbird/'+('default.json' if name=='default' else user+'/'+name+'.json')
+        self.put(filename,config)
+        self.put('/var/lib/netbird/active_profile.json',dict(name=name,username=user))
+        self.put('/var/lib/netbird/state.json',dict(routes={},test='synthetic-state'))
+        self.put('/var/lib/netbird/service.json',dict(LogFile='synthetic-service-state'))
+        self.modern_status=dict(management=dict(connected=True,url='https://api.invalid'),
+                                profileName=name,netbirdIp='100.107.35.72/16',daemonStatus='Connected')
+        return self.fs/filename.lstrip('/')
+
+    def test_netbird_080_default_and_state_files_resume_read_only(self):
+        self.modern();before=self.snapshot()
+        for _ in range(2):
+            info=admission.inspect(self.fs,self.desired,self.command,lambda name:name in self.binaries,report=True)
+            self.assertEqual(info,dict(path='/var/lib/netbird/default.json',interface='wt-lab'))
+        self.assertEqual(self.snapshot(),before)
+        self.assertTrue(all(c[0] in ('netbird','ip','nft') for c in self.calls))
+
+    def test_named_active_profile_selected_over_default_and_inactive_profiles(self):
+        selected=self.modern('profile-id','root')
+        self.put('/var/lib/netbird/default.json',dict(ManagementURL='https://other.invalid',DisableFirewall=True,Name='inactive default'))
+        self.put('/var/lib/netbird/root/another.json',dict(Name='inactive profile',ManagementURL='https://other.invalid'))
+        self.put('/var/lib/netbird/root/profile-id.state.json',dict(email='synthetic'))
+        before=self.snapshot();self.inspect()
+        self.assertEqual(admission.resolve_profile(self.fs)['path'],'/'+str(selected.relative_to(self.fs)))
+        self.assertEqual(self.snapshot(),before)
+
+    def test_invalid_active_assignment_multiple_and_orphan_profiles_are_refused(self):
+        self.modern();selector=self.fs/'var/lib/netbird/active_profile.json'
+        for value in ({},dict(name='default'),dict(name='../default',username=''),dict(name='state',username=''),
+                      dict(name='other',username=''),dict(name='other',username='../root'),dict(name='missing',username='root'),
+                      dict(name=None,username=''),dict(name='default',username=False)):
+            selector.write_text(json.dumps(value));self.rejected()
+        selector.unlink();self.rejected()
+        self.put('/var/lib/netbird/active_profile.json',dict(name='default',username=''))
+        self.put('/var/lib/netbird/root/other.json',dict(Name='default'));self.rejected()
+
+    def test_active_profile_security_endpoint_firewall_status_and_interface_conflicts(self):
+        profile=self.modern();original=profile.read_text()
+        for changes in (dict(DisableFirewall=True),dict(DisableFirewall='false'),dict(ManagementURL='https://other.invalid'),
+                        dict(WgIface='bad/iface'),dict(PrivateKey='invalid')):
+            value=json.loads(original);value.update(changes);profile.write_text(json.dumps(value));self.rejected()
+        profile.write_text(original)
+        for change in (dict(management=dict(connected=False,url='https://api.invalid')),
+                       dict(management=dict(connected=True,url='https://other.invalid')),dict(profileName='other'),
+                       dict(netbirdIp='100.107.35.73/16'),dict(daemonStatus='Connecting')):
+            old=self.modern_status;self.modern_status=dict(old,**change);self.rejected();self.modern_status=old
+        profile.chmod(0o644);self.rejected();profile.chmod(0o600)
+        target=self.root/'outside.json';target.write_text(original);profile.unlink();profile.symlink_to(target);self.rejected()
+
+    def test_binat_uses_selected_profile_interface_and_never_exposes_key(self):
+        profile=self.modern();before=profile.read_bytes()
+        helper=self.root/'netbird-router/common/preflight.py';helper.parent.mkdir(parents=True)
+        helper.write_text((ROOT/'netbird-router/common/preflight.py').read_text().replace("root=Path('/')",f'root=Path({str(self.fs)!r})').replace('PROFILE_UID = 0','PROFILE_UID = os.geteuid()'))
+        (self.root/'status.json').write_text(json.dumps(self.modern_status))
+        (self.root/'addresses.json').write_text(self.command('ip','-j','-4','address','show'))
+        self.executable('netbird','#!/bin/sh\n[ "$*" = "status --json" ] || exit 98\ncat "$MOCK_ROOT/status.json"\n')
+        self.executable('ip','#!/bin/sh\ncat "$MOCK_ROOT/addresses.json"\n')
+        self.executable('nft',"""#!/bin/sh
+if [ "$1" = -c ] && [ "$2" = -f ]; then cp "$3" "$MOCK_ROOT/generated.nft"; fi
+exit 98
+""")
+        body=functions('router-install.sh',['die','load_netbird_profile','write_nft']).replace('/etc/nftables.d',str(self.fs/'etc/nftables.d'))
+        result=self.bash('set -Eeuo pipefail\n'+body+f"""
+SCRIPT_DIR={self.root}
+RUNTIME={ROOT}/netbird-router/common/runtime.py
+NETBIRD_PROFILE=/var/lib/netbird/default.json
+MGMT_URL=https://api.invalid
+LAN_IF=eth0
+VIRTUAL_NET=10.30.1.0/24
+LAN_NET=192.0.2.0/24
+write_nft
+""")
+        self.assertNotEqual(result.returncode,0)
+        generated=(self.root/'generated.nft').read_text()
+        self.assertIn('iifname "wt-lab"',generated);self.assertNotIn('iifname "wt0"',generated)
+        self.assertEqual(profile.read_bytes(),before)
+        self.assertNotIn(json.loads(before)['PrivateKey'],result.stdout+result.stderr)
+
+    def test_older_management_url_object_remains_supported_and_checks_credentials(self):
+        self.managed();self.put('/etc/netbird/config.json',dict(ManagementURL=dict(Scheme='https',Host='api.invalid:443',Path=''),WgIface='wt-old',DisableFirewall=False))
+        before=self.snapshot();self.inspect();self.assertEqual(before,self.snapshot())
+        self.assertEqual(admission.resolve_profile(self.fs)['interface'],'wt-old')
+        self.put('/etc/netbird/config.json',dict(ManagementURL=dict(Scheme='https',Host='api.invalid',User=dict(Username='secret')),DisableFirewall=False))
+        self.rejected()
+
+    def test_profile_switch_during_readonly_status_check_is_refused(self):
+        self.modern();before=self.snapshot()
+        def switch(*args):
+            response=self.command(*args)
+            if args==('netbird','status','--json'):
+                self.put('/var/lib/netbird/active_profile.json',dict(name='missing',username='root'))
+            return response
+        with self.assertRaises((admission.Rejected,OSError)):
+            admission.inspect(self.fs,self.desired,switch,lambda name:name in self.binaries)
+        # Only the simulated concurrent actor changed a file, never the checker.
+        after=self.snapshot();changed=[k for k in before if before[k]!=after[k]]
+        self.assertEqual(changed,['var/lib/netbird/active_profile.json'])
+
     def zabbix(self):
         self.managed()
         self.put('/etc/openmain-router/zabbix-sync.json',dict(customer='Synthetic',proxy='proxy-test-primary',host='router-test-primary',identity='Test identity',psk_file='/etc/zabbix/zabbix_proxy.psk',interface='eth0',network='192.0.2.0/24'))
@@ -123,7 +232,7 @@ class AdmissionTests(Sandbox):
         source=(ROOT/'router-install.sh').read_text().replace('[[ $EUID -eq 0 ]]','[[ 0 -eq 0 ]]')
         source=re.sub(r'/(?:etc|var|usr/local|root)/',lambda m:str(self.fs)+m[0],source)
         script=bundle/'router-install.sh';script.write_text(source)
-        checker=(ROOT/'netbird-router/common/preflight.py').read_text().replace("root=Path('/')",f'root=Path({str(self.fs)!r})')
+        checker=(ROOT/'netbird-router/common/preflight.py').read_text().replace("root=Path('/')",f'root=Path({str(self.fs)!r})').replace("PROFILE_UID = 0", "PROFILE_UID = os.geteuid()")
         (common/'preflight.py').write_text(checker)
         (common/'runtime.py').write_text('import sys\nassert sys.argv[1] == "platform"\n')
         for name in ('apt-get','systemctl','curl','sysctl','netbird','install','nft'):
@@ -133,7 +242,7 @@ class AdmissionTests(Sandbox):
         self.env.update(NB_CUSTOMER_NAME='Synthetic',NB_ROLE='primary',NB_MANAGEMENT_URL='https://api.invalid',NB_ZABBIX_SERVER='100.64.0.20')
         # Profile-only disabled firewall must fail even without an old NFT file.
         self.managed();self.put('/etc/netbird/config.json',dict(ManagementURL='https://api.invalid',DisableFirewall=True))
-        for scenario in ('disabled-profile','legacy-binat','manual-zabbix','changed-lan'):
+        for scenario in ('disabled-profile','legacy-binat','manual-zabbix','changed-lan','modern-disconnected','modern-ambiguous'):
             with self.subTest(scenario=scenario):
                 if scenario=='legacy-binat':self.put('/etc/nftables.d/netbird-kundenrouter.nft','table ip mein_binat {}')
                 elif scenario=='manual-zabbix':
@@ -141,6 +250,13 @@ class AdmissionTests(Sandbox):
                     self.managed();self.put('/etc/zabbix/zabbix_agent2.conf','Hostname=manual\n')
                     self.executable('netbird','#!/bin/sh\n[ "$*" = "status --json" ] || exit 98\necho \'{"management":{"connected":true}}\'\n')
                 elif scenario=='changed-lan':self.put('/var/lib/netbird-kundenrouter/state.json',dict(customer='Synthetic',role='primary',lan='198.51.100.0/24'))
+                elif scenario.startswith('modern-'):
+                    self.env['NB_SETUP_KEY']=''
+                    (self.fs/'etc/zabbix/zabbix_agent2.conf').unlink(missing_ok=True)
+                    self.modern()
+                    if scenario=='modern-disconnected':
+                        self.executable('netbird','#!/bin/sh\necho \'{"management":{"connected":false}}\'\n')
+                    else:self.put('/var/lib/netbird/root/other.json',dict(Name='default'))
                 before=self.snapshot()
                 result=subprocess.run(['bash',str(script)],env=self.env,capture_output=True,text=True,timeout=10)
                 self.assertNotEqual(result.returncode,0);self.clean_output(result)
@@ -149,10 +265,13 @@ class AdmissionTests(Sandbox):
                 self.assertEqual(self.snapshot(),before)
     def test_connected_profile_never_starts_stops_or_reenrolls(self):
         profile=self.put('/etc/netbird/config.json',dict(ManagementURL='https://api.invalid',DisableFirewall=False))
-        body=functions('router-install.sh',['die','connect_netbird']).replace('/etc/netbird/config.json',str(profile))
+        body=functions('router-install.sh',['die','connect_netbird'])
+        helper=self.root/'netbird-router/common/preflight.py';helper.parent.mkdir(parents=True)
+        helper.write_text((ROOT/'netbird-router/common/preflight.py').read_text().replace("root=Path('/')",f'root=Path({str(self.fs)!r})').replace('PROFILE_UID = 0','PROFILE_UID = os.geteuid()'))
+        body=functions('router-install.sh',['die','load_netbird_profile','connect_netbird'])
         self.executable('netbird','#!/bin/sh\n[ "$*" = "status --json" ] || exit 98\necho \'{"management":{"connected":true}}\'\n')
         self.executable('systemctl','#!/bin/sh\necho forbidden >> "$MOCK_ROOT/effects"\nexit 98\n')
-        r=self.bash('set -Eeuo pipefail\n'+body+'\nPROFILE_EXISTED=1; MGMT_URL=https://api.invalid; connect_netbird')
+        r=self.bash('set -Eeuo pipefail\n'+body+f'\nSCRIPT_DIR={self.root}; PROFILE_EXISTED=1; NETBIRD_PROFILE=/etc/netbird/config.json; MGMT_URL=https://api.invalid; connect_netbird')
         self.assertEqual(r.returncode,0,r.stderr);self.assertFalse((self.root/'effects').exists())
 
 

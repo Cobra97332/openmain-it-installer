@@ -6,7 +6,8 @@ umask 077
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 RUNTIME="$SCRIPT_DIR/netbird-router/common/runtime.py"
 PROFILE_EXISTED=0
-[[ ! -s /etc/netbird/config.json ]] || PROFILE_EXISTED=1
+NETBIRD_PROFILE=""
+NETBIRD_INTERFACE=""
 [[ -f "$RUNTIME" ]] || { echo "Bitte das vollstaendige Installer-Bundle verwenden." >&2; exit 1; }
 if [[ "${1:-}" == --config ]]; then
   config_file=$(mktemp)
@@ -107,7 +108,6 @@ done
 (( METRICS_DETAIL_PORT >= 1 && METRICS_DETAIL_PORT <= 65535 )) || die "Ungültiger Metrics-Detail-Port: $METRICS_DETAIL_PORT"
 [[ "$METRICS_DETAIL_PORT" != "$METRICS_PORT" ]] || die "Metrics-Port und Metrics-Detail-Port müssen verschieden sein."
 [[ -n "$CUSTOMER" ]] || read -r -p "Firmenname: " CUSTOMER
-[[ -n "$SETUP_KEY" || -s /etc/netbird/config.json ]] || { read -r -s -p "NetBird Setup Key: " SETUP_KEY; echo; }
 [[ -n "$API_TOKEN" ]] || { read -r -s -p "NetBird API Token: " API_TOKEN; echo; }
 [[ -n "$CUSTOMER" && -n "$API_TOKEN" ]] || die "Pflichtangabe fehlt."
 
@@ -196,14 +196,21 @@ wait_netbird(){
   die "NetBird-Daemon nicht bereit."
 }
 
+load_netbird_profile(){
+  local info
+  info=$(python3 "$SCRIPT_DIR/netbird-router/common/preflight.py" --profile-info \
+    --management-url "$MGMT_URL" --expected-profile "$NETBIRD_PROFILE") \
+    || die "Aktives NetBird-Profil nicht eindeutig/verbunden. Kein Reset."
+  NETBIRD_PROFILE=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["path"])' <<<"$info")
+  NETBIRD_INTERFACE=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["interface"])' <<<"$info")
+}
+
 connect_netbird(){
-  local up_args status
+  local up_args
   if [[ "${PROFILE_EXISTED:-0}" == 1 ]]; then
     # Ownership, endpoint and firewall were already admitted before packages.
     # Never enable/start/reconnect an existing peer here.
-    status=$(netbird status --json 2>/dev/null) || die "NetBird-Status nicht lesbar."
-    jq -e '.management.connected==true' <<<"$status" >/dev/null 2>&1 \
-      || die "Bestehendes NetBird-Profil nicht verbunden; Netzwerk/Anmeldung pruefen. Kein Reset."
+    load_netbird_profile
     return 0
   fi
   systemctl enable --now netbird >/dev/null 2>&1 || die "NetBird-Dienst nicht gestartet."
@@ -215,6 +222,7 @@ connect_netbird(){
     up_args+=(--enable-local-metrics --local-metrics-address "127.0.0.1:$METRICS_PORT")
   fi
   netbird "${up_args[@]}" >/dev/null 2>&1 || die "NetBird-Anmeldung fehlgeschlagen (Details unterdrueckt)."
+  load_netbird_profile
 }
 
 find_peer(){
@@ -508,7 +516,8 @@ ensure_network(){
 
 write_nft(){
   local candidate transaction nbif
-  nbif=$(jq -r '.WgIface // "wt0"' /etc/netbird/config.json)
+  load_netbird_profile
+  nbif="$NETBIRD_INTERFACE"
   install -d -m 0755 /etc/nftables.d
   candidate=$(mktemp /etc/nftables.d/.openmain.XXXXXX)
   transaction=$(mktemp)
@@ -602,10 +611,15 @@ installation_exit(){
 }
 
 preflight(){
-  python3 "$SCRIPT_DIR/netbird-router/common/preflight.py" \
+  local info
+  info=$(python3 "$SCRIPT_DIR/netbird-router/common/preflight.py" \
     --customer "$CUSTOMER" --role "$ROLE" --management-url "$MGMT_URL" \
     --zabbix-server "$ZABBIX_SERVER" --zabbix-enabled "$ZABBIX_ENABLED" \
-    --lan-interface "$LAN_IF_OVERRIDE" || die "Bestandspruefung abgelehnt; keine Aenderungen."
+    --lan-interface "$LAN_IF_OVERRIDE" --report-profile) || die "Bestandspruefung abgelehnt; keine Aenderungen."
+  NETBIRD_PROFILE=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["path"])' <<<"$info")
+  NETBIRD_INTERFACE=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["interface"])' <<<"$info")
+  PROFILE_EXISTED=0
+  [[ -z "$NETBIRD_PROFILE" ]] || PROFILE_EXISTED=1
   detect_lan
 }
 
@@ -616,6 +630,7 @@ main(){
   exec 9>"${STATE_FILE%/*}/install.lock"
   flock -n 9 || die "Ein Installer laeuft bereits."
   preflight
+  [[ "$PROFILE_EXISTED" == 1 || -n "$SETUP_KEY" ]] || { read -r -s -p "NetBird Setup Key: " SETUP_KEY; echo; }
   trap 'installation_exit "$?"' EXIT
   checkpoint preflight
   install_packages

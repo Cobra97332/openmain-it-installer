@@ -34,6 +34,7 @@ class BootstrapTests(Sandbox):
         # Local host version is irrelevant to this filesystem-isolated bootstrap.
         self.runtime.write_text((ROOT/'netbird-router/common/runtime.py').read_text().replace('platform(values, os.uname().machine, model, memory)','pass # isolated platform fixture'))
         checker=(ROOT/'netbird-router/common/preflight.py').read_text().replace("root=Path('/')",f'root=Path({str(self.fs)!r})')
+        checker=checker.replace('PROFILE_UID = 0','PROFILE_UID = os.geteuid()')
         checker=checker.replace('available=shutil.which',"available=lambda name: name in ('nft','ip')")
         (common/'preflight.py').write_text(checker)
         # PATH contains no jq. Use the same fixture in the Debian 13 container.

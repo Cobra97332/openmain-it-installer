@@ -52,7 +52,7 @@ class Sandbox(unittest.TestCase):
 
     def clean_output(self, result):
         for secret in (PSK, TOKEN, PASSWORD, self.env["NB_SETUP_KEY"]):
-            self.assertNotIn(secret, result.stdout + result.stderr)
+            if secret:self.assertNotIn(secret, result.stdout + result.stderr)
 
 
 class NetBirdTests(Sandbox):
@@ -288,6 +288,57 @@ sys.exit(int(os.environ.get('MOCK_CURL_EXIT','0')))
             self.assertNotEqual(result.returncode, 0)
             self.clean_output(result)
 
+
+    def test_resume_080_after_group_failure_without_setup_key_preserves_identity(self):
+        from test_router_bootstrap import BootstrapTests
+        import base64
+        import shutil
+        fixture=BootstrapTests();fixture.setUp();self.addCleanup(fixture.doCleanups)
+        fixture.env['NB_SETUP_KEY']='';fixture.env['MOCK_APT_RESULT']='0'
+        common=fixture.runtime.parent
+        (common/'preflight.py').write_text((ROOT/'netbird-router/common/preflight.py').read_text()
+            .replace("root=Path('/')",f'root=Path({str(fixture.fs)!r})').replace('PROFILE_UID = 0','PROFILE_UID = os.geteuid()'))
+        directory=fixture.fs/'var/lib/netbird';directory.mkdir(parents=True)
+        files={'default.json':dict(PrivateKey=base64.b64encode(bytes(range(32))).decode(),ManagementURL='https://api.invalid',DisableFirewall=False,WgIface='wt-lab'),
+               'active_profile.json':dict(name='default',username=''), 'state.json':{},'service.json':{}}
+        for name,value in files.items():
+            p=directory/name;p.write_text(json.dumps(value));p.chmod(0o600)
+        before={p:(p.read_bytes(),p.stat().st_mode,p.stat().st_ino) for p in directory.iterdir()}
+        fixture.progress.parent.mkdir(parents=True,exist_ok=True)
+        fixture.progress.write_text(json.dumps(dict(customer=fixture.env['NB_CUSTOMER_NAME'],role='primary',phase='failed')))
+        fixture.progress.chmod(0o600)
+        status=dict(management=dict(connected=True,url='https://api.invalid'),profileName='default',netbirdIp='100.107.35.72/16',daemonStatus='Connected')
+        (fixture.root/'status.json').write_text(json.dumps(status))
+        for name in ('awk','mktemp','rm','cat','sleep','jq'):
+            (fixture.bin/name).symlink_to(shutil.which(name))
+        fixture.executable('netbird',"""#!/bin/sh
+printf '%s\\n' "$*" >> "$MOCK_ROOT/netbird-calls"
+case "$*" in 'status --json') cat "$MOCK_ROOT/status.json";;
+ 'status --ipv4') echo 100.107.35.72;; *) exit 98;; esac
+""")
+        fixture.executable('ip',"""#!/bin/sh
+case "$*" in *route*) echo '[{"dst":"default","dev":"eth0"}]';;
+ *) echo '[{"ifname":"eth0","addr_info":[{"family":"inet","scope":"global","local":"192.168.178.158","prefixlen":24}]},{"ifname":"wt-lab","addr_info":[{"family":"inet","scope":"global","local":"100.107.35.72","prefixlen":16}]}]';; esac
+""")
+        fixture.executable('curl',"""#!/usr/bin/env python3
+import json,sys
+from pathlib import Path
+args=sys.argv
+assert args[args.index('-X')+1]=='GET'
+value=[dict(id='synthetic-existing-peer',ip='100.107.35.72')] if any(arg.endswith('/peers') for arg in args) else [dict(id='a',name='Kunden'),dict(id='b',name='Kunden')]
+Path(args[args.index('-o')+1]).write_text(json.dumps(value));print('200',end='')
+""")
+        fixture.executable('systemctl','#!/bin/sh\necho forbidden >> "$MOCK_ROOT/service-effects"\nexit 98\n')
+        for _ in range(2):
+            r=fixture.run_core();self.assertNotEqual(r.returncode,0)
+            self.assertIn('Gruppenliste',r.stderr)
+            self.assertNotIn('Setup Key',r.stdout+r.stderr)
+            self.assertEqual(json.loads(fixture.progress.read_text())['phase'],'failed')
+            self.assertEqual({p:(p.read_bytes(),p.stat().st_mode,p.stat().st_ino) for p in directory.iterdir()},before)
+        self.assertFalse((fixture.root/'service-effects').exists())
+        calls=(fixture.root/'netbird-calls').read_text().splitlines()
+        self.assertTrue(all(call in ('status --json','status --ipv4') for call in calls))
+        self.assertEqual(calls.count('status --ipv4'),2)
 
     def test_enrollment_error_does_not_echo_setup_key(self):
         self.executable('netbird', '#!/bin/sh\nprintf "%s\\n" "$NB_SETUP_KEY" >&2\nexit 1\n')

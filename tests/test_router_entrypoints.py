@@ -40,6 +40,8 @@ elif a[0]=='exec' and a[3:5]==['python3','-c'] and os.environ.get('MOCK_PREFLIGH
  code=a[5].replace("root=Path('/')", "root=Path("+repr(os.environ['MOCK_PREFLIGHT_ROOT'])+")")
  code=code.replace('available=shutil.which', "available=lambda name: name in ('nft','ip')")
  sys.exit(subprocess.run([sys.executable,'-c',code,*a[6:]]).returncode)
+elif a[0]=='exec' and a[3:5]==['python3','-c']:
+ print(json.dumps({'path':os.environ.get('MOCK_PROFILE_PATH',''),'interface':'wt0'}))
 elif a[0] in ('push','exec','start'):pass
 else:sys.exit(98)
 ''')
@@ -63,6 +65,27 @@ else:sys.exit(98)
         self.assertNotIn('--password',create[0])
         joined=json.dumps(calls)
         for token in (self.env['NB_API_TOKEN'],self.env['NB_SETUP_KEY']):self.assertNotIn(token,joined)
+    def test_resume_connected_profile_without_setup_key_and_reject_bad_guest(self):
+        self.assertEqual(self.run_wrapper('--ctid','110').returncode,0)
+        self.env['NB_SETUP_KEY']='';self.env['MOCK_PROFILE_PATH']='/var/lib/netbird/default.json'
+        journal=self.root/'pct-calls';journal.unlink()
+        before=(self.root/'ct.json').read_bytes()
+        result=self.run_wrapper('--ctid','110');self.assertEqual(result.returncode,0,result.stderr)
+        calls=[json.loads(line) for line in journal.read_text().splitlines()]
+        self.assertFalse(any(call[0] in ('create','start','destroy') for call in calls))
+        self.assertEqual((self.root/'ct.json').read_bytes(),before)
+        journal.unlink();self.env['MOCK_REJECT_PREFLIGHT']='1'
+        self.assertNotEqual(self.run_wrapper('--ctid','110').returncode,0)
+        calls=[json.loads(line) for line in journal.read_text().splitlines()]
+        self.assertFalse(any(call[0] in ('push','create','start','destroy') for call in calls))
+
+    def test_new_container_requires_real_key_before_creation(self):
+        self.env['NB_SETUP_KEY']=''
+        result=self.run_wrapper('--ctid','110');self.assertNotEqual(result.returncode,0)
+        calls=[json.loads(line) for line in (self.root/'pct-calls').read_text().splitlines()]
+        self.assertFalse(any(call[0] in ('create','push','start') for call in calls))
+        self.assertFalse((self.root/'ct.json').exists())
+
     def test_failed_creation_keeps_protected_retry_id_without_guest_changes(self):
         self.env['MOCK_CREATE_FAIL']='1'
         result=self.run_wrapper('--ctid','110')

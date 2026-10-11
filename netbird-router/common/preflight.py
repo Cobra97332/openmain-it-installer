@@ -5,6 +5,7 @@ Keep self-contained: Proxmox streams this source to an existing running guest
 before copying a bundle or credentials. Missing tools/state fail closed.
 """
 import argparse
+import base64
 import glob
 import ipaddress
 import json
@@ -72,18 +73,148 @@ def single(values, key):
 
 def url(value):
     if isinstance(value, dict):
+        if any(value.get(k) for k in ('User', 'Opaque', 'RawQuery', 'Fragment', 'ForceQuery')):
+            raise Rejected('Invalid management endpoint')
         value = value.get('Scheme', '') + '://' + value.get('Host', '') + value.get('Path', '')
     parsed = urlsplit(value)
-    if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
+    if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise Rejected('Invalid management endpoint')
     return parsed.hostname.lower(), parsed.port or 443, parsed.path.rstrip('/')
+
+
+PROFILE_UID = 0
+
+
+def profile_json(path):
+    # Profiles contain private keys: reject links, shared files and permissive modes.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != PROFILE_UID or info.st_nlink != 1 or info.st_mode & 0o077:
+        os.close(fd)
+        raise Rejected('Unsafe NetBird profile/state')
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise Rejected('Duplicate profile field')
+            result[key] = value
+        return result
+    with os.fdopen(fd) as stream:
+        value = json.load(stream, object_pairs_hook=unique)
+    if not isinstance(value, dict):
+        raise Rejected('Invalid NetBird profile/state')
+    return value
+
+
+def profile_component(value):
+    return isinstance(value, str) and bool(re.fullmatch(r'[A-Za-z0-9_-]{1,64}', value))
+
+
+def resolve_profile(root=Path('/')):
+    old = root / 'etc/netbird'
+    directory = root / 'var/lib/netbird'
+    for base in (old, directory):
+        if base.exists() and (not base.is_dir() or base.stat().st_uid != PROFILE_UID or base.stat().st_mode & 0o022):
+            raise Rejected('Unsafe profile directory')
+        if base.is_symlink():
+            raise Rejected('Symlinked profile directory')
+        for entry in base.rglob('*'):
+            if entry.is_symlink() or (entry.is_dir() and (entry.stat().st_uid != PROFILE_UID or entry.stat().st_mode & 0o022)):
+                raise Rejected('Unsafe profile entry')
+    legacy = old / 'config.json'
+    old_files = list(old.rglob('*.json'))
+    if any(p != legacy for p in old_files):
+        raise Rejected('Unsupported legacy profile layout')
+    selector = directory / 'active_profile.json'
+    modern = selector.exists()
+    if modern:
+        active = profile_json(selector)
+        name, user = active.get('name'), active.get('username')
+        if not profile_component(name) or not isinstance(user, str) or (user and not profile_component(user)):
+            raise Rejected('Invalid active profile assignment')
+        if name == 'default':
+            selected = directory / 'default.json'
+        elif user:
+            selected = directory / user / (name + '.json')
+        else:
+            raise Rejected('Named profile requires user assignment')
+    else:
+        # Never assume default.json is active when its selector is absent.
+        if any(p not in (directory / 'state.json', directory / 'service.json') for p in directory.rglob('*.json')):
+            raise Rejected('Missing active profile assignment')
+        if not legacy.exists():
+            if old.exists() or directory.exists():
+                raise Rejected('Orphan NetBird profile state')
+            return None
+        selected, name = legacy, 'default'
+    config = profile_json(selected)
+    if modern or 'PrivateKey' in config:
+        key = config.get('PrivateKey')
+        if not isinstance(key, str) or len(base64.b64decode(key, validate=True)) != 32:
+            raise Rejected('Invalid profile identity')
+    interface = config.get('WgIface', 'wt0' if not modern else None)
+    if not isinstance(interface, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,15}', interface) or interface == 'lo':
+        raise Rejected('Invalid NetBird interface')
+    display = config.get('Name', config.get('name', name)) or name
+    if not isinstance(display, str) or not display:
+        raise Rejected('Invalid profile name')
+    # A display-name status cannot disambiguate two profiles with the same name.
+    if modern:
+        for other in directory.rglob('*.json'):
+            if other == selected or other == selector or other in (directory / 'state.json', directory / 'service.json') or other.name.endswith('.state.json'):
+                continue
+            relative = other.relative_to(directory)
+            if other != directory / 'default.json' and (len(relative.parts) != 2 or not profile_component(relative.parts[0]) or not profile_component(other.stem)):
+                raise Rejected('Unsupported named profile location')
+            other_config = profile_json(other)
+            other_name = other_config.get('Name', other_config.get('name', other.stem)) or other.stem
+            if other_name == display:
+                raise Rejected('Ambiguous daemon profile name')
+    return dict(path='/' + str(selected.relative_to(root)), interface=interface,
+                display=display, modern=modern, config=config)
+
+
+def connected_profile(profile, desired_url, command=run, available=shutil.which):
+    config = profile['config']
+    if config.get('DisableFirewall', False) is not False or url(config.get('ManagementURL', '')) != url(desired_url):
+        raise Rejected('Disabled firewall or different management endpoint')
+    if not available('netbird'):
+        raise Rejected('Existing identity without client')
+    status = json.loads(command('netbird', 'status', '--json'))
+    if not isinstance(status, dict):
+        raise Rejected('Invalid client status')
+    management = status.get('management', {})
+    if not isinstance(management, dict) or management.get('connected') is not True:
+        raise Rejected('Existing profile is not connected; no automatic reconnect')
+    if 'daemonStatus' in status and status['daemonStatus'] != 'Connected':
+        raise Rejected('Daemon is not connected')
+    if profile['modern'] or 'url' in management:
+        if url(management.get('url', '')) != url(desired_url):
+            raise Rejected('Daemon management endpoint differs')
+    if profile['modern'] or 'profileName' in status:
+        if status.get('profileName') != profile['display']:
+            raise Rejected('Daemon active profile differs')
+    if profile['modern']:
+        peer_ip = ipaddress.ip_interface(status.get('netbirdIp', '')).ip
+        if peer_ip not in ipaddress.ip_network('100.64.0.0/10'):
+            raise Rejected('Invalid connected peer IP')
+        addresses = json.loads(command('ip', '-j', '-4', 'address', 'show'))
+        matches = [a for item in addresses if item.get('ifname') == profile['interface']
+                   for a in item.get('addr_info', []) if a.get('family') == 'inet' and a.get('local') == str(peer_ip)]
+        if len(matches) != 1:
+            raise Rejected('Active profile interface/IP differs')
+    return profile
+
+
+def profile_report(profile):
+    return dict(path=profile['path'], interface=profile['interface']) if profile else dict(path='', interface='')
 
 
 def unsafe_firewall(text):
     return re.search(r'(?<![\w])(mein_binat|openmain_binat|netbird|masquerade|redirect)(?![\w])|type\s+nat(?![\w])|(?:dnat|snat)\s+(?:ip6?\s+)?(?:prefix\s+)?to(?![\w])', text) is not None
 
 
-def inspect(root=Path('/'), desired=None, command=run, available=shutil.which):
+def inspect(root=Path('/'), desired=None, command=run, available=shutil.which, report=False):
     desired = desired or {}
     def path(name):
         return root / name.lstrip('/')
@@ -165,26 +296,14 @@ def inspect(root=Path('/'), desired=None, command=run, available=shutil.which):
                             networks.append(str(net.network))
         if len(networks) != 1 or (state.get('lan') and state['lan'] != networks[0]):
             raise Rejected('Changed or ambiguous existing LAN')
-    # Alternate configs and orphan identity stores must not be treated as fresh.
-    profile = path('/etc/netbird/config.json')
-    if exists('/etc/netbird'):
-        if not profile.is_file() or profile.is_symlink():
-            raise Rejected('Missing/ambiguous NetBird profile')
-        if list(path('/etc/netbird').rglob('*.json')) != [profile]:
-            raise Rejected('Multiple NetBird profiles')
-    if profile.exists():
-        config = read_json(profile)
-        if not owned or config.get('DisableFirewall', False) is not False:
-            raise Rejected('Unmanaged/disabled-firewall profile')
-        if url(config.get('ManagementURL', '')) != url(desired.get('management_url', '')):
-            raise Rejected('Different management endpoint')
-        if not available('netbird'):
-            raise Rejected('Existing identity without client')
-        # A read-only status request cannot enroll, start or reconnect a peer.
-        status = json.loads(command('netbird', 'status', '--json'))
-        if status.get('management', {}).get('connected') is not True:
-            raise Rejected('Existing profile is not connected; no automatic reconnect')
-    elif state.get('peer_id') or exists('/var/lib/netbird') or available('netbird'):
+    profile = resolve_profile(root)
+    if profile:
+        if not owned:
+            raise Rejected('Unmanaged NetBird profile')
+        connected_profile(profile, desired.get('management_url', ''), command, available)
+        if resolve_profile(root) != profile:
+            raise Rejected('Profile changed during admission')
+    elif state.get('peer_id') or available('netbird'):
         raise Rejected('Existing client/state without identifiable profile')
 
     own_rules = path('/etc/nftables.d/openmain-binat.nft')
@@ -206,6 +325,8 @@ def inspect(root=Path('/'), desired=None, command=run, available=shutil.which):
         match = fullmatch(pattern, ' '.join(text.split()))
         if not match or match[2] != state['virtual'] or match[3] != state['virtual'] or match[4] != state['lan'] or match[7] != state['lan'] or match[1] != match[5]:
             raise Rejected('Modified BINAT configuration')
+        if profile and match[1] != profile['interface']:
+            raise Rejected('Different active NetBird BINAT interface')
         if lan_interface and match[6] != lan_interface:
             raise Rejected('Different BINAT interface')
     if exists('/etc/sysctl.d/99-netbird-kundenrouter.conf'):
@@ -257,12 +378,15 @@ def inspect(root=Path('/'), desired=None, command=run, available=shutil.which):
             command(binary, '-T', '-c', str(filename))
     elif any(exists(p) for p in ('/etc/zabbix/zabbix_proxy.psk', '/var/lib/zabbix/zabbix_proxy.db', '/var/lib/netbird-kundenrouter/zabbix-proxy.env', '/etc/openmain-router/zabbix-sync.json')):
         raise Rejected('Orphan Zabbix state')
-    return state
+    return profile_report(profile) if report else state
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config')
+    parser.add_argument('--report-profile', action='store_true')
+    parser.add_argument('--profile-info', action='store_true')
+    parser.add_argument('--expected-profile')
     for key in ('customer', 'role', 'management-url', 'zabbix-server', 'lan-interface', 'zabbix-enabled'):
         parser.add_argument('--' + key)
     args = parser.parse_args()
@@ -278,7 +402,18 @@ def main():
     desired['management_url'] = desired['management_url'] or 'https://netbird.openmain-it.de'
     desired['zabbix_server'] = desired['zabbix_server'] or '100.107.91.6'
     desired['zabbix_enabled'] = desired['zabbix_enabled'] or '1'
-    inspect(desired=desired)
+    if args.profile_info:
+        profile = resolve_profile()
+        if not profile or (args.expected_profile and profile['path'] != args.expected_profile):
+            raise Rejected('Expected active profile missing/changed')
+        connected_profile(profile, desired['management_url'])
+        if resolve_profile() != profile:
+            raise Rejected('Profile changed during status check')
+        print(json.dumps(profile_report(profile)))
+    else:
+        result = inspect(desired=desired, report=args.report_profile)
+        if args.report_profile:
+            print(json.dumps(result))
 
 
 if __name__ == '__main__':

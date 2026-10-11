@@ -75,11 +75,16 @@ for k,default in [('NB_CUSTOMER_NAME',''),('NB_ROLE',''),('NB_MANAGEMENT_URL','h
 PYCHECK
 )
   # Source travels as code, not a guest file; no bundle/credential push precedes it.
-  pct exec "$CTID" -- python3 -c "$(cat "$ROOT/netbird-router/common/preflight.py")" \
+  PROFILE_INFO=$(pct exec "$CTID" -- python3 -c "$(cat "$ROOT/netbird-router/common/preflight.py")" \
     --customer "${admission[0]}" --role "${admission[1]}" --management-url "${admission[2]}" \
-    --zabbix-server "${admission[3]}" --lan-interface "${admission[4]}" --zabbix-enabled "${admission[5]}" \
+    --zabbix-server "${admission[3]}" --lan-interface "${admission[4]}" --zabbix-enabled "${admission[5]}" --report-profile) \
     || { echo 'Gast-Bestandspruefung abgelehnt; keine Dateien/Pakete/Dienste geaendert.' >&2; exit 1; }
+  ACTIVE_PROFILE=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["path"])' <<<"$PROFILE_INFO")
+  if [[ -z "$ACTIVE_PROFILE" ]]; then
+    python3 "$ROOT/netbird-router/common/prepare_config.py" "${args[@]}" --require-setup-key
+  fi
 else
+  python3 "$ROOT/netbird-router/common/prepare_config.py" "${args[@]}" --require-setup-key
   modprobe tun
   [[ -c /dev/net/tun ]]
   [[ -n "$STORAGE" ]] || STORAGE=$(pvesm status --content rootdir --enabled 1 | awk 'NR>1 && $3=="active"{print $1;exit}')

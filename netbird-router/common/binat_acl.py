@@ -87,18 +87,13 @@ def managed(rule, cfg):
             return False
         match = expr['match']
         left = match.get('left')
-        operation = left.get('binop') if isinstance(left, dict) else None
-        if not isinstance(operation, dict) or operation.get('op') != '&':
-            return False
-        conntrack = operation.get('left')
-        conntrack = conntrack.get('ct') if isinstance(conntrack, dict) else None
-        virtual = ipaddress.IPv4Network(cfg['virtual'])
+        conntrack = left.get('ct') if isinstance(left, dict) else None
+        # nft normalizes a masked original address into a prefix match.
         return (isinstance(conntrack, dict) and conntrack.get('key') == 'daddr'
                 and conntrack.get('dir') == 'original'
                 and conntrack.get('family', 'ip') == 'ip'
-                and operation.get('right') == str(virtual.netmask)
                 and match.get('op') == '=='
-                and match.get('right') == str(virtual.network_address))
+                and match.get('right') == _prefix(cfg['virtual']))
 
     return (MARKER in text and str(ipaddress.IPv4Network(cfg['virtual']).network_address) in text and
             str(ipaddress.IPv4Network(cfg['real']).network_address) in text and

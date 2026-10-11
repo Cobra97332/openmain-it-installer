@@ -34,13 +34,18 @@ class EnrollmentCredentialTests(Sandbox):
         self.assertNotIn('NB_SETUP_KEY',json.loads(target.read_text()))
         # Stage 2 must load the protected stage 1 file, not start from {} again.
         # Mock only UID ownership because GitHub runners do not execute as root.
-        original_config=runtime.config
         def checked_local_file(path):
             source=Path(path)
             self.assertEqual(source,target)
             self.assertEqual(source.stat().st_mode & 0o777,0o600)
             return json.loads(source.read_text())
-        with patch.dict(os.environ,{},clear=True), patch.object(runtime,'config',side_effect=checked_local_file), patch('getpass.getpass',return_value='test-setup-key') as prompt:
+        class InteractiveStdin:
+            def isatty(self):
+                return True
+        with (patch.dict(os.environ,{},clear=True),
+              patch.object(runtime,'config',side_effect=checked_local_file),
+              patch.object(sys,'stdin',InteractiveStdin()),
+              patch('getpass.getpass',return_value='test-setup-key') as prompt):
             with patch.object(sys,'argv',['prepare_config.py',str(target),str(target),'--require-setup-key']):
                 runpy.run_path(str(ROOT/'netbird-router/common/prepare_config.py'),run_name='__main__')
             prompt.assert_called_once_with('NetBird Setup-Key: ')
@@ -51,7 +56,9 @@ class EnrollmentCredentialTests(Sandbox):
     def test_proxmox_wrapper_reuses_first_stage_for_new_and_unregistered_guest(self):
         source=(ROOT/'netbird-router/pve/install.sh').read_text()
         text='prepare_config.py" "$TMP/customer.json" "$TMP/customer.json" --require-setup-key'
-        self.assertEqual(source.count(text),2)
+        self.assertEqual(source.count(text),1)
+        self.assertEqual(source.count('    ensure_setup_key'),1)
+        self.assertEqual(source.count('  ensure_setup_key'),2)
         self.assertNotIn('prepare_config.py" "${args[@]}" --require-setup-key',source)
 
 

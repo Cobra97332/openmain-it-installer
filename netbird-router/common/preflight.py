@@ -48,6 +48,27 @@ def read_json(path):
     return value
 
 
+def check_installer_state_directory(directory):
+    """Check state and lock ownership before trusting any installer identity."""
+    if not (directory.exists() or directory.is_symlink()):
+        return
+    if directory.is_symlink() or not directory.is_dir():
+        raise Rejected('Unsafe installer state directory')
+    meta = directory.stat()
+    if meta.st_uid != PROFILE_UID or stat.S_IMODE(meta.st_mode) != 0o700:
+        raise Rejected('Untrusted installer state directory')
+    for name in ('state.json', 'progress.json', 'install.lock',
+                 'state.json.tmp', 'zabbix-intent.tmp'):
+        path = directory / name
+        if path.is_symlink():
+            raise Rejected('Unsafe installer state/temporary path')
+        if path.exists():
+            info = path.stat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != PROFILE_UID or
+                    info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+                raise Rejected('Untrusted installer state file')
+
+
 def settings(path):
     values = {}
     seen = set()
@@ -308,6 +329,7 @@ def inspect(root=Path('/'), desired=None, command=run, available=shutil.which, r
         raise Rejected('Cannot inspect existing firewall')
 
     state_dir = path('/var/lib/netbird-kundenrouter')
+    check_installer_state_directory(state_dir)
     state, progress = {}, {}
     for filename in ('state.json', 'progress.json'):
         p = state_dir / filename

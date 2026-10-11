@@ -176,7 +176,7 @@ try:
     assert mixed_commands.count('delete rule')==2
     assert mixed_commands.count('replace rule')==1
     run('python3','/src/netbird-router/common/binat_acl.py')
-    updated=run('nft','list','chain','ip','netbird','netbird-rt-fwd').decode()
+    updated=run('nft','list','chain','ip','netbird','netbird-rt-fwd')
     assert 'nb-7d0b7d19' not in updated and '100.64.0.11' not in updated
     assert 'nb-ffeeddcc' in updated
     assert not transaction(_json.loads(run('nft','-j','list','chain','ip','netbird','netbird-rt-fwd')),acl)

@@ -190,6 +190,65 @@ write_nft
         for _ in range(2):self.inspect()
         self.assertEqual(self.snapshot(),before)
         self.assertIn(('netbird','status','--json'),self.calls)
+    def setup_interrupted_binat(self):
+        self.modern()
+        (self.fs/'var/lib/netbird-kundenrouter/state.json').unlink()
+        progress=self.put('/var/lib/netbird-kundenrouter/progress.json',
+                          dict(customer='Synthetic',role='primary',phase='failed'))
+        progress.parent.chmod(0o700)
+        good=runtime.nft_config('eth0','wt-lab','10.30.1.0/24','192.0.2.0/24')
+        self.put('/etc/nftables.d/openmain-binat.nft',good)
+        manifest=self.put('/etc/nftables.d/openmain-binat-acl.json',
+                          dict(overlay='wt-lab',lan='eth0',
+                               virtual='10.30.1.0/24',real='192.0.2.0/24'))
+        self.tables=['openmain_binat']
+        self.live=good
+        return progress,manifest
+
+    def test_interrupted_owned_binat_without_state_is_readonly_and_recoverable(self):
+        progress,manifest=self.setup_interrupted_binat()
+        before=self.snapshot()
+        for _ in range(2):
+            result=self.inspect()
+            self.assertEqual(result['virtual'],'10.30.1.0/24')
+            self.assertEqual(result['lan'],'192.0.2.0/24')
+        self.assertEqual(before,self.snapshot())
+
+    def test_interrupted_binat_requires_exact_intent_and_manifest(self):
+        changes=(
+            ('progress-foreign',lambda p,m: p.write_text(json.dumps(dict(
+                customer='Other',role='primary',phase='failed')))),
+            ('progress-unprotected',lambda p,m: p.chmod(0o644)),
+            ('state-folder-open',lambda p,m: p.parent.chmod(0o755)),
+            ('phase-other',lambda p,m: p.write_text(json.dumps(dict(
+                customer='Synthetic',role='primary',phase='network')))),
+            ('acl-other-network',lambda p,m: m.write_text(json.dumps(dict(
+                overlay='wt-lab',lan='eth0',virtual='10.30.99.0/24',real='192.0.2.0/24')))),
+            ('acl-other-lan',lambda p,m: m.write_text(json.dumps(dict(
+                overlay='wt-lab',lan='eth0',virtual='10.30.1.0/24',real='192.0.4.0/24')))),
+            ('acl-unprotected',lambda p,m: m.chmod(0o644)),
+            ('acl-missing',lambda p,m: m.unlink()),
+            ('acl-malformed',lambda p,m: m.write_text('not json')),
+        )
+        for case,change in changes:
+            with self.subTest(case=case):
+                self.setUp()
+                progress,manifest=self.setup_interrupted_binat()
+                change(progress,manifest)
+                self.rejected()
+
+    def test_missing_state_still_rejects_unrelated_nat(self):
+        self.modern()
+        (self.fs/'var/lib/netbird-kundenrouter/state.json').unlink()
+        progress=self.put('/var/lib/netbird-kundenrouter/progress.json',
+                          dict(customer='Synthetic',role='primary',phase='failed'))
+        progress.parent.chmod(0o700)
+        self.live=runtime.nft_config('eth0','wt-lab','10.30.1.0/24','192.0.2.0/24')
+        self.put('/etc/nftables.d/openmain-binat.nft',self.live)
+        self.tables=['openmain_binat']
+        # A progress marker alone cannot adopt NAT from an existing router.
+        self.rejected()
+
     def test_unconfigured_resume_preserves_filter_rules_and_rejects_nat(self):
         good='table inet filter { chain input { type filter hook input priority 0; policy drop; ct status dnat accept; } }'
         self.live=good;self.tables=['filter']

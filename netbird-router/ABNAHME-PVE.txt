@@ -34,6 +34,9 @@ Offline-Regressionen sind erfolgreich; reale Laborpruefungen stehen noch aus.
   und NB_ZABBIX_SERVER (Overlay-IP des Labor-Zabbix-Servers). Die eingebauten
   OpenMain-Produktivdefaults duerfen nicht verwendet werden. Keine uebernommenen
   NB_* Umgebungsvariablen: diese koennen die JSON-Werte ueberschreiben.
+- Vor dem Anlegen: pvesm status und lvs -o lv_name,lv_size,data_percent,metadata_percent
+  read-only pruefen. Bei Platz-/Metadatenmangel oder Thin-Pool-Warnungen Labor
+  stoppen und Storage administrativ klaeren; keine automatischen LVM-Aenderungen.
 - Freie CTIDs, LAB_BRIDGE und LAB_STORAGE vorab separat verifizieren. Folgenden
   Aufruf im Checkout nur mit diesen vorher gesetzten Laborvariablen ausfuehren:
   bash netbird-router/pve/install.sh --config /root/abnahme-primary.json \

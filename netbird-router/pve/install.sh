@@ -87,10 +87,13 @@ else
   [[ -z "$GATEWAY" ]] || NET+=",gw=$GATEWAY"
   # Write intent before creation; a retry validates the CT ownership marker.
   printf '%s\n' "$CTID" > "$STATE"
-  pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$TEMPLATE" --hostname "$HOSTNAME_CT" \
-    --description "OpenMain managed $ID" --ostype debian --arch amd64 --unprivileged 1 \
-    --memory "$MEMORY" --cores "$CORES" --rootfs "$STORAGE:$DISK" --net0 "$NET" --onboot 1 \
-    --dev0 /dev/net/tun
+  # pct creates the rootfs before extracting as UID 100000. Its parent must
+  # remain traversable for the unprivileged extractor; secrets stay under 077.
+  (umask 022
+   pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$TEMPLATE" --hostname "$HOSTNAME_CT" \
+     --description "OpenMain managed $ID" --ostype debian --arch amd64 --unprivileged 1 \
+     --memory "$MEMORY" --cores "$CORES" --rootfs "$STORAGE:$DISK" --net0 "$NET" --onboot 1 \
+     --dev0 /dev/net/tun)
 fi
 if [[ "$EXISTING_CT" == 0 ]]; then
   pct status "$CTID" | grep -q running || pct start "$CTID"

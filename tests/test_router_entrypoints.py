@@ -29,6 +29,9 @@ if a[0]=='status':
  if s: print('status: '+os.environ.get('MOCK_CT_STATUS','running'))
  else: sys.exit(1)
 elif a[0]=='create':
+ mask=os.umask(0);os.umask(mask)
+ (p/'pct-create-umask').write_text(oct(mask))
+ if os.environ.get('MOCK_CREATE_FAIL'):sys.exit(2)
  state.write_text(json.dumps({'id':a[1],'description':a[a.index('--description')+1]}))
 elif a[0]=='config':print('description: '+s['description'])
 elif a[0]=='exec' and a[3:5]==['python3','-c'] and os.environ.get('MOCK_REJECT_PREFLIGHT'):sys.exit(1)
@@ -51,9 +54,25 @@ else:sys.exit(98)
         self.assertEqual(len(create),1)
         self.assertEqual(create[0][create[0].index('--unprivileged')+1],'1')
         self.assertIn('firewall=1',create[0][create[0].index('--net0')+1])
+        self.assertEqual((self.root/'pct-create-umask').read_text(),'0o22')
         self.assertNotIn('--password',create[0])
         joined=json.dumps(calls)
         for token in (self.env['NB_API_TOKEN'],self.env['NB_SETUP_KEY']):self.assertNotIn(token,joined)
+    def test_failed_creation_keeps_protected_retry_id_without_guest_changes(self):
+        self.env['MOCK_CREATE_FAIL']='1'
+        result=self.run_wrapper('--ctid','110')
+        self.assertNotEqual(result.returncode,0)
+        calls=[json.loads(x) for x in (self.root/'pct-calls').read_text().splitlines()]
+        self.assertEqual(len([x for x in calls if x[0]=='create']),1)
+        self.assertFalse(any(x[0] in ('exec','push','start') for x in calls))
+        marker=next((self.root/'pve-state').glob('*.ctid'))
+        self.assertEqual(marker.read_text(),'110\n')
+        self.assertEqual(marker.stat().st_mode & 0o777,0o600)
+        del self.env['MOCK_CREATE_FAIL']
+        self.assertEqual(self.run_wrapper('--ctid','110').returncode,0)
+        calls=[json.loads(x) for x in (self.root/'pct-calls').read_text().splitlines()]
+        self.assertEqual([x[1] for x in calls if x[0]=='create'],['110','110'])
+
     def test_unrelated_ct_refused(self):
         (self.root/'ct.json').write_text(json.dumps({'id':'101','description':'Do not touch'}))
         result=self.run_wrapper('--ctid','101')

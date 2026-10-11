@@ -67,9 +67,8 @@ class NetBirdBINATPolicyTests(unittest.TestCase):
         rule['comment'] = acl.MARKER
         rule['expr'] = [
             {'comment': acl.MARKER},
-            {'match': {'op': '==', 'left': {'binop': {'op': '&',
-                       'left': {'ct': {'key': 'daddr', 'dir': 'original'}},
-                       'right': '255.255.255.0'}}, 'right': '10.30.2.0'}},
+            {'match': {'op': '==', 'left': {'ct': {'key': 'daddr', 'dir': 'original'}},
+                       'right': {'prefix': {'addr': '10.30.2.0', 'len': 24}}}},
             {'match': {'op': '==', 'left': {'payload': {'protocol': 'ip', 'field': 'daddr'}},
                        'right': {'prefix': {'addr': '192.168.178.0', 'len': 24}}}},
             {'meta': {'key': 'iifname', 'name': 'wt0'}},

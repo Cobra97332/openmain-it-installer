@@ -110,7 +110,15 @@ else
   pveam update >/dev/null
   TEMPLATE=$(pveam available --section system | awk '$2 ~ /^debian-13-standard_.*_amd64.tar./{print $2}' | sort -V | tail -n1)
   [[ -n "$TEMPLATE" ]]
-  pveam download "$TEMPLATE_STORAGE" "$TEMPLATE"
+  # Proxmox refuses to download an archive that already exists in this storage.
+  # Compare the exact volume ID instead of substring/grep matching versions.
+  CACHED_TEMPLATES=$(pveam list "$TEMPLATE_STORAGE") || {
+    echo 'Liste der lokalen LXC-Templates nicht abrufbar; keine Erstellung.' >&2
+    exit 1
+  }
+  if ! awk -v volume="$TEMPLATE_STORAGE:vztmpl/$TEMPLATE"     '$1 == volume { found = 1 } END { exit !found }' <<< "$CACHED_TEMPLATES"; then
+    pveam download "$TEMPLATE_STORAGE" "$TEMPLATE"
+  fi
   NET="name=eth0,bridge=$BRIDGE,type=veth,firewall=1,ip=$IP_CONFIG"
   [[ -z "$GATEWAY" ]] || NET+=",gw=$GATEWAY"
   # Write intent before creation; a retry validates the CT ownership marker.

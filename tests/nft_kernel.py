@@ -117,7 +117,9 @@ try:
     Path('/etc/nftables.d/openmain-binat-acl.json').write_text(_json.dumps(acl))
     Path('/etc/nftables.d/openmain-binat-acl.json').chmod(0o600)
     run('python3','/src/netbird-router/common/binat_acl.py')
-    assert not transaction(_json.loads(run('nft','-j','list','chain','ip','netbird','netbird-rt-fwd')),acl)
+    observed = _json.loads(run('nft','-j','list','chain','ip','netbird','netbird-rt-fwd'))
+    print('SYNTHETIC ACL JSON AFTER REPLACE:', _json.dumps(observed, sort_keys=True), flush=True)
+    assert not transaction(observed,acl)
     run('python3','/src/netbird-router/common/binat_acl.py')  # idempotent
     lan.settimeout(3)
     frame('overlay_peer','wt0','100.64.0.10','10.30.1.20',45678,12345)

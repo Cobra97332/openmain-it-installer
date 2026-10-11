@@ -43,7 +43,7 @@ def frame(device, target, source_ip, target_ip, source_port, target_port):
 
 
 def receive(sock, source, dest):
-    for _ in range(12):
+    for _ in range(256):
         data,metadata=sock.recvfrom(4096)
         if metadata[2] == socket.PACKET_OUTGOING:
             continue
@@ -71,9 +71,9 @@ for ip,device,peer in [(address,'wt0','overlay_peer') for address in ('100.64.0.
 # A fresh Debian guest may already have an ordinary inet filter table.
 run('nft','add','table','inet','filter')
 run('nft','add','chain','inet','filter','input','{ type filter hook input priority 0; policy accept; }')
-filter_before=run('nft','-j','list','table','inet','filter')
+filter_before=run('nft','-s','-j','list','table','inet','filter')
 run('bash','/src/netbird-router/common/pristine.sh')
-assert run('nft','-j','list','table','inet','filter')==filter_before
+assert run('nft','-s','-j','list','table','inet','filter')==filter_before
 Path('/etc/nftables.d').mkdir(exist_ok=True)
 Path('/etc/nftables.d/openmain-binat.nft').write_text(nft_config('enp1s0','wt0','10.30.1.0/24','192.168.50.0/24'))
 run('nft','add','table','inet','foreign_fixture')
@@ -328,6 +328,28 @@ try:
     # chain. A used UDP tuple is NOT established until a reply is observed.
     run('nft','insert','rule','ip','netbird','netbird-rt-fwd',
         'ct','state','established,related','counter','accept')
+    # Native replies do NOT jump into netbird-rt-fwd (dispatch is iif wt0).
+    # Model NetBird's separate external filter acceptance: iif wt0 ACCEPT,
+    # and oif wt0 ESTABLISHED/RELATED ACCEPT ahead of a foreign DROP policy.
+    # This makes reply delivery depend on that real shortcut, not on the
+    # netbird-acl-forward-filter base chain's default policy accept.
+    run('nft','add','chain','inet','filter','forward',
+        '{ type filter hook forward priority filter; policy drop; }')
+    run('nft','add','rule','inet','filter','forward',
+        'iifname','wt0','counter','accept')
+    run('nft','add','rule','inet','filter','forward',
+        'oifname','wt0','ct','state','established,related','counter','accept',
+        'comment','netbird-external-return-fixture')
+    filter_before=run('nft','-s','-j','list','table','inet','filter')
+    def reply_accepts():
+        rules=_json.loads(run('nft','-j','list','chain','inet','filter','forward'))
+        rule=next(e['rule'] for e in rules['nftables']
+                  if e.get('rule',{}).get('comment')=='netbird-external-return-fixture')
+        return next(e['counter']['packets'] for e in rule['expr'] if 'counter' in e)
+    # Fresh capture excludes accumulated ARP/IPv6 noise from earlier probes.
+    overlay.close()
+    overlay=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3))
+    overlay.bind(('overlay_peer',0))
     established = False
     for attempt in range(3):
         port = 45720 + attempt
@@ -352,12 +374,15 @@ try:
     else: security_failures.append('P1_ESTABLISHED_CONNTRACK_BYPASSES_WITHDRAWAL')
     # Returning data must also be subject to the documented revocation gate.
     overlay.settimeout(0.5)
+    reply_count_before=reply_accepts()
     frame('lan_peer','enp1s0','192.168.50.20','192.168.50.1',target_port,mapped_port)
     try: receive(overlay,'10.30.1.20','100.64.0.11')
     except socket.timeout: pass
-    else: security_failures.append('P1_REPLY_CONTINUES_AFTER_WITHDRAWAL')
+    else:
+        assert reply_accepts() > reply_count_before, 'Reply bypassed external shortcut fixture'
+        security_failures.append('P1_REPLY_ALLOWED_VIA_NETBIRD_EXTERNAL_ESTABLISHED')
     assert foreign_rule()==foreign_before
-    assert run('nft','-j','list','table','inet','filter')==filter_before
+    assert run('nft','-s','-j','list','table','inet','filter')==filter_before
     print('PASS: existing kernel regressions, current-set/new-flow denial and recovery',flush=True)
     for failure in security_failures:
         print('RELEASE BLOCKED: '+failure,flush=True)
@@ -365,5 +390,5 @@ try:
 
 finally:
     lan.close();overlay.close()
-assert run('nft','-j','list','table','inet','filter')==filter_before
+assert run('nft','-s','-j','list','table','inet','filter')==filter_before
 print('PASS: prefix NAT, NetBird ACL fail-closed repro/fix, idempotent ACL reconciliation, current-set revocation, concurrent refresh, bounded-churn revocation/recovery, reverse translation, foreign firewall preservation')

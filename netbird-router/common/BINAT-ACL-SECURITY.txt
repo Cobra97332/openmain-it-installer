@@ -45,7 +45,12 @@ conntrack flush. nft batch atomicity covers only that batch, not another writer.
 2. The native ESTABLISHED rule can accept a fully bidirectional flow even after
    its current source-group member is removed and reconciliation has completed.
    Earlier tests reused a one-way UDP tuple; that does not exercise this path.
-   The newly added gate confirms request AND reply traffic after withdrawal.
+   The new gate confirms the native route shortcut on requests. Replies
+   bypass that route chain; they are accepted by NetBird's separate external
+   filter rule (`oifname wt0 ct state established,related accept`) and its
+   native forward base chain's default acceptance. The reply fixture has a
+   foreign DROP policy and checks the external rule's counter, proving that
+   path rather than attributing replies to the ingress-only route dispatch.
 
 These problems apply on both primary and backup routers (metrics 100/200 only
 select paths). Multiple ACL source groups and policy transitions increase the
@@ -94,7 +99,9 @@ prove immediate established-flow withdrawal. No automatic fallback is added.
 `tests/nft_kernel.py` now injects the new policy *after* reconciliation returns,
 then sends new and existing tuples before any timer/extra read. It also installs
 the real native established-rule shape, observes a reply, removes the current
-group member and checks both traffic directions. Actual sockets, NAT,
+group member and checks both traffic directions. Reply delivery must increment
+the NetBird-style external established rule in a filter chain with DROP policy;
+reply packets do not jump into the ingress-only native route chain. Actual sockets, NAT,
 conntrack, rules and forwarding run in disposable network-none Docker / no-NIC
 QEMU. Policy writers and server APIs remain controlled fixtures.
 

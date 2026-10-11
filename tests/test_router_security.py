@@ -56,16 +56,25 @@ class Sandbox(unittest.TestCase):
 
 
 class NetBirdTests(Sandbox):
-    def run_function(self, name, response, args=(), extra=""):
+    def run_function(self, name, response, args=(), extra="", reads=None):
         (self.root / "response.json").write_text(json.dumps(response))
-        body = functions("router-install.sh", ["die", name])
+        for file in ('writes','payload.json','reads','responses.json'):
+            (self.root/file).unlink(missing_ok=True)
+        if reads is not None:(self.root/'responses.json').write_text(json.dumps(reads))
+        body = functions("router-install.sh", ["die"] + (["valid_group"] if name=="ensure_peer_in_group" else []) + [name])
         mock = r'''
 api(){
-  if [[ "$1" == GET ]]; then cat "$MOCK_ROOT/response.json";
+  if [[ "$1" == GET ]]; then
+    printf '%s\n' "$2" >> "$MOCK_ROOT/reads"
+    if [[ -f "$MOCK_ROOT/responses.json" ]]; then
+      local index
+      index=$(wc -l < "$MOCK_ROOT/reads")
+      jq -c --argjson index "$((index-1))" '.[$index]' "$MOCK_ROOT/responses.json"
+    else cat "$MOCK_ROOT/response.json"; fi
   else printf '%s\n' "$1 $2" >> "$MOCK_ROOT/writes";
     printf '%s' "${3:-}" > "$MOCK_ROOT/payload.json";
     if [[ "$1" == PUT ]]; then
-      jq --arg id group '. + {id:$id}' "$MOCK_ROOT/payload.json" > "$MOCK_ROOT/response.json"
+      jq --arg id group '. + {id:$id,peers_count:(.peers|length),resources_count:(.resources|length)}' "$MOCK_ROOT/payload.json" > "$MOCK_ROOT/response.json"
     fi
     printf '{"id":"created"}'
   fi
@@ -109,15 +118,147 @@ PEER_ID=new-peer
         self.assertEqual((self.root / "writes").read_text(), "POST /policies\n")
 
     def test_group_addition_preserves_members_and_resources_and_retry_is_noop(self):
-        group = {"id": "group", "name": "Customer", "peers": [{"id": "old-peer"}],
-                 "resources": [{"id": "resource", "type": "network"}]}
+        group = {"id": "group", "name": "Kunden", "peers": [{"id": "old-peer"}, "second-peer", {"id":"third-peer"}],
+                 "resources": [{"id": "resource", "type": "network"}], "peers_count":3, "resources_count":1}
         result = self.run_function("ensure_peer_in_group", group, ("group",),
                                    'ensure_peer_in_group group')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.root / "writes").read_text(), "PUT /groups/group\n")
         payload = json.loads((self.root / "payload.json").read_text())
-        self.assertEqual(payload["peers"], ["new-peer", "old-peer"])
+        self.assertEqual(payload["peers"], ["new-peer", "old-peer", "second-peer", "third-peer"])
+        self.assertEqual(len((self.root/'reads').read_text().splitlines()),4)
         self.assertEqual(payload["resources"], group["resources"])
+
+    @staticmethod
+    def empty_group():
+        return dict(id='group',name='Bauer-PR30',peers=None,resources=None,peers_count=0,resources_count=0)
+
+    def test_null_empty_groups_are_reused_and_repeat_is_noop(self):
+        for name in ('Bauer-PR30','Kunde:Bauer-PR30'):
+            with self.subTest(name=name):
+                group=dict(self.empty_group(),name=name)
+                r=self.run_function('ensure_group',[group],(name,))
+                self.assertEqual(r.returncode,0,r.stderr);self.assertEqual(r.stdout,'group')
+                self.assertFalse((self.root/'writes').exists())
+                r=self.run_function('ensure_peer_in_group',group,('group',),'ensure_peer_in_group group')
+                self.assertEqual(r.returncode,0,r.stderr)
+                self.assertEqual((self.root/'writes').read_text(),'PUT /groups/group\n')
+                self.assertEqual(json.loads((self.root/'payload.json').read_text()),dict(name=name,peers=['new-peer'],resources=[]))
+                self.assertEqual(len((self.root/'reads').read_text().splitlines()),4)
+
+    def test_invalid_counters_collections_and_ids_never_written(self):
+        cases=[]
+        for field,count in (('peers','peers_count'),('resources','resources_count')):
+            for value in (None,'0',False,-1,0.5,1,{},[]):cases.append(dict(self.empty_group(),**{count:value}))
+            for missing in (field,count):
+                group=self.empty_group();del group[missing];cases.append(group)
+            for value in ({},'empty',0,True):cases.append(dict(self.empty_group(),**{field:value}))
+        cases += [dict(self.empty_group(),id='other'),dict(self.empty_group(),id='../group'),
+                  dict(self.empty_group(),peers=[''],peers_count=1),
+                  dict(self.empty_group(),peers=[{}],peers_count=1),
+                  dict(self.empty_group(),peers=['bad/id'],peers_count=1),
+                  dict(self.empty_group(),peers=['peer\n'],peers_count=1),
+                  dict(self.empty_group(),peers=['peer'],peers_count=None),
+                  dict(self.empty_group(),peers=['peer','peer'],peers_count=2),
+                  dict(self.empty_group(),peers=['peer'],peers_count=0),
+                  dict(self.empty_group(),resources=[dict(id='r')],resources_count=1),
+                  dict(self.empty_group(),resources=[dict(id='r',type='network')],resources_count=0),
+                  dict(self.empty_group(),resources=[dict(id='r',type='network'),dict(id='r',type='host')],resources_count=2),
+                  dict(self.empty_group(),resources=['r'],resources_count=1),[],None]
+        for group in cases:
+            with self.subTest(group=group):
+                r=self.run_function('ensure_peer_in_group',group,('group',))
+                self.assertNotEqual(r.returncode,0);self.assertFalse((self.root/'writes').exists())
+        for identifier in ('','bad/id','null id'):
+            r=self.run_function('ensure_peer_in_group',self.empty_group(),(identifier,))
+            self.assertNotEqual(r.returncode,0);self.assertFalse((self.root/'reads').exists())
+        r=self.run_function('ensure_peer_in_group',self.empty_group(),('group',),'PEER_ID=bad/peer')
+        self.assertNotEqual(r.returncode,0);self.assertFalse((self.root/'reads').exists())
+
+    def test_changed_group_before_update_is_not_overwritten(self):
+        original=self.empty_group()
+        for changed in (dict(original,peers=['other'],peers_count=1),dict(original,name='other'),{}):
+            r=self.run_function('ensure_peer_in_group',original,('group',),reads=[original,changed])
+            self.assertNotEqual(r.returncode,0);self.assertFalse((self.root/'writes').exists())
+
+    def test_update_verification_checks_all_members_and_resources(self):
+        original=dict(self.empty_group(),peers=['old-peer'],peers_count=1,
+                      resources=[dict(id='resource',type='network')],resources_count=1)
+        updated=dict(original,peers=['old-peer','new-peer'],peers_count=2)
+        bad=[dict(updated,peers=['new-peer'],peers_count=1),
+             dict(updated,peers=['old-peer'],peers_count=1),
+             dict(updated,resources=[],resources_count=0),
+             dict(updated,resources=[dict(id='resource',type='host')]),
+             dict(updated,name='changed'),dict(updated,id='other'),
+             dict(updated,peers_count=0),{},None]
+        for current in bad:
+            with self.subTest(current=current):
+                r=self.run_function('ensure_peer_in_group',original,('group',),reads=[original,original,current])
+                self.assertNotEqual(r.returncode,0)
+                self.assertEqual((self.root/'writes').read_text(),'PUT /groups/group\n')
+                self.assertEqual(len((self.root/'reads').read_text().splitlines()),3)
+        r=self.run_function('ensure_peer_in_group',original,('group',),reads=[original,original,updated])
+        self.assertEqual(r.returncode,0,r.stderr)
+
+    def test_invalid_group_list_does_not_create_duplicate(self):
+        for groups in ([dict(id=None,name='Bauer-PR30')],[dict(id='../group',name='Bauer-PR30')],[dict(id='group\n',name='Bauer-PR30')],
+                       [dict(id='group',name='Bauer-PR30'),dict(id='group',name='other')],[{}],{}):
+            r=self.run_function('ensure_group',groups,('Bauer-PR30',))
+            self.assertNotEqual(r.returncode,0);self.assertFalse((self.root/'writes').exists())
+
+    def test_setup_groups_reuses_all_three_groups_without_losing_inventory(self):
+        groups=[dict(self.empty_group(),id='company'),dict(self.empty_group(),id='marker',name='Kunde:Bauer-PR30'),
+                dict(self.empty_group(),id='global',name='Kunden',peers=['old-a','old-b','old-c'],peers_count=3,
+                     resources=[dict(id='resource',type='network')],resources_count=1)]
+        state=self.root/'groups.json';state.write_text(json.dumps(groups))
+        self.executable('group-api',"""#!/usr/bin/env python3
+import json,os,sys
+from pathlib import Path
+root=Path(os.environ['MOCK_ROOT']);state=root/'groups.json';groups=json.loads(state.read_text())
+method,path=sys.argv[1:3]
+if method=='GET':
+ print(json.dumps(groups if path=='/groups' else next(g for g in groups if g['id']==path.rsplit('/',1)[1])))
+elif method=='PUT':
+ g=next(g for g in groups if g['id']==path.rsplit('/',1)[1]);payload=json.loads(sys.argv[3]);g.update(payload)
+ g.update(peers_count=len(g['peers']),resources_count=len(g['resources']))
+ state.write_text(json.dumps(groups))
+ with (root/'writes').open('a') as stream:stream.write(path+'\\n')
+ print(json.dumps(g))
+else:sys.exit(97)
+""")
+        body=functions('router-install.sh',['die','valid_group','ensure_group','ensure_peer_in_group','setup_groups'])
+        result=self.bash('set -Eeuo pipefail\n'+body+"""
+api(){ group-api "$@"; }
+log(){ :; }
+PEER_ID=new-peer
+GLOBAL_GROUP=Kunden
+CUSTOMER=Bauer-PR30
+CUSTOMER_MARKER_PREFIX=Kunde:
+setup_groups
+setup_groups
+""")
+        self.clean_output(result);self.assertEqual(result.returncode,0,result.stderr)
+        current=json.loads(state.read_text());self.assertEqual(len(current),3)
+        for before,after in zip(groups,current):
+            self.assertEqual(before['id'],after['id']);self.assertEqual(before['name'],after['name'])
+            self.assertEqual(set(after['peers']),set(before['peers'] or [])|{'new-peer'})
+            self.assertEqual(after['resources'],before['resources'] or [])
+        self.assertEqual(len((self.root/'writes').read_text().splitlines()),3)
+
+    def test_multiple_json_documents_are_rejected_before_update(self):
+        group=self.empty_group()
+        for function,args,response in (('ensure_peer_in_group',('group',),json.dumps(group)),
+                                       ('ensure_group',('Bauer-PR30',),json.dumps([group]))):
+            body=functions('router-install.sh',['die']+(['valid_group'] if function=='ensure_peer_in_group' else [])+[function])
+            (self.root/'responses.txt').write_text(response+'\n'+response)
+            result=self.bash('set -Eeuo pipefail\n'+body+"""
+api(){
+ if [[ "$1" == GET ]]; then cat "$MOCK_ROOT/responses.txt";
+ else touch "$MOCK_ROOT/unexpected-write"; fi
+}
+PEER_ID=new-peer
+"""+function+' "$@"',*args)
+            self.assertNotEqual(result.returncode,0);self.assertFalse((self.root/'unexpected-write').exists())
 
     def test_incomplete_group_cannot_erase_members(self):
         result = self.run_function("ensure_peer_in_group", {"id": "group", "name": "Customer"}, ("group",))

@@ -242,49 +242,76 @@ find_peer(){
   die "Neuer Peer $netbird_ip nicht per NetBird-API sichtbar. Kein Fallback auf Hostname."
 }
 
+valid_group(){
+  # Null is an empty collection only with its explicit, numeric zero count.
+  jq -sce --arg gid "$1" '
+    def valid_id: type=="string" and length>0 and (test("[^A-Za-z0-9_-]")|not);
+    def collection($field; $count):
+      has($field) and has($count) and
+      (.[$count] | type=="number" and .>=0 and floor==.) and
+      (if .[$field]==null then .[$count]==0
+       elif (.[$field]|type)=="array" then (.[$field]|length)==.[$count]
+       else false end);
+    (if length==1 then .[0] else null end) |
+    select(type=="object" and (.id|valid_id) and .id==$gid and
+      (.name|type=="string" and length>0) and
+      collection("peers"; "peers_count") and collection("resources"; "resources_count")) |
+    select(all((.peers // [])[]; (if type=="object" then .id else . end)|valid_id) and
+      all((.resources // [])[]; type=="object" and (.id|valid_id) and (.type|valid_id))) |
+    {id, name, peers: [(.peers // [])[] | if type=="object" then .id else . end],
+     resources: [(.resources // [])[] | {id,type}]} |
+    select((.peers|length)==(.peers|unique|length) and
+      (.resources|length)==([.resources[].id]|unique|length)) |
+    .peers |= sort | .resources |= sort_by(.id,.type)
+  ' 2>/dev/null
+}
+
 ensure_group(){
   local name="$1" groups gid payload resp
   groups=$(api GET "/groups")
-  jq -e --arg n "$name" 'type=="array" and ([.[] | select(.name==$n)] | length <= 1)' <<<"$groups" >/dev/null 2>&1 \
+  jq -es --arg n "$name" '
+    def valid_id: type=="string" and length>0 and (test("[^A-Za-z0-9_-]")|not);
+    (if length==1 then .[0] else null end) |
+    type=="array" and all(.[]; type=="object" and (.id|valid_id) and
+      (.name|type=="string" and length>0)) and
+    (length==([.[].id]|unique|length)) and ([.[] | select(.name==$n)] | length <= 1)
+  ' <<<"$groups" >/dev/null 2>&1 \
     || die "Gruppenliste ungueltig oder Gruppenname nicht eindeutig. Keine Aenderung."
   gid=$(jq -r --arg n "$name" '.[] | select(.name==$n) | .id' <<<"$groups")
   if [[ -z "$gid" ]]; then
     payload=$(jq -nc --arg n "$name" '{name:$n,peers:[]}')
     resp=$(api POST "/groups" "$payload")
-    gid=$(jq -r '.id' <<<"$resp")
+    gid=$(jq -ers --arg n "$name" '(if length==1 then .[0] else null end) |
+      select(type=="object" and .name==$n) | .id |
+      select(type=="string" and length>0 and (test("[^A-Za-z0-9_-]")|not))' <<<"$resp") \
+      || die "Antwort auf Gruppenerstellung ungueltig."
   fi
-  [[ -n "$gid" && "$gid" != null ]] || die "Gruppe '$name' konnte nicht bestimmt werden."
   printf '%s' "$gid"
 }
 
 ensure_peer_in_group(){
   local gid="$1" g payload current
-
+  [[ "$gid" =~ ^[A-Za-z0-9_-]+$ && "$PEER_ID" =~ ^[A-Za-z0-9_-]+$ ]] \
+    || die "Gruppen-/Peer-ID ungueltig. Keine Aenderung."
   g=$(api GET "/groups/$gid")
-
-  # A partial/error response must never turn into an empty replacement group.
-  jq -e --arg gid "$gid" '
-    .id==$gid and (.name|type=="string" and length>0) and
-    (.peers|type=="array") and (.resources|type=="array") and
-    all(.peers[]; (if type=="object" then .id else . end)|type=="string" and length>0) and
-    all(.resources[]; (.id|type=="string" and length>0) and (.type|type=="string" and length>0))
-  ' <<<"$g" >/dev/null 2>&1 || die "Gruppenbestand unvollstaendig. Keine Aenderung."
-
-  # A group update must preserve existing peer memberships and resources.
-  if jq -e --arg p "$PEER_ID" '[(.peers // [])[]? | if type=="object" then .id else . end] | index($p) != null' <<<"$g" >/dev/null 2>&1; then
+  g=$(valid_group "$gid" <<<"$g") || die "Gruppenbestand unvollstaendig. Keine Aenderung."
+  if jq -e --arg p "$PEER_ID" '.peers | index($p) != null' <<<"$g" >/dev/null; then
     return 0
   fi
+  payload=$(jq -c --arg p "$PEER_ID" '{name, peers:(.peers+[$p]|sort), resources}' <<<"$g")
 
-  payload=$(jq -c --arg p "$PEER_ID" '{
-    name: .name,
-    peers: ([(.peers // [])[]? | if type=="object" then .id else . end] + [$p] | map(select(. != null and . != "")) | unique),
-    resources: [(.resources // [])[] | {id, type}]
-  }' <<<"$g")
-
+  # Do not overwrite a group that changed since the initial inventory.
+  current=$(api GET "/groups/$gid")
+  current=$(valid_group "$gid" <<<"$current") || die "Gruppenbestand vor Update unvollstaendig. Keine Aenderung."
+  [[ "$current" == "$g" ]] || die "Gruppenbestand zwischenzeitlich geaendert. Keine Aenderung."
   api PUT "/groups/$gid" "$payload" >/dev/null
   current=$(api GET "/groups/$gid")
-  jq -e --arg p "$PEER_ID" '[(.peers // [])[]? | if type=="object" then .id else . end] | index($p) != null' <<<"$current" >/dev/null \
-    || die "Gruppenzuordnung fuer Peer $PEER_ID in $gid fehlgeschlagen."
+  current=$(valid_group "$gid" <<<"$current") || die "Gruppenbestand nach Update unvollstaendig."
+  jq -e --argjson expected "$payload" '
+    . as $actual | .name==$expected.name and
+    all($expected.peers[]; . as $id | $actual.peers | index($id)!=null) and
+    all($expected.resources[]; . as $resource | $actual.resources | index($resource)!=null)
+  ' <<<"$current" >/dev/null || die "Gruppenzuordnung nicht vollstaendig erhalten/verifiziert."
 }
 
 setup_groups(){

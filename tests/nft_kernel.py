@@ -86,6 +86,40 @@ run('nft','list','table','inet','foreign_fixture')
 lan=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3));lan.bind(('lan_peer',0));lan.settimeout(3)
 overlay=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3));overlay.bind(('overlay_peer',0));overlay.settimeout(3)
 try:
+    # Reproduce NetBird 0.80 route ACL: the native rule matches the virtual
+    # destination, but by FORWARD the DNAT target is already 192.168.50.20.
+    run('nft','add','table','ip','netbird')
+    run('nft','add','set','ip','netbird','nb-7d0b7d19','{ type ipv4_addr; }')
+    run('nft','add','element','ip','netbird','nb-7d0b7d19','{ 100.64.0.10 }')
+    run('nft','add','chain','ip','netbird','netbird-rt-fwd')
+    run('nft','add','chain','ip','netbird','netbird-acl-forward-filter',
+        '{ type filter hook forward priority filter; policy accept; }')
+    run('nft','add','rule','ip','netbird','netbird-acl-forward-filter',
+        'iifname','wt0','jump','netbird-rt-fwd')
+    run('nft','add','rule','ip','netbird','netbird-acl-forward-filter',
+        'iifname','wt0','drop')
+    run('nft','add','rule','ip','netbird','netbird-rt-fwd',
+        'ip','saddr','@nb-7d0b7d19','ip','daddr','10.30.1.0/24','counter','accept')
+    from binat_acl import transaction, configuration
+    acl=dict(overlay='wt0',lan='enp1s0',virtual='10.30.1.0/24',real='192.168.50.0/24')
+    netbird_acl=run('nft','-j','list','chain','ip','netbird','netbird-rt-fwd')
+    import json as _json
+    command=transaction(_json.loads(netbird_acl),acl)
+    assert 'ct original daddr 10.30.1.0/24' in command
+    lan.settimeout(1)
+    frame('overlay_peer','wt0','100.64.0.10','10.30.1.20',45678,12345)
+    try:
+        receive(lan,'192.168.50.1','192.168.50.20')
+    except socket.timeout:
+        pass  # Native NetBird ACL drops packets after DNAT.
+    else:
+        raise AssertionError('Reproduced NetBird ACL unexpectedly allowed DNAT')
+    Path('/etc/nftables.d/openmain-binat-acl.json').write_text(_json.dumps(acl))
+    Path('/etc/nftables.d/openmain-binat-acl.json').chmod(0o600)
+    run('python3','/src/netbird-router/common/binat_acl.py')
+    assert not transaction(_json.loads(run('nft','-j','list','chain','ip','netbird','netbird-rt-fwd')),acl)
+    run('python3','/src/netbird-router/common/binat_acl.py')  # idempotent
+    lan.settimeout(3)
     frame('overlay_peer','wt0','100.64.0.10','10.30.1.20',45678,12345)
     receive(lan,'192.168.50.1','192.168.50.20')
     frame('lan_peer','enp1s0','192.168.50.20','192.168.50.1',12345,45678)
@@ -93,4 +127,4 @@ try:
 finally:
     lan.close();overlay.close()
 assert run('nft','-j','list','table','inet','filter')==filter_before
-print('PASS: prefix DNAT, scoped masquerade, reverse translation, repeat apply, invalid transaction rollback, foreign table preservation, live admission/modified-rule rejection, pristine filter-table preservation')
+print('PASS: prefix NAT, NetBird ACL fail-closed repro/fix, idempotent ACL reconciliation, reverse translation, foreign firewall preservation')

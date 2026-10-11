@@ -129,7 +129,7 @@ def transaction(rules, cfg):
     return (f'replace rule ip netbird netbird-rt-fwd handle {handle} '
             f'iifname "{cfg["overlay"]}" oifname "{cfg["lan"]}" '
             f'ip saddr {source} ct status dnat '
-            f'ct original daddr {cfg["virtual"]} ip daddr {cfg["real"]} '
+            f'ct original daddr & {ipaddress.IPv4Network(cfg["virtual"]).netmask} == {ipaddress.IPv4Network(cfg["virtual"]).network_address} ip daddr {cfg["real"]} '
             f'counter accept comment "{MARKER}"\n')
 
 

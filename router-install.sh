@@ -695,9 +695,12 @@ main(){
   checkpoint network
   allocate_mapping
   ensure_network
+  # Persist the strictly validated NetBird allocation before making NAT
+  # changes: ACL reconciliation may fail while tables/files already exist.
+  # This guarded ownership state makes retries read-only verifiable.
+  save_state
   write_nft
   enable_forwarding
-  save_state
   checkpoint zabbix
   setup_zabbix
   NB_LAN_INTERFACE="$LAN_IF" bash "$SCRIPT_DIR/netbird-router/pve/install-dhcp-recovery.sh"

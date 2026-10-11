@@ -87,8 +87,8 @@ PYCHECK
   fi
 else
   # Reuse the first protected stage's values (API tokens/customer/role).
-    # Otherwise prepare_config prompts for every field a second time.
-    python3 "$ROOT/netbird-router/common/prepare_config.py" "$TMP/customer.json" "$TMP/customer.json" --require-setup-key
+  # Otherwise prepare_config prompts for every field a second time.
+  python3 "$ROOT/netbird-router/common/prepare_config.py" "$TMP/customer.json" "$TMP/customer.json" --require-setup-key
   modprobe tun
   [[ -c /dev/net/tun ]]
   [[ -n "$STORAGE" ]] || STORAGE=$(pvesm status --content rootdir --enabled 1 | awk 'NR>1 && $3=="active"{print $1;exit}')

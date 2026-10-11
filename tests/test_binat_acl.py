@@ -32,7 +32,7 @@ class NetBirdBINATPolicyTests(unittest.TestCase):
     def test_authorized_native_rule_is_replaced_not_bypassed(self):
         command = acl.transaction(output(native_rule()), CFG)
         for value in ('replace rule ip netbird netbird-rt-fwd handle 51',
-                      'ip saddr @nb-7d0b7d19', 'ct original daddr 10.30.2.0/24',
+                      'ip saddr @nb-7d0b7d19', 'ct original daddr & 255.255.255.0 == 10.30.2.0',
                       'ip daddr 192.168.178.0/24', 'ct status dnat',
                       'iifname "wt0" oifname "eth0"'):
             self.assertIn(value, command)
@@ -67,8 +67,9 @@ class NetBirdBINATPolicyTests(unittest.TestCase):
         rule['comment'] = acl.MARKER
         rule['expr'] = [
             {'comment': acl.MARKER},
-            {'match': {'op': '==', 'left': {'ct': {'key': 'daddr', 'dir': 'original'}},
-                       'right': {'prefix': {'addr': '10.30.2.0', 'len': 24}}}},
+            {'match': {'op': '==', 'left': {'binop': {'op': '&',
+                       'left': {'ct': {'key': 'daddr', 'dir': 'original'}},
+                       'right': '255.255.255.0'}}, 'right': '10.30.2.0'}},
             {'match': {'op': '==', 'left': {'payload': {'protocol': 'ip', 'field': 'daddr'}},
                        'right': {'prefix': {'addr': '192.168.178.0', 'len': 24}}}},
             {'meta': {'key': 'iifname', 'name': 'wt0'}},

@@ -118,16 +118,25 @@ try:
     Path('/etc/nftables.d/openmain-binat-acl.json').chmod(0o600)
     run('python3','/src/netbird-router/common/binat_acl.py')
     observed = _json.loads(run('nft','-j','list','chain','ip','netbird','netbird-rt-fwd'))
-    print('SYNTHETIC ACL JSON AFTER REPLACE:', _json.dumps(observed, sort_keys=True), flush=True)
     assert not transaction(observed,acl)
     run('python3','/src/netbird-router/common/binat_acl.py')  # idempotent
     lan.settimeout(3)
     # Use a new conntrack tuple, not the UDP flow dropped before ACL repair.
     frame('overlay_peer','wt0','100.64.0.10','10.30.1.20',45679,12345)
     mapped_port, target_port = receive(lan,'192.168.50.1','192.168.50.20')
-    print('SYNTHETIC NAT SOURCE/TARGET PORTS:', mapped_port, target_port, flush=True)
     frame('lan_peer','enp1s0','192.168.50.20','192.168.50.1',target_port,mapped_port)
     receive(overlay,'10.30.1.20','100.64.0.10')
+    # Simulate NetBird revoking toweri5 membership: the managed ACL must
+    # immediately stop forwarding new flows even though its rule still exists.
+    run('nft','delete','element','ip','netbird','nb-7d0b7d19','{ 100.64.0.10 }')
+    lan.settimeout(1)
+    frame('overlay_peer','wt0','100.64.0.10','10.30.1.20',45680,12345)
+    try:
+        receive(lan,'192.168.50.1','192.168.50.20')
+    except socket.timeout:
+        pass
+    else:
+        raise AssertionError('BINAT bypasses NetBird source-group revocation')
 finally:
     lan.close();overlay.close()
 assert run('nft','-j','list','table','inet','filter')==filter_before

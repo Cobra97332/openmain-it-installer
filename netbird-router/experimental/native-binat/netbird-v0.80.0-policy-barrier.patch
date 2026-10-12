@@ -104,7 +104,7 @@ diff --git a/client/firewall/binat/publisher_linux.go b/client/firewall/binat/pu
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/publisher_linux.go
-@@ -0,0 +1,652 @@
+@@ -0,0 +1,654 @@
 +//go:build linux
 +
 +// Package binat is experimental, opt-in native policy publication. No controller
@@ -576,9 +576,11 @@ new file mode 100644
 +	defer p.mutex.Unlock()
 +	p.released = true
 +	p.pending = nil
++	p.last = nil
 +	configured.Lock()
 +	if configured.active == p {
 +		configured.active = nil
++		configured.scopes = nil
 +	}
 +	configured.Unlock()
 +	if p.lock != nil {
@@ -761,7 +763,7 @@ diff --git a/client/firewall/binat/publisher_linux_test.go b/client/firewall/bin
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/publisher_linux_test.go
-@@ -0,0 +1,197 @@
+@@ -0,0 +1,223 @@
 +//go:build linux
 +
 +package binat
@@ -957,6 +959,32 @@ new file mode 100644
 +	}
 +	if !errors.Is(CloseActive(), ErrUnconfirmed) {
 +		t.Fatal("ownerless reset accepted")
++	}
++}
++
++func TestBINATNativeReleaseRestoresStockAndPreservesNewOwner(t *testing.T) {
++	p := publisherForFixture(&fixture{})
++	configured.Lock()
++	configured.active = p
++	configured.scopes = testScopes
++	configured.Unlock()
++	target := netip.MustParsePrefix("10.80.1.20/32")
++	if !OriginalDestination(target) {
++		t.Fatal("configured scoped rewrite absent")
++	}
++	p.Release()
++	if OriginalDestination(target) || p.LastACK() != nil {
++		t.Fatal("released publisher affects stock ACL generation")
++	}
++	next := publisherForFixture(&fixture{})
++	configured.Lock()
++	configured.active = next
++	configured.scopes = testScopes
++	configured.Unlock()
++	defer next.Release()
++	p.Release()
++	if !OriginalDestination(target) {
++		t.Fatal("old owner removed new owner's configuration")
 +	}
 +}
 diff --git a/client/firewall/binat/publisher_other.go b/client/firewall/binat/publisher_other.go

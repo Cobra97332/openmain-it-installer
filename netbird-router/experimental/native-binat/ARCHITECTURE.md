@@ -55,6 +55,8 @@ It is opt-in only with `OPENMAIN_ISOLATED_TEST=1` and
 `NB_EXPERIMENTAL_BINAT_CONFIG=/run/netbird-binat-lab/config.json`. Configuration,
 owner lock and adoption receipt are root-owned, protected and symlink-refusing.
 Stock NetBird without the lab variable has no publisher or destination rewrite.
+Releasing the active owner atomically clears its scope registry and local ACK;
+a previous released owner cannot erase a subsequent owner's configuration.
 This patch remains excluded from OpenMain's installer bundle.
 
 `acl.BINATRules` consumes the full authoritative NetworkMap before native work.

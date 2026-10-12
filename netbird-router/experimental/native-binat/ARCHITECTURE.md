@@ -71,6 +71,8 @@ peer address, DNS, route and ACL changes, and management-stream termination.
 Start bootstraps a persistent closed boundary before interface creation and
 requires the native nft backend, active firewall and matching overlay interface.
 Stop, native table rebuild, rollback and firewall Close synchronously close it.
+A configured but absent owner, or unconfirmed closure, refuses native teardown
+and rollback mutations instead of removing the still-protective native rules.
 A failed native operation, absent native chain/tracked rule, stale map, context
 cancellation or publication/readback failure cannot produce a successful ACK.
 The ACL manager disables hash shortcuts for managed publication and exposes

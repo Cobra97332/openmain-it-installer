@@ -104,7 +104,7 @@ diff --git a/client/firewall/binat/publisher_linux.go b/client/firewall/binat/pu
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/publisher_linux.go
-@@ -0,0 +1,649 @@
+@@ -0,0 +1,652 @@
 +//go:build linux
 +
 +// Package binat is experimental, opt-in native policy publication. No controller
@@ -237,6 +237,9 @@ new file mode 100644
 +	p := configured.active
 +	configured.RUnlock()
 +	if p == nil {
++		if os.Getenv("NB_EXPERIMENTAL_BINAT_CONFIG") != "" {
++			return ErrUnconfirmed
++		}
 +		return nil
 +	}
 +	return p.Close()
@@ -758,7 +761,7 @@ diff --git a/client/firewall/binat/publisher_linux_test.go b/client/firewall/bin
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/publisher_linux_test.go
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,197 @@
 +//go:build linux
 +
 +package binat
@@ -943,6 +946,19 @@ new file mode 100644
 +		t.Fatal(err)
 +	}
 +}
++
++func TestBINATNativeConfiguredWithoutOwnerRefusesFirewallDestruction(t *testing.T) {
++	t.Setenv("NB_EXPERIMENTAL_BINAT_CONFIG", Root+"/config.json")
++	configured.RLock()
++	active := configured.active
++	configured.RUnlock()
++	if active != nil {
++		t.Fatal("unexpected owner in isolated fixture")
++	}
++	if !errors.Is(CloseActive(), ErrUnconfirmed) {
++		t.Fatal("ownerless reset accepted")
++	}
++}
 diff --git a/client/firewall/binat/publisher_other.go b/client/firewall/binat/publisher_other.go
 new file mode 100644
 --- /dev/null
@@ -1025,28 +1041,32 @@ diff --git a/client/firewall/nftables/manager_linux.go b/client/firewall/nftable
  	firewall "github.com/netbirdio/netbird/client/firewall/manager"
  	"github.com/netbirdio/netbird/client/iface/wgaddr"
  	"github.com/netbirdio/netbird/client/internal/statemanager"
-@@ -203,6 +204,9 @@
+@@ -203,6 +204,10 @@
  
  // rollbackInit performs best-effort cleanup of already-initialized state when Init fails partway through.
  func (m *Manager) rollbackInit() {
 +	if binat.CloseActive() != nil {
 +		log.Error("BINAT rollback closure unconfirmed")
++		return
 +	}
  	if err := m.family4.Reset(); err != nil {
  		log.Warnf("rollback family: %v", err)
  	}
-@@ -382,7 +386,9 @@
+@@ -381,8 +386,12 @@
+ 	m.mutex.Lock()
  	defer m.mutex.Unlock()
  
++	// Preserve native protection when the independent BINAT closure is not
++	// confirmed; removal of the native firewall must not worsen this failure.
++	if err := binat.CloseActive(); err != nil {
++		return err
++	}
  	var merr *multierror.Error
 -
-+	if err := binat.CloseActive(); err != nil {
-+		merr = multierror.Append(merr, err)
-+	}
  	if err := m.family4.Reset(); err != nil {
  		merr = multierror.Append(merr, fmt.Errorf("reset family: %w", err))
  	}
-@@ -746,6 +752,9 @@
+@@ -746,6 +755,9 @@
  }
  
  func (m *Manager) createWorkTableFamily(family nftables.TableFamily) (*nftables.Table, error) {
@@ -1056,7 +1076,7 @@ diff --git a/client/firewall/nftables/manager_linux.go b/client/firewall/nftable
  	tables, err := m.rConn.ListTablesOfFamily(family)
  	if err != nil {
  		return nil, fmt.Errorf("list of tables: %w", err)
-@@ -808,3 +817,54 @@
+@@ -808,3 +820,54 @@
  	}
  	return len(sources) > 0 && sources[0].Addr().Is6()
  }

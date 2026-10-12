@@ -1,0 +1,2 @@
+# Unified-diff context lines contain a space before Go indentation tabs.
+netbird-router/experimental/native-binat/*.patch whitespace=-space-before-tab

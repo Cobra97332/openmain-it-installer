@@ -100,3 +100,25 @@ Actual client laboratory opt-in (only disposable isolated network namespaces):
 10. Publish complete traces/counters and exact client/controller/installer SHAs.
     Obtain Codex security review of that same head. Only after all mandatory
     gates pass may a separate change propose installer integration.
+
+## Small native candidate
+
+Follow SMALL-NATIVE.md and apply only the small patch to the pinned clean source.
+Use its protected `/run/netbird-binat-small-lab/config.json`, with both lab env
+variables and explicit `NB_WG_KERNEL_DISABLED=true`. Keep native nftables enabled;
+no existing overlay interface or persistent TUN may be adopted. Do not enable the
+external helper or the old full-snapshot patch in this client/namespace.
+
+Run `bash tests/check-native-binat-patch.sh small`. The QEMU fixture additionally
+requires `tests/qemu_platforms.py --native-small /path/to/small-native-lab`; both
+TUN lifetime scenarios run before the unchanged legacy release gates. Do not use
+`--unit-only` to claim acceptance. The veth-death counterexample remains failing
+and is explicitly distinguished from verified process-owned TUN behavior.
+
+Before integration, use actual isolated clients/controller as described above:
+verify full-map delivery, normal policy refresh, original/reply TCP/UDP/ICMP,
+management disconnect, an invalid map, native update/readback failures, SIGKILL,
+systemd restart with the same identity, and real 100/200 failover. Verify every
+restart gets a fresh authoritative map before allowing a new flow. Verify no
+configuration-only message leaves an unexplained permanent outage. Measure Pi
+throughput/CPU and document the service-exit availability tradeoff.

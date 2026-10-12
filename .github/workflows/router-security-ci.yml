@@ -70,6 +70,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash tests/check-native-binat-patch.sh
 
+      - name: Small native ACL integration (separate patch; all earlier security gates retained)
+        if: ${{ !cancelled() }}
+        run: bash tests/check-native-binat-patch.sh small
+
   platform-lab:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -87,11 +91,19 @@ jobs:
           docker run --rm -v "$RUNNER_TEMP/openmain-platform-lab:/lab" openmain-platform-lab:debian13 \
             debootstrap --foreign --arch=arm64 --variant=minbase --include=python3,jq \
             trixie /lab/arm64 http://deb.debian.org/debian
+      - name: Build native TUN-lifetime fixture (all security counterexamples remain mandatory)
+        if: ${{ !cancelled() }}
+        env:
+          OPENMAIN_NATIVE_DRIVER_EXPORT: ${{ runner.temp }}/openmain-platform-lab/small-native-lab
+        run: |
+          docker build -f tests/Dockerfile.router -t openmain-router-test:debian13 .
+          bash tests/check-native-binat-patch.sh small
       - name: Actual QEMU VM and synthetic ISO BIOS/UEFI boots (offline APIs)
+        if: ${{ !cancelled() }}
         run: >-
           docker run --rm --network none -e OPENMAIN_ISOLATED_TEST=1
           -v "$RUNNER_TEMP/openmain-platform-lab:/lab" -v "$PWD:/src:ro"
-          openmain-platform-lab:debian13 python3 tests/qemu_platforms.py
+          openmain-platform-lab:debian13 python3 tests/qemu_platforms.py --native-small /lab/small-native-lab
       - name: Actual ARM64 Python with simulated router APIs
         if: ${{ !cancelled() }}
         run: >-

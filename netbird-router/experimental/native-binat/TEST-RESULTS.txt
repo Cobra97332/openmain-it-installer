@@ -1,3 +1,6 @@
+Current simplification candidate: see SMALL-NATIVE.md and SMALL-NATIVE-TESTS.txt.
+The following results concern the retained complete-snapshot research patch.
+
 EXPERIMENT ONLY — NATIVE/PR #33 RELEASE BLOCKED
 Revision continues OpenMain fe2cf950e02238b6f11c76c46734d0ea9a36b423.
 Pinned NetBird v0.80.0: fca64287cf51a85552a41b022013abbfdb335452.

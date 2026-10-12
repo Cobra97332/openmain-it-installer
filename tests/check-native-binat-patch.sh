@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Public, pinned source preparation; execution only in network-none Docker.
 set -Eeuo pipefail
+variant=${1:-snapshot}
+case "$variant" in
+  snapshot) patch_name=policy-barrier; driver=lab; binary=native-publisher-lab; packet_test=nft_go_publisher_kernel.py; owner_gate=OPENMAIN_NATIVE_OWNER_DEATH_GATE ;;
+  small) patch_name=small-native; driver=small-lab; binary=small-native-lab; packet_test=nft_small_native_kernel.py; owner_gate=OPENMAIN_SMALL_OWNER_DEATH_GATE ;;
+  *) echo "Unknown native test variant" >&2; exit 2 ;;
+esac
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 lab=$(mktemp -d "${TMPDIR:-/tmp}/openmain-native-build.XXXXXXXX")
 cleanup() {
@@ -25,8 +31,8 @@ curl --fail --silent --show-error --location --retry 3 \
 tar -xzf "$lab/netbird.tgz" -C "$lab"
 tar -xzf "$lab/go.tgz" -C "$lab"
 cd "$lab/netbird-0.80.0"
-git apply --check "$repo/netbird-router/experimental/native-binat/netbird-v0.80.0-policy-barrier.patch"
-git apply "$repo/netbird-router/experimental/native-binat/netbird-v0.80.0-policy-barrier.patch"
+git apply --check "$repo/netbird-router/experimental/native-binat/netbird-v0.80.0-${patch_name}.patch"
+git apply "$repo/netbird-router/experimental/native-binat/netbird-v0.80.0-${patch_name}.patch"
 export GOPATH="$lab/modules" GOCACHE="$lab/cache" GOPROXY=https://proxy.golang.org
 compile() {
   local output=$1 package=$2
@@ -49,19 +55,22 @@ docker_local() {
 compile core.test ./client/firewall/binat
 docker_local run --rm --network none -v "$lab/core.test:/lab/core.test:ro" \
   openmain-router-test:debian13 /lab/core.test -test.v -test.count=1
-"$lab/go/bin/go" build -buildvcs=false -o "$lab/native-publisher-lab" ./client/firewall/binat/cmd/lab
+"$lab/go/bin/go" build -buildvcs=false -o "$lab/$binary" "./client/firewall/binat/cmd/$driver"
+if [[ $variant == small && -n ${OPENMAIN_NATIVE_DRIVER_EXPORT:-} ]]; then
+  install -m 0755 "$lab/$binary" "$OPENMAIN_NATIVE_DRIVER_EXPORT"
+fi
 native_status=0
 docker_local run --rm --network none --cap-add NET_ADMIN \
   --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1 \
-  -v "$repo:/src:ro" -v "$lab/native-publisher-lab:/native/native-publisher-lab:ro" \
-  openmain-router-test:debian13 python3 tests/nft_go_publisher_kernel.py || native_status=1
+  -v "$repo:/src:ro" -v "$lab/$binary:/native/$binary:ro" \
+  openmain-router-test:debian13 python3 "tests/$packet_test" || native_status=1
 # A hard-killed native owner must not leave old permissions. Keep this additional
 # P1 gate failing until the architecture can prove that invariant.
 docker_local run --rm --network none --cap-add NET_ADMIN \
   --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1 \
-  -e OPENMAIN_NATIVE_OWNER_DEATH_GATE=1 \
-  -v "$repo:/src:ro" -v "$lab/native-publisher-lab:/native/native-publisher-lab:ro" \
-  openmain-router-test:debian13 python3 tests/nft_go_publisher_kernel.py || native_status=1
+  -e "$owner_gate=1" \
+  -v "$repo:/src:ro" -v "$lab/$binary:/native/$binary:ro" \
+  openmain-router-test:debian13 python3 "tests/$packet_test" || native_status=1
 GOARCH=arm64 CGO_ENABLED=0 compile core-arm64.test ./client/firewall/binat
 docker_local run --rm --network none -v "$lab/core-arm64.test:/lab/core-arm64.test:ro" \
   openmain-router-test:debian13 qemu-aarch64 /lab/core-arm64.test -test.v -test.count=1
@@ -72,5 +81,9 @@ docker_local run --rm --network none -v "$lab/acl.test:/lab/acl.test:ro" \
 # validate the production lifecycle call sites. No Engine daemon is started.
 compile engine.test ./client/internal
 compile nftables.test ./client/firewall/nftables
+if [[ $variant == small ]]; then
+  docker_local run --rm --network none -v "$lab/nftables.test:/lab/nftables.test:ro" \
+    openmain-router-test:debian13 /lab/nftables.test -test.v -test.run '^TestBINATSmall' -test.count=1
+fi
 
 test "$native_status" -eq 0

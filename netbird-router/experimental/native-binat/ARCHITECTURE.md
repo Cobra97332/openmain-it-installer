@@ -4,6 +4,15 @@ Base: OpenMain f0d8738b982bdd68090ffd3c1f1cd821b03f982c (PR #33).
 This directory is excluded from the installer bundle. Neither installer behavior
 nor the unsafe existing helper is changed. **Do not deploy or merge PR #33.**
 
+## Current simplification candidate
+
+See [SMALL-NATIVE.md](SMALL-NATIVE.md). `netbird-v0.80.0-small-native.patch`
+delegates authorization directly to native route ACLs, removes the duplicate
+snapshot/receipt machinery and requires existing userspace WireGuard on a
+nonpersistent TUN. It is a separate mutually exclusive lab patch, not an installer
+change. The complete-map publisher below is retained as research evidence; its
+security gates remain mandatory and unchanged. Release remains blocked.
+
 ## Source review and exact dependencies
 
 Reviewed NetBird v0.80.0, commit fca64287cf51a85552a41b022013abbfdb335452.

@@ -23,6 +23,7 @@ def run(command, log):
 
 def main():
     parser=argparse.ArgumentParser()
+    parser.add_argument('--native-small',help='Compiled small native driver for mandatory TUN-lifetime proof in VM')
     parser.add_argument('--rootfs',default='/lab/amd64')
     parser.add_argument('--work',default='/lab/qemu')
     parser.add_argument('--unit-only',action='store_true',help='Debug unit lifecycle only; not a regression-suite pass')
@@ -47,6 +48,12 @@ def main():
         src=source/name;dst=root/'src'/name
         if not src.is_file() or src.is_symlink():raise SystemExit('Unsafe source fixture')
         dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(src,dst)
+    if args.native_small:
+        driver=Path(args.native_small)
+        if not driver.is_absolute() or not driver.is_file() or driver.is_symlink():
+            raise SystemExit('Verified regular native driver path required')
+        destination=root/'native/small-native-lab'
+        destination.parent.mkdir(exist_ok=True);shutil.copyfile(driver,destination);destination.chmod(0o755)
     kernel=next(Path('/boot').glob('vmlinuz-*-amd64'))
     initrd=kernel.with_name(kernel.name.replace('vmlinuz-','initrd.img-'))
     version=kernel.name.removeprefix('vmlinuz-')
@@ -105,6 +112,11 @@ systemctl is-active --quiet getty@tty1.service
 echo OPENMAIN_QA_PASS
 systemctl --no-block poweroff
 ''')
+    if args.native_small:
+        qa=root/'root/qa.sh'
+        text=qa.read_text()
+        text=text.replace('  packet_status=0', '  packet_status=0\n  OPENMAIN_ISOLATED_TEST=1 unshare --net python3 tests/nft_small_tun_lifetime.py || packet_status=1\n  OPENMAIN_ISOLATED_TEST=1 OPENMAIN_TUN_CLOSURE_FAILURE=1 unshare --net python3 tests/nft_small_tun_lifetime.py || packet_status=1')
+        qa.write_text(text)
     if args.unit_only:
         script=root/'root/qa.sh'
         text=script.read_text()

@@ -1,0 +1,43 @@
+SMALL NATIVE CANDIDATE — NOT RELEASE ACCEPTANCE
+Parent: ecb2dd265b6a4002a50288095a5d77dc9a24c5fa, PR #34 only.
+Pinned upstream/source/toolchain hashes are unchanged; see ARCHITECTURE.md.
+Exact new OpenMain SHA and CI/review links are recorded in the PR conversation.
+
+Actually executed locally:
+- Small patch applies cleanly to the verified fresh NetBird v0.80.0 archive.
+- Bash syntax/ShellCheck and 222 offline regressions: PASS (Debian 13 container).
+- Additional Debian 13 regression run, 222 tests: PASS.
+- Debian 13 without jq, 7 bootstrap tests: PASS.
+- ARM64 Python under QEMU-user, 33 simulated-API tests: PASS.
+- Native gate Go unit/race tests: PASS; latest ARM64 unit run follows in PR.
+- Actual compiled small gate + nft/conntrack packet tests: PASS, including
+  original/reply UDP/TCP withdrawal, new flow denial, native late DROP,
+  synchronous concurrent closure/reset fencing, RELATED ICMP, multiple source
+  ACLs, simulated backup/overlapping LAN, closed restart, unknown layout and
+  foreign-rule preservation. Synthetic native ACL rules, NOT real Engine/maps.
+- Standalone source-extracted originalRouteTuple + actual nft SDK test: PASS.
+  This is NOT full native backend compilation.
+- Existing Python snapshot real-kernel suite: PASS.
+- All SIX unchanged legacy kernel P1 counterexamples: FAIL.
+- Additional small veth-owner-death NEW-flow counterexample: FAIL.
+  That retained-veth/kernel dataplane is refused by the candidate's actual
+  Engine checks. Failure remains visible/mandatory; no success/waiver claimed.
+- Actual QEMU Debian 13 VM: FAIL on inherited security gates. Synthetic ISO
+  BIOS/UEFI boots: PASS. Official Debian Installer/empty-disk acceptance not run.
+- Initial TUN fixture runs: FAIL. Diagnosis: inherited sysfs mount was not bound
+  to the new network namespace. Replaced sysfs proof in the native candidate
+  with existing rtnetlink library queries; final QEMU TUN tests are rerunning.
+- Full native ACL/Engine/nft build locally BLOCKED by public Go-module download
+  policy (klauspost/compress v1.18.7). No full build success claimed locally.
+
+The corrected QEMU job runs actual TUN/UDP/nft/conntrack in disposable namespaces
+for BOTH SIGKILL and unknown-kernel-closure fail-stop. Each must prove a valid
+flow, a closed gate, owner FD/interface removal and denial of a NEW tuple. The
+transport is synthetic plaintext, not real NetBird/WireGuard/controller.
+Final executed results and all exact-head GitHub checks follow in PR #34.
+
+No existing security tests were deleted, weakened or converted to expected
+failures. The current shipped helper is unchanged and unsafe for NEW flows;
+accepted short existing-flow continuation does not waive those failures.
+Candidate restart/controller ordering, physical Pi performance, actual Proxmox
+and real metric-100/200 failover remain unverified. Keep release BLOCKED.

@@ -15,6 +15,10 @@ class Rejected(Exception):
     pass
 
 
+class ClosureUnconfirmed(Rejected):
+    pass
+
+
 def network(value):
     try:
         net = ipaddress.IPv4Network(value, strict=True)
@@ -116,7 +120,15 @@ class Publisher:
             self.ticket = ticket
             batch = compile_rules(rules, self.mappings)
             native_apply()  # Represents synchronous native full-map processing.
-            self.execute(f'flush chain ip {TABLE} current\n' + batch)
+            try:
+                self.execute(f'flush chain ip {TABLE} current\n' + batch)
+            except BaseException:
+                # A timeout can happen AFTER kernel commit. Never assume rollback.
+                try:
+                    self.execute(f'flush chain ip {TABLE} current\n')
+                except BaseException as exc:
+                    raise ClosureUnconfirmed('Publication failed; closure unconfirmed') from exc
+                raise Rejected('Publication failed; closure confirmed') from None
 
     def close(self):
         with self.lock:

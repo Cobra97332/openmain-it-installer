@@ -4,9 +4,9 @@ Native v0.80.0 SHA: fca64287cf51a85552a41b022013abbfdb335452
 Newer upstream main: 67c2041fb5534c19d7b2320617cfc3aaab8e7d3d
 
 Executed locally, with no production access:
-- Debian 13 network-none Docker: Bash syntax/ShellCheck + 220 offline tests PASS.
+- Debian 13 network-none Docker: Bash syntax/ShellCheck + 222 offline tests PASS.
 - Debian 13 without jq: 7 bootstrap tests PASS.
-- Actual QEMU-user ARM64 Python: 31 contract/platform tests PASS (APIs mocked).
+- Actual QEMU-user ARM64 Python: 33 contract/platform tests (final run recorded in PR) (APIs mocked).
 - New snapshot kernel: actual UDP/TCP ESTABLISHED request/reply withdrawal,
   new UDP/TCP, complete snapshot replacement, DROP precedence, concurrent update
   closure, native failure, native table reset/recreation, missing referenced ACL
@@ -47,3 +47,11 @@ QEMU namespace correction: sysfs remained mounted for the parent namespace;
 MAC addresses now come from ip JSON in the active network namespace. Both QEMU
 packet suites execute even if either fails, and any failure keeps VM acceptance
 red. Final exact-head results remain in the draft conversation/Actions.
+
+Review follow-up: Codex P2 indeterminate commit outcome addressed with immediate
+re-closure and explicit ClosureUnconfirmed reporting if that fails. Added mocks
+for both outcomes and an actual kernel commit/lost-ACK/re-closure packet test.
+ShellCheck trap variable handling corrected with a named cleanup function.
+Counts/results for this newest revision supersede earlier 220/31 counts and
+are recorded in exact-head CI and the draft conversation. The final Debian-13
+222-test/ShellCheck run and actual kernel lost-ACK re-closure test passed.

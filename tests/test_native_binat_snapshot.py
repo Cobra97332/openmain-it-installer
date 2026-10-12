@@ -55,6 +55,27 @@ class SnapshotTests(unittest.TestCase):
         with self.assertRaises(snapshot.Rejected):snapshot.Publisher([SCOPE,SCOPE])
         snapshot.Publisher([SCOPE,dict(SCOPE,virtual='10.81.1.0/24',overlay='backup0')])
 
+    def test_commit_with_lost_acknowledgment_recloses(self):
+        state={'open':False}
+        def uncertain(script):
+            state['open']='add rule' in script
+            if state['open']:raise TimeoutError('synthetic lost ACK after commit')
+        owner=snapshot.Publisher([SCOPE],uncertain)
+        with self.assertRaisesRegex(snapshot.Rejected,'closure confirmed'):owner.publish(1,[RULE])
+        self.assertFalse(state['open'])
+
+    def test_failed_reclosure_is_explicitly_unconfirmed(self):
+        state={'open':False,'calls':0}
+        def uncertain(script):
+            state['calls']+=1
+            if state['calls']==2:
+                state['open']=True
+                raise TimeoutError('synthetic ACK loss')
+            if state['calls']==3:raise OSError('synthetic close rejection')
+        owner=snapshot.Publisher([SCOPE],uncertain)
+        with self.assertRaisesRegex(snapshot.ClosureUnconfirmed,'closure unconfirmed'):owner.publish(1,[RULE])
+        self.assertTrue(state['open'])  # Never falsely assert failure means denial.
+
     def test_unconfirmed_kernel_close_aborts_before_native_processing(self):
         def reject(script):raise OSError('synthetic kernel rejection')
         owner=snapshot.Publisher([SCOPE],reject)

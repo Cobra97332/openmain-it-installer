@@ -72,7 +72,10 @@ A management-server ACK is NOT implemented. The confirmation boundary in tests
 is successful synchronous nft publication; packets already beyond that hook may
 finish. Physical packet drainage or upstream controller delivery latency is not
 claimed. Malformed snapshots/native failures leave the successfully closed path
-empty. If closing itself fails, denial cannot be certified: fail and stop; do not
+empty. Indeterminate final-commit errors (including an ACK lost after a kernel
+commit) immediately attempt re-closure, with distinct closure-confirmed /
+closure-unconfirmed results. No failed ACK is mistaken for atomic rollback.
+If closing itself fails, denial cannot be certified: fail and stop; do not
 claim that kernel failure magically revoked the previously installed rules.
 
 The pinned native patch adds an opt-in synchronous lifecycle seam to

@@ -166,6 +166,19 @@ try:
     request(port=50022,proto=6,allowed=False)
     publish([dict(rules[0],protocol='icmp')]);request(port=50023,proto=1)
     request(port=50024,allowed=False)
+    # Real kernel commit followed by synthetic lost ACK; immediately re-close.
+    real_execute=owner.execute
+    def lost_ack(script):
+        real_execute(script)
+        if 'add rule' in script:raise TimeoutError('synthetic ACK loss after real commit')
+    owner.execute=lost_ack
+    try:
+        try:publish(rules)
+        except snapshot.Rejected:pass
+        else:raise AssertionError('Indeterminate commit reported success')
+    finally:owner.execute=real_execute
+    request(port=50001,allowed=False);request(port=50025,allowed=False)
+    reply(udp_target,udp_source,allowed=False)
     # Stale prepared publication cannot restore a newer withdrawn policy.
     try:owner.publish(ticket-1,rules)
     except snapshot.Rejected:pass

@@ -43,10 +43,13 @@ jobs:
       - name: Syntax, ShellCheck and offline mocks
         run: bash tests/check-router.sh
       - name: Build Debian 13 test environment
+        if: ${{ !cancelled() }}
         run: docker build -f tests/Dockerfile.router -t openmain-router-test:debian13 .
       - name: Debian 13 offline regression tests
+        if: ${{ !cancelled() }}
         run: docker run --rm --network none -v "$PWD:/src:ro" openmain-router-test:debian13
       - name: Debian 13 bootstrap with jq absent
+        if: ${{ !cancelled() }}
         run: |
           docker run --rm --network none -v "$PWD:/src:ro" openmain-router-test:debian13 bash -c \
             'dpkg --remove jq >/dev/null && ! command -v jq && python3 -m unittest discover -s tests -p test_router_bootstrap.py -v'

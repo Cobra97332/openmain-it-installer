@@ -3,7 +3,13 @@
 set -Eeuo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 lab=$(mktemp -d "${TMPDIR:-/tmp}/openmain-native-build.XXXXXXXX")
-trap 'result=$?; chmod -R u+w -- "$lab"; rm -rf -- "$lab"; exit "$result"' EXIT
+cleanup() {
+  local previous_status=$?
+  chmod -R u+w -- "$lab"
+  rm -rf -- "$lab"
+  exit "$previous_status"
+}
+trap cleanup EXIT
 curl --fail --silent --show-error --location --retry 3 \
   https://codeload.github.com/netbirdio/netbird/tar.gz/refs/tags/v0.80.0 -o "$lab/netbird.tgz"
 (

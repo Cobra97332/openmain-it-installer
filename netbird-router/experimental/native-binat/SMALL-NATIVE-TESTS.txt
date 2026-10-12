@@ -9,7 +9,8 @@ Actually executed locally:
 - Additional Debian 13 regression run, 222 tests: PASS.
 - Debian 13 without jq, 7 bootstrap tests: PASS.
 - ARM64 Python under QEMU-user, 33 simulated-API tests: PASS.
-- Native gate Go unit/race tests: PASS; latest ARM64 unit run follows in PR.
+- Native gate Go unit/race tests, 12 top-level cases: PASS.
+  ARM64 QEMU-user unit results are recorded with the final head in PR.
 - Actual compiled small gate + nft/conntrack packet tests: PASS, including
   original/reply UDP/TCP withdrawal, new flow denial, native late DROP,
   synchronous concurrent closure/reset fencing, RELATED ICMP, multiple source
@@ -26,9 +27,15 @@ Actually executed locally:
   BIOS/UEFI boots: PASS. Official Debian Installer/empty-disk acceptance not run.
 - Initial TUN fixture runs: FAIL. Diagnosis: inherited sysfs mount was not bound
   to the new network namespace. Replaced sysfs proof in the native candidate
-  with existing rtnetlink library queries; final QEMU TUN tests are rerunning.
+  with existing rtnetlink library queries. The rerun actually PASSED both
+  TUN/SIGKILL and unknown-closure fail-stop packet proofs: interface removal,
+  blocked NEW tuple and foreign-rule preservation. Synthetic transport only.
+  That run's subsequent BIOS disk was affected by local disk exhaustion and
+  timed out; it is not a successful full QEMU run. Completed task-created test
+  disks were removed, logs retained, and all QEMU modes are rerunning.
 - Full native ACL/Engine/nft build locally BLOCKED by public Go-module download
   policy (klauspost/compress v1.18.7). No full build success claimed locally.
+  GitHub CI on 0f9f6a0 compiled actual native ACL/Engine/nft successfully.
 
 The corrected QEMU job runs actual TUN/UDP/nft/conntrack in disposable namespaces
 for BOTH SIGKILL and unknown-kernel-closure fail-stop. Each must prove a valid

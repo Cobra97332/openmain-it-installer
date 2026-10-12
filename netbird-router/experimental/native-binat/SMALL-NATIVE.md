@@ -31,7 +31,11 @@ or serial receipt to restore across restart: a fresh full authenticated map must
 succeed. Readiness is a LOCAL result, never controller confirmation.
 
 The owned gate layout must match its closed/open kernel reference exactly;
-unknown layouts are refused unchanged. These bounded local nft invocations run
+unknown layouts are refused unchanged. Closed/open layout references are compiled once and cached for this owner
+lifetime; every check still reads the live kernel. Random no-hook candidate
+names avoid a startup collision after owner death. A killed startup can leave
+an inert candidate table for later manual lab cleanup, never an active grant.
+These bounded local nft invocations run
 only inside NetBird lifecycle callbacks. They are not ACL synchronization timers.
 
 ## Small, existing dataplane instead of another lifetime supervisor

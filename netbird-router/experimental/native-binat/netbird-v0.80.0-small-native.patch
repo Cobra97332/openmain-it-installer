@@ -176,7 +176,7 @@ diff --git a/client/firewall/binat/gate_linux.go b/client/firewall/binat/gate_li
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/gate_linux.go
-@@ -0,0 +1,517 @@
+@@ -0,0 +1,538 @@
 +//go:build linux
 +
 +// Package binat provides only a synchronous availability gate. Native NetBird
@@ -186,6 +186,7 @@ new file mode 100644
 +import (
 +	"bytes"
 +	"context"
++	"crypto/rand"
 +	"crypto/sha256"
 +	"encoding/hex"
 +	"encoding/json"
@@ -225,6 +226,7 @@ new file mode 100644
 +	hasSerial  bool
 +	failStop   func()
 +	poisoned   bool
++	references [2]string
 +}
 +
 +var configured struct {
@@ -468,8 +470,20 @@ new file mode 100644
 +	if err != nil {
 +		return err
 +	}
++	if g.references[0] != "" && g.references[1] != "" {
++		for i, expected := range g.references {
++			if actual == expected && (required == nil || (i == 1) == *required) {
++				return nil
++			}
++		}
++		return fmt.Errorf("%w: unknown gate layout; unchanged", ErrUnconfirmed)
++	}
 +	// nft candidate has no packet hooks. Hook metadata is reinstated for comparison.
-+	candidate := Table + "_check"
++	var nonce [8]byte
++	if _, err := rand.Read(nonce[:]); err != nil {
++		return ErrUnconfirmed
++	}
++	candidate := Table + "_check_" + hex.EncodeToString(nonce[:])
 +	script := strings.ReplaceAll(g.layout(), Table, candidate)
 +	script = strings.ReplaceAll(script, " { type filter hook postrouting priority -200; policy accept; }", "")
 +	if _, err = g.run(script); err != nil {
@@ -511,11 +525,18 @@ new file mode 100644
 +		if err != nil {
 +			return err
 +		}
-+		if normal == actual && (required == nil || open == *required) {
++		index := 0
++		if open {
++			index = 1
++		}
++		g.references[index] = normal
++	}
++	for i, expected := range g.references {
++		if expected == actual && (required == nil || (i == 1) == *required) {
 +			return nil
 +		}
 +	}
-+	return errors.New("BINAT unknown gate layout; unchanged")
++	return fmt.Errorf("%w: unknown gate layout; unchanged", ErrUnconfirmed)
 +}
 +func (g *Gate) Bootstrap() error {
 +	tables, err := g.run("list tables\n")
@@ -698,7 +719,7 @@ diff --git a/client/firewall/binat/gate_linux_test.go b/client/firewall/binat/ga
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/gate_linux_test.go
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,173 @@
 +//go:build linux
 +
 +package binat
@@ -844,6 +865,32 @@ new file mode 100644
 +	t.Setenv("NB_NFTABLES_TABLE", Table)
 +	if _, err := LoadLabFromEnv(); err == nil || !strings.Contains(err.Error(), "ownership collision") {
 +		t.Fatal("native/gate ownership collision not rejected before bootstrap")
++	}
++}
++
++func TestBINATSmallCachedKernelLayoutStillRejectsMutation(t *testing.T) {
++	base := `{"nftables":[{"table":{"family":"ip","name":"netbird_binat_native_gate_v1"}},{"chain":{"family":"ip","table":"netbird_binat_native_gate_v1","name":"ready"}},{"chain":{"family":"ip","table":"netbird_binat_native_gate_v1","name":"guard"}}]}`
++	expected, err := canonical([]byte(base), Table)
++	if err != nil {
++		t.Fatal(err)
++	}
++	changed := strings.Replace(base, `"name":"ready"`, `"name":"unknown"`, 1)
++	live := base
++	calls := 0
++	g, _ := New([]Scope{{"10.80.1.0/24", "192.168.80.0/24", "nb0", "lan0"}}, func(script string) ([]byte, error) {
++		calls++
++		if script != "list table ip "+Table+"\n" {
++			t.Fatal("cached verification mutated kernel")
++		}
++		return []byte(live), nil
++	})
++	g.references = [2]string{expected, expected}
++	if g.known() != nil || calls != 1 {
++		t.Fatal("cached layout rejected")
++	}
++	live = changed
++	if g.known() == nil {
++		t.Fatal("cache hid a foreign/unknown layout")
 +	}
 +}
 diff --git a/client/firewall/binat/gate_other.go b/client/firewall/binat/gate_other.go

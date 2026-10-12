@@ -260,8 +260,38 @@ try:
     receipt=json.loads(receipt_path.read_text())
     receipt['Guard']=fingerprint('guard');receipt['Current']=fingerprint('current')
     receipt_path.write_text(json.dumps(receipt));os.chmod(receipt_path,0o600)
+    # Keep NOTRACK routing active THROUGH resume, unlike the earlier test.
+    run('ip','route','add','10.80.1.0/24','dev','lan0')
+    run('ip','neigh','replace','10.80.1.20','lladdr',mac('lp').hex(':'),'dev','lan0','nud','permanent')
+    batch('table ip upgrade_notrack {\n chain raw {\n type filter hook prerouting priority -301; policy accept;\n iifname "nb0" ip daddr 10.80.1.20 udp sport 50100 notrack\n }\n}\n')
+    request(port=50100)  # Prove tuple-only legacy guard permits this path.
     request(port=50001)  # Prove the old committed grant actually exists.
-    assert owner.command('resume').get('Resumed')
+    # Transparent syscall-boundary spy: real nft still executes every command.
+    # Reject lucky packet timing as proof: the FIRST live mutation itself must
+    # close current and replace the guard in the same real kernel transaction.
+    nft_path=Path('/usr/sbin/nft');real_nft=Path('/usr/sbin/nft.openmain-real')
+    nft_path.rename(real_nft)
+    nft_path.write_text('''#!/usr/bin/python3
+import json,os,subprocess,sys
+from pathlib import Path
+script=sys.stdin.read()
+if 'flush chain ip netbird_binat_experiment_v3 current\\n' in script:
+    path=Path('/run/netbird-binat-lab/upgrade-batches.json')
+    rows=json.loads(path.read_text()) if path.exists() else []
+    rows.append('flush chain ip netbird_binat_experiment_v3 guard\\n' in script and 'ct state invalid,untracked' in script)
+    path.write_text(json.dumps(rows));os.chmod(path,0o600)
+sys.exit(subprocess.run(['/usr/sbin/nft.openmain-real',*sys.argv[1:]],input=script,text=True).returncode)
+''')
+    os.chmod(nft_path,0o755)
+    try:
+        assert owner.command('resume').get('Resumed')
+        batches=json.loads(Path('/run/netbird-binat-lab/upgrade-batches.json').read_text())
+        assert batches and all(batches), 'legacy authorization was closed separately from guard replacement'
+    finally:
+        nft_path.unlink();real_nft.rename(nft_path)
+    request(port=50100,allowed=False)
+    run('nft','delete','table','ip','upgrade_notrack')
+    run('ip','route','del','10.80.1.0/24','dev','lan0')
     request(port=50001,allowed=False);reply(udp_target,udp_source,allowed=False)
     publish(rules);request(port=50001)
     # Matching receipt alone cannot authorize an unknown guard layout.

@@ -131,7 +131,7 @@ diff --git a/client/firewall/binat/publisher_linux.go b/client/firewall/binat/pu
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/publisher_linux.go
-@@ -0,0 +1,736 @@
+@@ -0,0 +1,746 @@
 +//go:build linux
 +
 +// Package binat is experimental, opt-in native policy publication. No controller
@@ -548,27 +548,37 @@ new file mode 100644
 +			return err
 +		}
 +	}
-+	// Close and verify BEFORE changing the known legacy guard. Existing and
-+	// RELATED sessions lose their authorization even if the update fails.
-+	if err := p.closeLocked(); err != nil {
-+		return err
-+	}
++	// For the old layout, tuple-only closure is insufficient for NOTRACK.
++	// Flush current AND replace the guard atomically as the first live mutation.
 +	if p.guard != expected {
-+		_, updateErr := p.run("flush chain ip " + Table + " guard\n" + p.guardRules(Table))
-+		actual, readErr := p.read("guard")
-+		if readErr != nil || (actual != expected && actual != legacy) {
-+			return ErrUnconfirmed
++		script := "flush chain ip " + Table + " current\nflush chain ip " + Table + " guard\n" + p.guardRules(Table)
++		for attempt := 0; attempt < 2; attempt++ {
++			_, publishErr := p.run(script)
++			actual, guardErr := p.read("guard")
++			active, policyErr := p.read("current")
++			if guardErr == nil && policyErr == nil && actual == expected && active == hash([]byte("[]")) {
++				p.guard, p.current = actual, active
++				p.pending, p.last = nil, nil
++				p.epoch++
++				if p.receipt() != nil {
++					return ErrUnconfirmed
++				}
++				if publishErr != nil {
++					return errors.New("BINAT guard upgrade failed; closure confirmed")
++				}
++				return nil
++			}
++			// Retry only the same verified owned layout/current. Never fall back to
++			// a legacy tuple-only flush or overwrite an unexpected independent writer.
++			if guardErr != nil || policyErr != nil || actual != legacy || (active != p.current && active != hash([]byte("[]"))) {
++				return ErrUnconfirmed
++			}
 +		}
-+		p.guard = actual
-+		if err := p.closeLocked(); err != nil {
-+			return err
-+		}
-+		if updateErr != nil || actual != expected {
-+			return errors.New("BINAT guard upgrade failed; closure confirmed")
-+		}
++		return ErrUnconfirmed
 +	}
-+	return nil
++	return p.closeLocked()
 +}
++
 +func (p *Publisher) receipt() error {
 +	if p.lock == nil {
 +		return nil

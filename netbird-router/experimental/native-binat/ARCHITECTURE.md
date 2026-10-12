@@ -56,7 +56,12 @@ It is opt-in only with `OPENMAIN_ISOLATED_TEST=1` and
 owner lock and adoption receipt are root-owned, protected and symlink-refusing.
 The preceding owned v3 guard layout is recognized by independently compiled
 kernel fingerprints AND matching protected scope/guard/current receipts. Its
-current grants are verified empty before an atomic guard-rule replacement.
+current grants are emptied AND its guard replaced in the same first atomic
+live nft transaction. Both kernel readbacks are verified before a receipt/ACK.
+The kernel regression keeps NOTRACK routing active across upgrade and records
+that first live mutation through a transparent real-nft command-boundary spy.
+Atomic retry is bounded and only permits the same proven owned legacy state;
+a tuple-only fallback closure is never called.
 Unknown layouts are refused unchanged even if a receipt matches them. This is
 an isolated experimental-table upgrade, not a customer/profile migration.
 Stock NetBird without the lab variable has no publisher or destination rewrite.

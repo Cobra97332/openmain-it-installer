@@ -40,6 +40,7 @@ def main():
     work.mkdir(mode=0o700,parents=True)
     source=Path('/src')
     names=set((source/'netbird-router/bundle.files').read_text().splitlines())
+    names.add('netbird-router/experimental/native-binat/snapshot.py')
     names.update(['build-iso.sh','preseed.cfg','tests/Dockerfile.router','netbird-prometheus/sync-client-targets.py'])
     names.update(str(p.relative_to(source)) for p in (source/'tests').glob('*.py'))
     for name in sorted(names):
@@ -84,6 +85,7 @@ if grep -q openmain.lab=iso /proc/cmdline; then
 else
   python3 -m unittest discover -s tests -v
   sysctl -w net.ipv4.ip_forward=1 >/dev/null
+  OPENMAIN_ISOLATED_TEST=1 unshare --net python3 tests/nft_native_snapshot_kernel.py
   OPENMAIN_ISOLATED_TEST=1 python3 tests/nft_kernel.py
 fi
 echo OPENMAIN_UNIT_VERIFY

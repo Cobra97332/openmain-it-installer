@@ -1,0 +1,177 @@
+--- a/client/internal/acl/manager.go
++++ b/client/internal/acl/manager.go
+@@ -33,6 +33,7 @@
+ 
+ // DefaultManager uses firewall manager to handle
+ type DefaultManager struct {
++	binatPublisher     BINATPolicyPublisher
+ 	firewall           firewall.Manager
+ 	peerRulesPairs     map[id.RuleID][]firewall.Rule
+ 	routeRules         map[id.RuleID]firewall.Rule
+@@ -79,6 +80,32 @@
+ 	}
+ }
+ 
++// BINATPolicyPublisher is an EXPERIMENTAL synchronous policy barrier.
++// Begin MUST close the protected packet path before validating/preparing the
++// COMPLETE map. Commit may publish only that prepared map atomically. Close
++// leaves it denied. The backend must retain its boundary across native resets.
++// This seam alone is NOT a usable BINAT implementation.
++type BINATPolicyPublisher interface {
++	Begin(*mgmProto.NetworkMap, bool) error
++	Commit() error
++	Close() error
++}
++
++// NewDefaultManagerWithBINATPublisher is lab-only; the normal factory is unchanged.
++// No installer selects this constructor. Bootstrap/reset/engine wiring and a
++// native nftables implementation remain mandatory before production use.
++func NewDefaultManagerWithBINATPublisher(fm firewall.Manager, publisher BINATPolicyPublisher) (*DefaultManager, error) {
++	if fm == nil || publisher == nil {
++		return nil, errors.New("BINAT requires a native backend and publisher")
++	}
++	if err := publisher.Close(); err != nil {
++		return nil, errors.New("BINAT initial closure unconfirmed")
++	}
++	d := NewDefaultManager(fm)
++	d.binatPublisher = publisher
++	return d, nil
++}
++
+ // ApplyFiltering firewall rules to the local firewall manager processed by ACL policy.
+ //
+ // If allowByDefault is true it appends allow ALL traffic rules to input and output chains.
+@@ -89,6 +116,19 @@
+ 	if d.firewall == nil {
+ 		log.Debug("firewall manager is not supported, skipping firewall rules")
+ 		return
++	}
++
++	// Close BEFORE any native operation/hash shortcut. Failed preparation keeps
++	// the protected path closed; no asynchronous post-update reconciliation.
++	if d.binatPublisher != nil {
++		if err := d.binatPublisher.Begin(networkMap, dnsRouteFeatureFlag); err != nil {
++			d.hasAppliedConfig = false
++			if closeErr := d.binatPublisher.Close(); closeErr != nil {
++				log.Error("BINAT policy closure unconfirmed")
++			}
++			log.Error("BINAT complete policy preparation failed")
++			return
++		}
+ 	}
+ 
+ 	// Skip the full rebuild + flush when the inputs that drive the firewall
+@@ -103,7 +143,7 @@
+ 	hash, err := d.firewallConfigHash(networkMap, dnsRouteFeatureFlag)
+ 	if err != nil {
+ 		log.Errorf("unable to hash firewall configuration, applying unconditionally: %v", err)
+-	} else if d.hasAppliedConfig && d.previousConfigHash == hash {
++	} else if d.binatPublisher == nil && d.hasAppliedConfig && d.previousConfigHash == hash {
+ 		log.Debugf("not applying the firewall configuration update as there is nothing new (hash: %d)", hash)
+ 		return
+ 	}
+@@ -132,6 +172,19 @@
+ 	flushErr := d.firewall.Flush()
+ 	if flushErr != nil {
+ 		log.Error("failed to flush firewall rules: ", flushErr)
++	}
++
++	if d.binatPublisher != nil {
++		if peerErr == nil && routeErr == nil && flushErr == nil {
++			if err := d.binatPublisher.Commit(); err != nil {
++				flushErr = errors.New("BINAT policy publication failed")
++			}
++		}
++		if peerErr != nil || routeErr != nil || flushErr != nil {
++			if err := d.binatPublisher.Close(); err != nil {
++				log.Error("BINAT policy closure unconfirmed")
++			}
++		}
+ 	}
+ 
+ 	// Only remember the hash once the firewall actually reflects this config.
+--- /dev/null
++++ b/client/internal/acl/binat_barrier_test.go
+@@ -0,0 +1,82 @@
++package acl
++
++import (
++	"errors"
++	"reflect"
++	"testing"
++
++	fw "github.com/netbirdio/netbird/client/firewall/manager"
++	proto "github.com/netbirdio/netbird/shared/management/proto"
++)
++
++type binatFirewallFixture struct {
++	fw.Manager
++	events *[]string
++	fail   bool
++}
++
++func (f *binatFirewallFixture) Flush() error {
++	*f.events = append(*f.events, "native-flush")
++	if f.fail {
++		return errors.New("synthetic flush failure")
++	}
++	return nil
++}
++
++type binatPublisherFixture struct {
++	events                *[]string
++	beginFail, commitFail bool
++}
++
++func (p *binatPublisherFixture) Begin(*proto.NetworkMap, bool) error {
++	*p.events = append(*p.events, "begin-closed")
++	if p.beginFail {
++		return errors.New("synthetic preparation failure")
++	}
++	return nil
++}
++func (p *binatPublisherFixture) Commit() error {
++	*p.events = append(*p.events, "commit")
++	if p.commitFail {
++		return errors.New("synthetic commit failure")
++	}
++	return nil
++}
++func (p *binatPublisherFixture) Close() error { *p.events = append(*p.events, "close"); return nil }
++
++func TestBINATBarrierClosesBeforeNativeAndDoesNotSkipIdenticalMaps(t *testing.T) {
++	events := []string{}
++	native := &binatFirewallFixture{events: &events}
++	publisher := &binatPublisherFixture{events: &events}
++	manager, err := NewDefaultManagerWithBINATPublisher(native, publisher)
++	if err != nil {
++		t.Fatal(err)
++	}
++	m := &proto.NetworkMap{FirewallRulesIsEmpty: true, RoutesFirewallRulesIsEmpty: true}
++	manager.ApplyFiltering(m, false)
++	manager.ApplyFiltering(m, false)
++	want := []string{"close", "begin-closed", "native-flush", "commit", "begin-closed", "native-flush", "commit"}
++	if !reflect.DeepEqual(events, want) {
++		t.Fatalf("publication order: %v", events)
++	}
++}
++func TestBINATBarrierFailureDoesNotPublish(t *testing.T) {
++	for _, mode := range []string{"prepare", "native", "commit"} {
++		t.Run(mode, func(t *testing.T) {
++			events := []string{}
++			native := &binatFirewallFixture{events: &events, fail: mode == "native"}
++			publisher := &binatPublisherFixture{events: &events, beginFail: mode == "prepare", commitFail: mode == "commit"}
++			manager, err := NewDefaultManagerWithBINATPublisher(native, publisher)
++			if err != nil {
++				t.Fatal(err)
++			}
++			manager.ApplyFiltering(&proto.NetworkMap{FirewallRulesIsEmpty: true, RoutesFirewallRulesIsEmpty: true}, false)
++			if events[len(events)-1] != "close" || manager.hasAppliedConfig {
++				t.Fatal("failure retained successful publication")
++			}
++			if mode == "prepare" && !reflect.DeepEqual(events, []string{"close", "begin-closed", "close"}) {
++				t.Fatal(events)
++			}
++		})
++	}
++}

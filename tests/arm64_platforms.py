@@ -25,7 +25,7 @@ print("Actual ARM64 userspace:", platform.machine(),sys.version,flush=True)
 sys.path[:0]=["/src/tests","/src/netbird-router/common"]
 suite=unittest.defaultTestLoader.loadTestsFromNames([
     "test_router_platforms.RuntimeTests", "test_router_platforms.NetworkTests",
-    "test_router_platforms.ZabbixHostTests"])
+    "test_router_platforms.ZabbixHostTests", "test_native_binat_snapshot.SnapshotTests"])
 sys.exit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())
 '''
 subprocess.run(['qemu-aarch64-static','-L',str(root),str(root/'usr/bin/python3.13'),'-c',code],check=True)

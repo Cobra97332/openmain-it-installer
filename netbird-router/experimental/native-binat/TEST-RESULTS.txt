@@ -1,0 +1,35 @@
+EXPERIMENT ONLY — PR #33 RELEASE BLOCKED
+Base OpenMain SHA: f0d8738b982bdd68090ffd3c1f1cd821b03f982c
+Native v0.80.0 SHA: fca64287cf51a85552a41b022013abbfdb335452
+Newer upstream main: 67c2041fb5534c19d7b2320617cfc3aaab8e7d3d
+
+Executed locally, with no production access:
+- Debian 13 network-none Docker: Bash syntax/ShellCheck + 220 offline tests PASS.
+- Debian 13 without jq: 7 bootstrap tests PASS.
+- Actual QEMU-user ARM64 Python: 31 contract/platform tests PASS (APIs mocked).
+- New snapshot kernel: actual UDP/TCP ESTABLISHED request/reply withdrawal,
+  new UDP/TCP, complete snapshot replacement, DROP precedence, concurrent update
+  closure, native failure, native table reset/recreation, missing referenced ACL
+  chain refusal, stale ticket, multiple ACLs, protocol/ports/ICMP echo, synthetic
+  backup path with overlapping real LAN, foreign DROP/rule preservation PASS.
+- Existing nft_kernel.py: FAIL, all six P1 counterexamples still reproduced.
+  Four are the existing helper's stale/request/reply failures. Two concern the
+  earlier rejected proof design. No test removed, skipped or expected-failed.
+- Native patch: exact-source application and Go formatting PASS.
+  Local native ACL/nft Go compilation BLOCKED by module download policy for
+  github.com/klauspost/compress v1.18.7. No compiled/native-client pass claimed.
+  CI independently verifies pinned archives/build and native barrier contracts.
+- Initial QEMU attempt: new reference packet test PASS, VM then failed because
+  its fixtures shared the old test namespace; BIOS PASS, UEFI prevented by full
+  temporary disk. Harness corrected to unshare the experiment's network namespace;
+  isolated final run uses workspace storage. Exact final results/checks/review
+  are attached to the draft PR conversation, not inferred from this file.
+
+Not executed/certified: real controller/client publication, dynamic DNS/resource
+snapshots, RELATED ICMP parent semantics, client restart lifecycle, real metric
+100/200 failover, actual Proxmox VM/LXC, physical Raspberry Pi or official
+Debian netinstall. Native publisher/reset adapter is absent; no integration.
+
+Remaining P1s and architecture boundaries: ARCHITECTURE.md.
+No main/beta, customer installation, identity or CT 110/111 was migrated.
+This is a separate experimental branch/draft, not a production fix.

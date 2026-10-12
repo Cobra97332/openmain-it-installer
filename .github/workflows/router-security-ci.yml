@@ -50,11 +50,20 @@ jobs:
         run: |
           docker run --rm --network none -v "$PWD:/src:ro" openmain-router-test:debian13 bash -c \
             'dpkg --remove jq >/dev/null && ! command -v jq && python3 -m unittest discover -s tests -p test_router_bootstrap.py -v'
+      - name: Experimental single-owner snapshot kernel tests (no installer integration)
+        run: >-
+          docker run --rm --network none --cap-add NET_ADMIN
+          --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1
+          -v "$PWD:/src:ro" openmain-router-test:debian13 python3 tests/nft_native_snapshot_kernel.py
       - name: Isolated real nftables packet and rollback tests
         run: >-
           docker run --rm --network none --cap-add NET_ADMIN
           --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1
           -v "$PWD:/src:ro" openmain-router-test:debian13 python3 tests/nft_kernel.py
+
+      - name: Pinned experimental NetBird patch compilation and barrier contracts
+        if: ${{ !cancelled() }}
+        run: bash tests/check-native-binat-patch.sh
 
   platform-lab:
     runs-on: ubuntu-latest

@@ -114,3 +114,69 @@ fixtures; CI runs the independent ARM64 checks even after a QEMU failure.
 Merge is forbidden until these gates pass with a reviewed architecture, complete
 native NetBird lifecycle tests, and a new Codex review of the resulting commit.
 A green mock/static/boot test does not override a failed kernel release gate.
+
+## Follow-up: native identity / packet-proof design also rejected (2026-10-12)
+
+Current reviewed starting head was dd4acb5904ef154d635b3437dd1a662a9022e0ce,
+not an older review commit. All four failed Actions were inspected: two offline
+jobs reproduced the four P1 gates; both platform jobs failed VM acceptance while
+synthetic BIOS/UEFI and 24 ARM64 tests passed. All five inline review threads
+were unresolved, including outdated comments. No P1 thread is marked fixed.
+
+Additional pinned v0.80.0 source evidence:
+- client/internal/acl/id/id.go: RuleID is destination.String() plus a 16-hex
+  content-hash suffix, not an arbitrary OpenMain comment.
+- client/firewall/nftables/filter_linux.go: AddFilterRule stores []byte(ruleID)
+  in raw nft userdata. DeleteFilterRule refreshes an initially-zero handle.
+- client/firewall/nftables/chains_linux.go: refreshRuleHandles indexes its
+  filter map by the EXACT raw userdata. Replacing it with an nft comment can
+  orphan a native rule from controller deletion. A cached nonzero handle is
+  another deletion path; neither may be changed by a compatibility layer.
+- client/internal/acl/manager.go: applyRouteACLs adds new identities, THEN
+  removes obsolete ones. An added rule alone is not proof that every older
+  independent source-group policy is obsolete. Preserve multiple live policies.
+- shared/management/types/policyrule.go: DROP, TCP/UDP/ICMP and port ranges are
+  supported actions/protocols. An ALL/ACCEPT-only proof is insufficient.
+
+A TEST-ONLY netlink experiment preserves opaque userdata AND numeric handles
+and uses NFNL_BATCH_GENID for atomic compare-and-replace. Real kernel tests
+confirm stale generations are rejected without partial changes. The parser has
+bounded bytes/messages and an overall deadline; diagnostics contain no payloads.
+
+A second lab-only design cleared a reserved per-packet proof before native ACL
+processing, matched current source groups using the original conntrack tuple,
+and required that proof in POSTROUTING. It successfully withdrew existing
+bidirectional group access and failed closed when the native table disappeared,
+without deleting any conntrack entry. Persistent PREROUTING/POSTROUTING hooks
+also avoid NetBird's insertion of ACCEPTs into external FORWARD/INPUT chains.
+
+However, a NEW higher-priority native DROP added after reconciliation still
+matches the packet's virtual payload destination, while DNAT has already made
+that destination real. It misses; an older converted original-tuple grant emits
+its proof and forwards both a previously used and a new tuple. The packet-proof
+design therefore DOES NOT solve all live-policy races. Tests now record this
+as P1_REJECTED_PROOF_DESIGN_BYPASSES_NEW_NATIVE_DROP. This is a rejected-prototype
+finding; no such implementation is shipped in the installer.
+
+Native identity preservation / generation CAS are useful prerequisites, NOT a
+complete security boundary. Retiring selected conntrack tuples asynchronously
+would leave the same interval and cannot prevent a new tuple being admitted.
+Header rewriting must also preserve protocol/ports, related ICMP and reply data;
+no such complete implementation is certified here. Configurable NB_FWMARK_BASE
+and foreign mark users require collision/lifecycle analysis before reserving bits.
+
+Attempted runtime edits were reverted. tests/nft_netlink_experiment.py and
+nft_acl_research.py are NOT in the installer bundle or imported by runtime code.
+The existing blocking assertions are retained and additional counterexamples
+are appended; no expected-failure marker, weakened assertion or skip was added.
+
+Required next architecture: authorization and BINAT tuple-aware matching must
+share the native controller's policy publication/lifecycle, including new DENY
+rules and protocol/port constraints. A tested native integration or a proven
+synchronous publication interlock is needed; retries/event notification alone
+cannot supply it. This remains a proposal, not an implemented release fix.
+
+Actual Proxmox VM/LXC, physical Raspberry Pi, live controller/client reboot and
+real two-router failover are unavailable in this workspace. Offline contracts,
+QEMU VM/synthetic boots, ARM64 userspace and namespace-local policy changes are
+separately reported. No real systems, identities or secrets were accessed.

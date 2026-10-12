@@ -328,6 +328,11 @@ try:
     # chain. A used UDP tuple is NOT established until a reply is observed.
     run('nft','insert','rule','ip','netbird','netbird-rt-fwd',
         'ct','state','established,related','counter','accept')
+    # Independent namespace-local experiment must run before the later
+    # fixture introduces a global foreign DROP policy for wt0 only.
+    from nft_acl_research import exercise
+    security_failures.extend(exercise(run,frame,receive,mac))
+
     # Native replies do NOT jump into netbird-rt-fwd (dispatch is iif wt0).
     # Model NetBird's separate external filter acceptance: iif wt0 ACCEPT,
     # and oif wt0 ESTABLISHED/RELATED ACCEPT ahead of a foreign DROP policy.

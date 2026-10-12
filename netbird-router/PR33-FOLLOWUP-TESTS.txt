@@ -1,0 +1,24 @@
+PR #33 follow-up: P1 STILL OPEN / NO MERGE OR DEPLOYMENT
+=======================================================
+Starting HEAD: dd4acb5904ef154d635b3437dd1a662a9022e0ce.
+Scope: existing fix/beta-codex-security-review branch only.
+
+Investigated all open inline review threads and all four failed Actions of
+that HEAD. Failures were security gates, not missing dependencies; BIOS/UEFI
+and ARM64 passed. Review threads remain open unless genuinely resolved.
+
+Native RuleID preservation and kernel generation fencing were verified in an
+isolated netlink experiment. A packet-proof prototype fixed source-group /
+established request-and-reply withdrawal in the tested scenario, but a newly
+published native DROP still bypassed it. Runtime edits were reverted.
+
+New code is TEST-ONLY. Existing kernel assertions remain; two additional
+new/existing-tuple DROP counterexamples block release. Native/userdata parser
+mocks are separate from actual kernel generation/packet tests. The native
+controller lifecycle is source-reviewed and modeled; no real daemon/controller
+acceptance is claimed.
+
+Architecture details and remaining P1: common/BINAT-ACL-SECURITY.txt.
+Final commit, exact executed test counts, Actions links and same-HEAD Codex
+review results are recorded in PR #33's final follow-up comment after CI/review.
+No unattended migration, production contact, actual secrets or merge.

@@ -61,7 +61,10 @@ def receive(key,allowed=True,proto=17):
         return struct.unpack('!HH',data[14+ihl:18+ihl]) if proto in (6,17) else (50001,12345)
     if allowed:raise AssertionError('Authorized packet missing on '+key)
 
-run('sysctl','-w','net.ipv4.ip_forward=1')
+forwarding=Path('/proc/sys/net/ipv4/ip_forward')
+if qemu_lab and not Path('/.dockerenv').exists():
+    forwarding.write_text('1\n')  # new unshared QEMU namespace, never host/router
+assert forwarding.read_text().strip()=='1', 'Isolated IPv4 forwarding required'
 for a,b in [('nb0','np'),('backup0','bp'),('lan0','lp')]:
     run('ip','link','add',a,'type','veth','peer','name',b)
     for d in (a,b):run('ip','link','set',d,'up')

@@ -16,6 +16,10 @@ Executed locally, with no production access:
   Four are the existing helper's stale/request/reply failures. Two concern the
   earlier rejected proof design. No test removed, skipped or expected-failed.
 - Native patch: exact-source application and Go formatting PASS.
+  Initial GitHub CI compiled native ACL code and passed all four barrier cases;
+  its step failed afterward cleaning the read-only Go module cache. Cleanup
+  permissions corrected, keeping original failure status. Native daemon and
+  nft publisher are still absent/unverified.
   Local native ACL/nft Go compilation BLOCKED by module download policy for
   github.com/klauspost/compress v1.18.7. No compiled/native-client pass claimed.
   CI independently verifies pinned archives/build and native barrier contracts.
@@ -33,3 +37,8 @@ Debian netinstall. Native publisher/reset adapter is absent; no integration.
 Remaining P1s and architecture boundaries: ARCHITECTURE.md.
 No main/beta, customer installation, identity or CT 110/111 was migrated.
 This is a separate experimental branch/draft, not a production fix.
+
+CI harness follow-up: fresh Debian image has no sysctl executable; Docker
+forwarding is now verified directly via procfs, while only the new QEMU network
+namespace sets it via procfs. Both kernel CI steps run even if an independent
+step fails; no security gate is skipped because of prototype/native build errors.

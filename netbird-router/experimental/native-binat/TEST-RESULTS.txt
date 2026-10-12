@@ -42,3 +42,8 @@ CI harness follow-up: fresh Debian image has no sysctl executable; Docker
 forwarding is now verified directly via procfs, while only the new QEMU network
 namespace sets it via procfs. Both kernel CI steps run even if an independent
 step fails; no security gate is skipped because of prototype/native build errors.
+
+QEMU namespace correction: sysfs remained mounted for the parent namespace;
+MAC addresses now come from ip JSON in the active network namespace. Both QEMU
+packet suites execute even if either fails, and any failure keeps VM acceptance
+red. Final exact-head results remain in the draft conversation/Actions.

@@ -23,7 +23,7 @@ snapshot=importlib.util.module_from_spec(spec);spec.loader.exec_module(snapshot)
 
 def run(*args):return subprocess.check_output(args,text=True,stderr=subprocess.STDOUT)
 def batch(text):subprocess.run(['nft','-f','-'],input=text,text=True,check=True)
-def mac(d):return bytes.fromhex(Path('/sys/class/net',d,'address').read_text().strip().replace(':',''))
+def mac(d):return bytes.fromhex(json.loads(run('ip','-j','link','show','dev',d))[0]['address'].replace(':',''))
 def checksum(data):
     if len(data)%2:data+=b'\0'
     total=sum(struct.unpack('!'+str(len(data)//2)+'H',data))

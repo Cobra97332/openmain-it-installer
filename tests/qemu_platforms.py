@@ -85,8 +85,10 @@ if grep -q openmain.lab=iso /proc/cmdline; then
 else
   python3 -m unittest discover -s tests -v
   sysctl -w net.ipv4.ip_forward=1 >/dev/null
-  OPENMAIN_ISOLATED_TEST=1 unshare --net python3 tests/nft_native_snapshot_kernel.py
-  OPENMAIN_ISOLATED_TEST=1 python3 tests/nft_kernel.py
+  packet_status=0
+  OPENMAIN_ISOLATED_TEST=1 unshare --net python3 tests/nft_native_snapshot_kernel.py || packet_status=1
+  OPENMAIN_ISOLATED_TEST=1 python3 tests/nft_kernel.py || packet_status=1
+  test "$packet_status" = 0
 fi
 echo OPENMAIN_UNIT_VERIFY
 systemd-analyze verify /etc/systemd/system/openmain-router-firstboot.service

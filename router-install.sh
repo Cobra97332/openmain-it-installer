@@ -614,9 +614,15 @@ setup_zabbix(){
   [[ -n "$helper" ]] || die "Zabbix-Helferskript fehlt. Erwartet: /usr/local/sbin/zabbix-proxy-install"
 
   if [[ ! -e "${STATE_FILE%/*}/zabbix-intent.json" ]]; then
-    jq -nc --arg customer "$CUSTOMER" --arg proxy "proxy-${COMPANY_GROUP_ID}-${ROLE}" \
-      --arg host "router-${COMPANY_GROUP_ID}-${ROLE}" '{customer:$customer,proxy:$proxy,host:$host}' > "${STATE_FILE%/*}/zabbix-intent.tmp"
-    mv "${STATE_FILE%/*}/zabbix-intent.tmp" "${STATE_FILE%/*}/zabbix-intent.json"
+    local intent_tmp
+    intent_tmp=$(mktemp "${STATE_FILE%/*}/.zabbix-intent.XXXXXXXX") || die "Sicheres Intent-Tempfile fehlt."
+    if ! jq -nc --arg customer "$CUSTOMER" --arg proxy "proxy-${COMPANY_GROUP_ID}-${ROLE}" \
+      --arg host "router-${COMPANY_GROUP_ID}-${ROLE}" '{customer:$customer,proxy:$proxy,host:$host}' > "$intent_tmp"; then
+      rm -f -- "$intent_tmp"
+      die "Zabbix-Intent konnte nicht geschrieben werden."
+    fi
+    chmod 600 "$intent_tmp"
+    mv -- "$intent_tmp" "${STATE_FILE%/*}/zabbix-intent.json"
   fi
   NB_MANAGEMENT_URL="$MGMT_URL" NB_API_TOKEN="$API_TOKEN" NB_ZABBIX_SERVER="$ZABBIX_SERVER" NB_ZABBIX_PROXY_GROUP="$ZABBIX_PROXY_GROUP" NB_ZABBIX_POLICY_NAME="$ZABBIX_POLICY_NAME" \
   NB_LAN_INTERFACE="$LAN_IF" NB_BUNDLE_DIR="$SCRIPT_DIR" NB_ZABBIX_REGISTER_HOST=1 NB_ZABBIX_PROXY_NAME="proxy-${COMPANY_GROUP_ID}-${ROLE}" NB_ZABBIX_AGENT_HOST="router-${COMPANY_GROUP_ID}-${ROLE}" bash "$helper" \
@@ -625,7 +631,9 @@ setup_zabbix(){
 }
 
 save_state(){
+  local state_tmp
   install -d -m 0700 "$(dirname "$STATE_FILE")"
+  state_tmp=$(mktemp "${STATE_FILE}.XXXXXXXX") || die "Sicheres Status-Tempfile fehlt."
   jq -nc     --arg customer "$CUSTOMER"     --arg role "$ROLE"     --arg lan "$LAN_NET"     --arg virtual "$VIRTUAL_NET"     --arg peer "$PEER_ID"     --arg network "$NETWORK_ID"     --arg resource "$RESOURCE_ID"     --arg router "$ROUTER_ID"     --arg metrics_target "${METRICS_TARGET:-}"     --arg metrics_group "$METRICS_GROUP"     --arg metrics_detail_port "$METRICS_DETAIL_PORT"     --argjson metric "$ROUTER_METRIC"     --argjson metrics_enabled "$METRICS_ENABLED"     '{
       customer:$customer,
       role:$role,
@@ -640,9 +648,9 @@ save_state(){
       metrics_target:$metrics_target,
       metrics_group:$metrics_group,
       metrics_detail_port:$metrics_detail_port
-    }' > "$STATE_FILE.tmp"
-  mv "$STATE_FILE.tmp" "$STATE_FILE"
-  chmod 600 "$STATE_FILE"
+    }' > "$state_tmp" || { rm -f -- "$state_tmp"; die "Status konnte nicht geschrieben werden."; }
+  chmod 600 "$state_tmp"
+  mv -- "$state_tmp" "$STATE_FILE"
 }
 
 checkpoint(){

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Guarded NetBird 0.80 BINAT ACL compatibility.
+"""UNSAFE experimental NetBird 0.80 BINAT ACL compatibility; release blocked.
 
-NetBird's FORWARD ACL matches the virtual destination, after PREROUTING DNAT
-has translated it. Replace *only* the native authorization rule; never create
-an independent permit. The NetBird dynamic source set and ACL lifecycle remain
-authoritative. Unknown NetBird versions/layouts fail closed.
+The bounded reconciler does NOT share NetBird's policy transaction. A policy
+change after its last read can leave a stale grant, and native conntrack
+ESTABLISHED acceptance can bypass withdrawal. Do not deploy this helper.
+See BINAT-ACL-SECURITY.txt and the blocking nftables kernel release gates.
 """
 import ipaddress
 import json
@@ -20,11 +20,16 @@ MARKER = 'openmain-binat-ct-original-v1'
 SOURCE_RE = re.compile(r'@nb-[0-9a-f]{8}$')
 NETBIRD_OVERLAY = ipaddress.IPv4Network('100.64.0.0/10')
 MAX_MANAGED_ACLS = 8
+MAX_RECONCILE_ATTEMPTS = 3
 IFACE_RE = re.compile(r'[a-zA-Z0-9_.:-]{1,15}$')
 CONFIG = '/etc/nftables.d/openmain-binat-acl.json'
 
 
 class Refused(Exception):
+    pass
+
+
+class RevocationFailed(Refused):
     pass
 
 
@@ -102,7 +107,8 @@ def managed(rule, cfg):
         match = expr[index].get('match') if isinstance(expr[index], dict) else None
         return (isinstance(match, dict) and match.get('left') == left
                 and match.get('right') == right and match.get('op') == op)
-    source = expr[2].get('match', {}).get('right') if isinstance(expr[2], dict) else None
+    source_match = expr[2].get('match') if isinstance(expr[2], dict) else None
+    source = source_match.get('right') if isinstance(source_match, dict) else None
     return (field(0, {'meta': {'key': 'iifname'}}, cfg['overlay'])
             and field(1, {'meta': {'key': 'oifname'}}, cfg['lan'])
             and authorized_source(source)
@@ -134,36 +140,52 @@ def transaction(rules, cfg):
                 raise Refused('NetBird route ACL format changed; no unsafe rewrite')
             candidates.append((handle, source))
 
-    # One peer can carry multiple independent NetBird-native grants for the
-    # same subnet (e.g. customer group AND primary router peer on the backup).
-    # Preserve every source verbatim and replace the whole set atomically.
-    # Never add a parallel allow or infer authorization from a prefix alone.
-    if existing and candidates:
-        raise Refused('Ambiguous mixed NetBird ACL generations')
+    # A NetBird policy refresh can install new native grants before deleting
+    # the previously rewritten grants. Leaving both generations in place
+    # retains revoked access. Delete the *verified* old OpenMain handles and
+    # replace the currently native handles in ONE nftables transaction.
+    # No unowned/unknown rule may be deleted or rewritten.
     chosen = candidates if candidates else [
         (rule.get('handle'), rule['expr'][2]['match']['right'])
         for rule in existing]
-    if not chosen or len(chosen) > MAX_MANAGED_ACLS:
+    if not chosen or len(chosen) > MAX_MANAGED_ACLS or len(existing) > MAX_MANAGED_ACLS:
         raise Refused('Unexpected count of NetBird ACLs for BINAT')
     if any(type(handle) is not int or handle <= 0 or not authorized_source(source)
            for handle, source in chosen):
         raise Refused('Unexpected NetBird ACL identity or source')
     sources = [source for _, source in chosen]
     handles = [handle for handle, _ in chosen]
-    if len(set(sources)) != len(sources) or len(set(handles)) != len(handles):
+    old_handles = [rule.get('handle') for rule in existing]
+    if (any(type(handle) is not int or handle <= 0 for handle in old_handles) or
+            len(set(handles)) != len(handles) or
+            len(set(old_handles)) != len(old_handles) or
+            (bool(candidates) and bool(set(handles) & set(old_handles))) or
+            len(set(sources)) != len(sources)):
         raise Refused('Duplicate NetBird ACL source or handle')
-    if not any(SOURCE_RE.fullmatch(source) for source in sources):
-        raise Refused('No NetBird-managed customer source group present')
-    if existing:
+    if existing and not candidates:
+        if not any(SOURCE_RE.fullmatch(source) for source in sources):
+            raise Refused('No customer source group in existing managed ACLs')
         return ''
+    deletes = ''.join(
+        f'delete rule ip netbird netbird-rt-fwd handle {handle}\n'
+        for handle in old_handles)
+    # If NetBird has removed the customer group while retaining only an
+    # explicit peer grant, revoke stale OpenMain authorizations now. The
+    # native rule will not match the post-DNAT destination; the follow-up
+    # verification fails closed until the customer policy returns.
+    if not any(SOURCE_RE.fullmatch(source) for source in sources):
+        if deletes:
+            return deletes
+        raise Refused('No NetBird-managed customer source group present')
     virtual = ipaddress.IPv4Network(cfg['virtual'])
-    return ''.join(
+    rewritten = ''.join(
         f'replace rule ip netbird netbird-rt-fwd handle {handle} '
         f'iifname "{cfg["overlay"]}" oifname "{cfg["lan"]}" '
         f'ip saddr {source} ct status dnat '
         f'ct original daddr & {virtual.netmask} == {virtual.network_address} '
         f'ip daddr {cfg["real"]} counter accept comment "{MARKER}"\n'
-        for handle, source in chosen)
+        for handle, source in candidates)
+    return deletes + rewritten
 
 
 def nft(*args):
@@ -173,14 +195,13 @@ def nft(*args):
     return result.stdout
 
 
-def main():
-    cfg = configuration()
-    rules = json.loads(nft('-j', 'list', 'chain', 'ip', 'netbird', 'netbird-rt-fwd'))
-    command = transaction(rules, cfg)
-    if not command:
-        return
+def read_chain():
+    return json.loads(nft('-j', 'list', 'chain', 'ip', 'netbird', 'netbird-rt-fwd'))
+
+
+def apply(command):
     sources = re.findall(r'ip saddr (@nb-[0-9a-f]{8}) ', command)
-    if not sources:
+    if not sources and 'replace rule ' in command:
         raise Refused('Missing NetBird source-set binding')
     for source in sources:
         nft('-j', 'list', 'set', 'ip', 'netbird', source[1:])
@@ -194,9 +215,72 @@ def main():
         os.unlink(path)
 
 
+def revocation_transaction(rules, cfg):
+    """Retire only freshly verified OpenMain grants, even if native data is unknown.
+
+    Never reuse handles from an older snapshot or rewrite a native/foreign rule.
+    No source-set lookup is required to DELETE a grant during set turnover.
+    """
+    if not isinstance(rules, dict) or not isinstance(rules.get('nftables'), list):
+        raise Refused('Invalid nftables response during revocation')
+    chain = [entry['rule'] for entry in rules['nftables']
+             if isinstance(entry, dict) and isinstance(entry.get('rule'), dict)
+             and entry['rule'].get('family') == 'ip'
+             and entry['rule'].get('table') == 'netbird'
+             and entry['rule'].get('chain') == 'netbird-rt-fwd']
+    handles = [rule.get('handle') for rule in chain if managed(rule, cfg)]
+    if any(type(h) is not int or h <= 0 or
+           sum(rule.get('handle') == h for rule in chain) != 1 for h in handles):
+        raise Refused('Invalid managed handle during revocation')
+    return ''.join(f'delete rule ip netbird netbird-rt-fwd handle {h}\n' for h in handles)
+
+
+FAILURES = (Refused, ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError)
+
+
+def revoke(cfg):
+    for _ in range(MAX_RECONCILE_ATTEMPTS):
+        try:
+            command = revocation_transaction(read_chain(), cfg)
+            if not command:
+                return
+            apply(command)
+            if not revocation_transaction(read_chain(), cfg):
+                return
+        except FAILURES:
+            # A handle can disappear between listing/check/apply. Read again;
+            # an atomic batch failure never authorizes a fallback permit.
+            continue
+    raise RevocationFailed('Managed ACL revocation could not be confirmed')
+
+
+def main():
+    cfg = configuration()
+    for _ in range(MAX_RECONCILE_ATTEMPTS):
+        try:
+            command = transaction(read_chain(), cfg)
+            if command:
+                apply(command)
+            # Reconcile a concurrent native generation now, not at the timer.
+            # Verify even a no-op observation before reporting success.
+            if not transaction(read_chain(), cfg):
+                return
+        except FAILURES:
+            # Re-read native authorization/handles/sets on every retry. Never
+            # reapply the stale batch after a validation or apply race.
+            continue
+    # Exhaustion, unknown layouts and persistent failures must not leave known
+    # managed permits active. Delete exact verified grants and confirm removal.
+    revoke(cfg)
+    raise Refused('ACL reconciliation did not settle; managed grants revoked')
+
+
 if __name__ == '__main__':
     try:
         main()
-    except (Refused, ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError):
+    except RevocationFailed:
+        print('BINAT/NetBird-ACL: Entzug verwalteter Freigaben nicht bestaetigt; nftables lokal pruefen.', file=sys.stderr)
+        sys.exit(1)
+    except FAILURES:
         print('BINAT/NetBird-ACL nicht kompatibel oder nicht bereit; keine Policy-Freigabe hinzugefuegt.', file=sys.stderr)
         sys.exit(1)

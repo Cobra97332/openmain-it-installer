@@ -1,0 +1,23 @@
+PR #33 — P1 OPEN / RELEASE BLOCKED
+=================================
+Branch: fix/beta-codex-security-review. No beta/main changes, merge, production
+contact, credentials, CT 110/111 changes or automatic router migration.
+
+The prior f034f6c bounded retry correction does NOT eliminate the race after
+its final read. Its earlier 'immediate kernel revocation' conclusion covered
+only observed policy changes before return and one-way UDP tuples.
+
+Architecture, NetBird v0.80.0 source references, conntrack interaction, rejected
+alternatives and release criteria: common/BINAT-ACL-SECURITY.txt.
+
+This update adds blocking real-kernel counterexamples, corrects the helper's
+misleading documentation, and keeps independent platform tests executable after
+a kernel failure. NO speculative runtime workaround is installed. The unsafe
+reconciler remains unchanged and must not be deployed.
+
+Test results for this update are recorded in the PR conversation after the final
+commit's CI completes. Kernel failure is an unresolved security finding, not a
+skip or expected pass. BIOS/UEFI uses synthetic remaster fixtures, not official
+Debian Installer acceptance. ARM64 uses actual QEMU-user Python with simulated
+router APIs, not Raspberry Pi hardware. No live NetBird/Zabbix lifecycle,
+physical Pi, official netinstall or production failover validation is claimed.

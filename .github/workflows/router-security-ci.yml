@@ -79,6 +79,7 @@ jobs:
           -v "$RUNNER_TEMP/openmain-platform-lab:/lab" -v "$PWD:/src:ro"
           openmain-platform-lab:debian13 python3 tests/qemu_platforms.py
       - name: Actual ARM64 Python with simulated router APIs
+        if: ${{ !cancelled() }}
         run: >-
           docker run --rm --network none -e OPENMAIN_ISOLATED_TEST=1
           -v "$RUNNER_TEMP/openmain-platform-lab:/lab" -v "$PWD:/src:ro"

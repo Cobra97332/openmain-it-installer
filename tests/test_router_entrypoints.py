@@ -103,7 +103,16 @@ else:sys.exit(98)
 ''')
         self.executable('pvesh','#!/bin/sh\necho 101\n')
         self.executable('pvesm','#!/bin/sh\nprintf "Name Type Status\\nlocal dir active\\n"\n')
-        self.executable('pveam','#!/bin/sh\nif [ "$1" = available ]; then echo "system debian-13-standard_13.1-1_amd64.tar.zst"; fi\n')
+        self.executable('pveam','''#!/bin/sh
+printf '%s\\n' "$*" >> "$MOCK_ROOT/pveam-calls"
+case "$1" in
+ available) echo "system debian-13-standard_13.1-1_amd64.tar.zst" ;;
+ list) if [ "${MOCK_TEMPLATE_CACHED:-0}" = 1 ]; then
+     echo "$2:vztmpl/debian-13-standard_13.1-1_amd64.tar.zst 1000"
+   fi ;;
+ download) exit 0 ;;
+esac
+''')
         self.executable('modprobe','#!/bin/sh\nexit 0\n')
         self.executable('ip','#!/bin/sh\nexit 0\n')
     def run_wrapper(self,*args):
@@ -122,6 +131,22 @@ else:sys.exit(98)
         self.assertNotIn('--password',create[0])
         joined=json.dumps(calls)
         for token in (self.env['NB_API_TOKEN'],self.env['NB_SETUP_KEY']):self.assertNotIn(token,joined)
+    def test_cached_template_reused_without_download(self):
+        self.env['MOCK_TEMPLATE_CACHED'] = '1'
+        r = self.run_wrapper('--ctid', '111')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        lines = (self.root/'pveam-calls').read_text().splitlines()
+        self.assertTrue(any(line.startswith('list local') for line in lines))
+        self.assertFalse(any(line.startswith('download ') for line in lines))
+        calls = [json.loads(line) for line in (self.root/'pct-calls').read_text().splitlines()]
+        self.assertEqual(sum(x[0] == 'create' for x in calls), 1)
+
+    def test_new_template_downloaded_once_when_not_cached(self):
+        r = self.run_wrapper('--ctid', '111')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        lines = (self.root/'pveam-calls').read_text().splitlines()
+        self.assertTrue(any(line.startswith('download local debian-13-standard') for line in lines))
+
     def test_resume_connected_profile_without_setup_key_and_reject_bad_guest(self):
         self.assertEqual(self.run_wrapper('--ctid','110').returncode,0)
         self.env['NB_SETUP_KEY']='';self.env['MOCK_PROFILE_PATH']='/var/lib/netbird/default.json'

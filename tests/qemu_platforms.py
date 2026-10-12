@@ -126,6 +126,7 @@ menuentry 'SYNTHETIC probe (not Debian Installer)' {
     env=dict(os.environ,DEBIAN_ISO=str(base),DEBIAN_ISO_SHA512=hashlib.sha512(base.read_bytes()).hexdigest(),OUTPUT_ISO=str(image))
     with (work/'remaster.log').open('wb') as stream:
         subprocess.run(['bash','/src/build-iso.sh'],env=env,check=True,stdout=stream,stderr=subprocess.STDOUT)
+    failures=[]
     for mode in (('vm',) if args.unit_only else ('vm','iso-bios','iso-uefi')):
         disk=work/(mode+'.raw')
         with disk.open('xb') as stream:stream.truncate(4*1024**3)
@@ -145,9 +146,12 @@ menuentry 'SYNTHETIC probe (not Debian Installer)' {
             subprocess.run(command,check=True,timeout=600,stdout=stream,stderr=subprocess.STDOUT)
         output=log.read_text(errors='replace')
         if 'OPENMAIN_QA_PASS' not in output or 'OPENMAIN_QA_FAIL' in output:
-            raise SystemExit(mode+': FAIL; inspect lab-only log')
+            failures.append(mode)
+            print(mode+': FAIL; inspect lab-only log',flush=True)
+            continue
         print(mode+': PASS ('+('unit lifecycle ONLY' if args.unit_only else 'real Debian 13/QEMU, mocked router services/APIs')+')',flush=True)
     if not args.unit_only:print('ISO result applies ONLY to the synthetic fixture, not official netinstall.',flush=True)
+    if failures:raise SystemExit('Failed QEMU release gates: '+', '.join(failures))
 
 
 if __name__=='__main__':main()

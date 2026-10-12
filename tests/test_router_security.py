@@ -368,6 +368,7 @@ sys.exit(int(os.environ.get('MOCK_CURL_EXIT','0')))
             p=directory/name;p.write_text(json.dumps(value));p.chmod(0o600)
         before={p:(p.read_bytes(),p.stat().st_mode,p.stat().st_ino) for p in directory.iterdir()}
         fixture.progress.parent.mkdir(parents=True,exist_ok=True)
+        fixture.progress.parent.chmod(0o700)  # managed installer state must be root-private
         fixture.progress.write_text(json.dumps(dict(customer=fixture.env['NB_CUSTOMER_NAME'],role='primary',phase='failed')))
         fixture.progress.chmod(0o600)
         status=dict(management=dict(connected=True,url='https://api.invalid'),profileName='default',netbirdIp='100.107.35.72/16',daemonStatus='Connected')

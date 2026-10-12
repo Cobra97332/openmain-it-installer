@@ -28,16 +28,49 @@ cd "$lab/netbird-0.80.0"
 git apply --check "$repo/netbird-router/experimental/native-binat/netbird-v0.80.0-policy-barrier.patch"
 git apply "$repo/netbird-router/experimental/native-binat/netbird-v0.80.0-policy-barrier.patch"
 export GOPATH="$lab/modules" GOCACHE="$lab/cache" GOPROXY=https://proxy.golang.org
-if ! "$lab/go/bin/go" test -c -o "$lab/acl.test" ./client/internal/acl >"$lab/compiler.log" 2>&1; then
-  # Module proxy diagnostics can contain signed download URLs. Never emit them.
-  if rg -q 'Forbidden|Get "https:' "$lab/compiler.log"; then
-    echo 'Native patch compilation blocked by dependency download.' >&2
-  else
-    echo 'Native patch compilation failed; no native acceptance claimed.' >&2
+compile() {
+  local output=$1 package=$2
+  if ! "$lab/go/bin/go" test -c -buildvcs=false -o "$lab/$output" "$package" >"$lab/compiler.log" 2>&1; then
+    # Proxy diagnostics may contain signed URLs. Never emit raw responses.
+    if rg -q 'Forbidden|Get "https:|proxyconnect' "$lab/compiler.log"; then
+      echo "Native $package compilation blocked by dependency download." >&2
+    else
+      echo "Native $package compilation failed; no native acceptance claimed." >&2
+      # Only source-positioned compiler diagnostics, with URLs removed.
+      sed -n '/^[a-zA-Z_/].*\.go:[0-9][0-9]*:/p' "$lab/compiler.log" | sed 's@https://[^ ]*@<redacted-url>@g' >&2
+    fi
+    return 1
   fi
-  exit 1
-fi
-env -u DOCKER_HOST -u DOCKER_CONTEXT -u DOCKER_TLS -u DOCKER_TLS_VERIFY -u DOCKER_CERT_PATH \
-  docker --host=unix:///var/run/docker.sock run --rm --network none \
-  -v "$lab/acl.test:/lab/acl.test:ro" openmain-router-test:debian13 \
-  /lab/acl.test -test.v -test.run '^TestBINATBarrier' -test.count=1
+}
+docker_local() {
+  env -u DOCKER_HOST -u DOCKER_CONTEXT -u DOCKER_TLS -u DOCKER_TLS_VERIFY -u DOCKER_CERT_PATH \
+    docker --host=unix:///var/run/docker.sock "$@"
+}
+compile core.test ./client/firewall/binat
+docker_local run --rm --network none -v "$lab/core.test:/lab/core.test:ro" \
+  openmain-router-test:debian13 /lab/core.test -test.v -test.count=1
+"$lab/go/bin/go" build -buildvcs=false -o "$lab/native-publisher-lab" ./client/firewall/binat/cmd/lab
+native_status=0
+docker_local run --rm --network none --cap-add NET_ADMIN \
+  --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1 \
+  -v "$repo:/src:ro" -v "$lab/native-publisher-lab:/native/native-publisher-lab:ro" \
+  openmain-router-test:debian13 python3 tests/nft_go_publisher_kernel.py || native_status=1
+# A hard-killed native owner must not leave old permissions. Keep this additional
+# P1 gate failing until the architecture can prove that invariant.
+docker_local run --rm --network none --cap-add NET_ADMIN \
+  --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1 \
+  -e OPENMAIN_NATIVE_OWNER_DEATH_GATE=1 \
+  -v "$repo:/src:ro" -v "$lab/native-publisher-lab:/native/native-publisher-lab:ro" \
+  openmain-router-test:debian13 python3 tests/nft_go_publisher_kernel.py || native_status=1
+GOARCH=arm64 CGO_ENABLED=0 compile core-arm64.test ./client/firewall/binat
+docker_local run --rm --network none -v "$lab/core-arm64.test:/lab/core-arm64.test:ro" \
+  openmain-router-test:debian13 qemu-aarch64 /lab/core-arm64.test -test.v -test.count=1
+compile acl.test ./client/internal/acl
+docker_local run --rm --network none -v "$lab/acl.test:/lab/acl.test:ro" \
+  openmain-router-test:debian13 /lab/acl.test -test.v -test.run '^TestBINAT' -test.count=1
+# Compile the actual Engine and native backend too; core-only compilation cannot
+# validate the production lifecycle call sites. No Engine daemon is started.
+compile engine.test ./client/internal
+compile nftables.test ./client/firewall/nftables
+
+test "$native_status" -eq 0

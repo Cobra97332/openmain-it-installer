@@ -47,67 +47,95 @@ Select the first approach for the experiment: conservative denial during updates
 is preferable to accidental access. A second native batch implementation may
 later reduce the availability interruption without changing authorization rules.
 
-## Implemented reference, not a native adapter
+## Implemented native experiment
 
-snapshot.py implements the packet-policy compiler and single-owner publication
-contract. Complete immutable local snapshots contain scoped IPv4 prefixes,
-source ranges, protocol, original destination-port ranges and actions. DROP
-precedes all overlapping ACCEPTs. Multiple live ACLs are retained, not mistaken
-for separate generations. Virtual scopes must be disjoint; separate virtual
-prefixes may map to the same real LAN. Primary/backup use the same contract;
-routing metrics do not grant permission.
+The patch now contains `client/firewall/binat`, a Linux single-owner nft publisher
+inside the pinned NetBird process, and actual Engine/ACL/nft backend call sites.
+It is opt-in only with `OPENMAIN_ISOLATED_TEST=1` and
+`NB_EXPERIMENTAL_BINAT_CONFIG=/run/netbird-binat-lab/config.json`. Configuration,
+owner lock and adoption receipt are root-owned, protected and symlink-refusing.
+Stock NetBird without the lab variable has no publisher or destination rewrite.
+This patch remains excluded from OpenMain's installer bundle.
 
-The persistent table nb_binat_snapshot_lab has a POSTROUTING filter hook before
-SNAT. Both directions use ct original saddr/daddr/protocol/port. Thus an earlier
-native ESTABLISHED ACCEPT cannot authorize a packet rejected here. No marks,
-header rewrites, broad conntrack deletes or native/foreign rule edits are used.
-The snapshot chain falls through to scoped DROP when empty. It cannot be deleted
-while referenced; replacement is a single nft batch. This namespace-local lab
-table is never adopted, removed or installed by the production installer.
+`acl.BINATRules` consumes the full authoritative NetworkMap before native work.
+It preserves every source, ACCEPT/DROP, ALL/TCP/UDP/ICMP and port/range selector.
+Explicit empty policies deny; partial, contradictory-serial, dynamic/domain,
+custom protocol and service-forwarding maps refuse publication. Virtual IPv4
+prefixes are disjoint; different virtual prefixes may map to the same real LAN.
+No real/virtual prefix overlap, arbitrary external table adoption or flowtable
+admission is allowed. Real packet DNAT/SNAT rules in tests remain synthetic;
+this patch implements authorization, not a new production translation installer.
 
-Publication holds one owner mutex, empties the authorization chain BEFORE native
-processing, validates the entire map, and publishes only after native success.
-Local increasing tickets reject delayed attempts to restore older snapshots.
-A management-server ACK is NOT implemented. The confirmation boundary in tests
-is successful synchronous nft publication; packets already beyond that hook may
-finish. Physical packet drainage or upstream controller delivery latency is not
-claimed. Malformed snapshots/native failures leave the successfully closed path
-empty. Indeterminate final-commit errors (including an ACK lost after a kernel
-commit) immediately attempt re-closure, with distinct closure-confirmed /
-closure-unconfirmed results. No failed ACK is mistaken for atomic rollback.
-If closing itself fails, denial cannot be certified: fail and stop; do not
-claim that kernel failure magically revoked the previously installed rules.
+The Engine closes BINAT before management envelope/config/NetworkMap processing,
+peer address, DNS, route and ACL changes, and management-stream termination.
+Start bootstraps a persistent closed boundary before interface creation and
+requires the native nft backend, active firewall and matching overlay interface.
+Stop, native table rebuild, rollback and firewall Close synchronously close it.
+A failed native operation, absent native chain/tracked rule, stale map, context
+cancellation or publication/readback failure cannot produce a successful ACK.
+The ACL manager disables hash shortcuts for managed publication and exposes
+native apply errors. Native scoped route destination loads become original
+conntrack-destination loads, preserving native RuleIDs, userdata and tracking.
+No other policy verdict, foreign table or native rule handle is replaced.
 
-The pinned native patch adds an opt-in synchronous lifecycle seam to
-DefaultManager.ApplyFiltering. It closes before hash shortcuts/native rule work,
-commits only after successful native operations and closes on failures. The
-normal constructor remains unchanged. **It supplies NO native publisher,
-configuration switch, engine wiring or restart integration.** It is an upstream
-API experiment, not a working patched NetBird client. Patch application is
-checked separately; no compiled/native-daemon acceptance is claimed.
+The publisher owns `ip netbird_binat_experiment_v3`. Its immutable POSTROUTING
+filter hook precedes SNAT and independently rejects unauthorized original AND
+reply tuples after earlier native ESTABLISHED/RELATED shortcuts. The current
+chain contains original source/destination/protocol/destination-port matches;
+DROP always precedes overlapping ACCEPT. RELATED ICMP uses its parent's original
+tuple, rather than a blanket RELATED allowance or blanket ICMP grant. Invalid
+and untracked scoped traffic drops. Empty current chains fall through to scoped
+DROP. No packet marks, asynchronous authorization or conntrack deletion is used.
+
+One mutex closes before native mutation, prepares a complete candidate and
+atomically replaces the live policy only after native success. Candidate and
+live fingerprints come from separate actual kernel reads, not nft's transaction
+input representation. Fingerprints include selectors, verdicts, order and owner
+comments, exclude handles/counter values. Protected receipts retain serial floor,
+policy/guard digests and epoch through owner reload. Close invalidates pending
+work and prior ACK. Indeterminate publication immediately attempts confirmed
+re-closure; failed closure is reported UNCONFIRMED, never called fail-closed.
+`nft` is a bounded local transaction codec, not an independent ACL reconciler.
+
+A local ACK contains NetworkMap serial, local epoch, canonical policy digest and
+read-back kernel digest, **ControllerConfirmed=false**. NetBird v0.80.0 Sync has
+no client kernel-publication acknowledgement protocol. Controller API success
+and local delivery latency are not controller confirmation of revocation.
+Packets already beyond the authorization hook may finish. No packet-drainage
+or zero controller-to-client latency guarantee is claimed.
 
 ## Remaining release blockers / safety limits
 
-1. P1: Existing shipped helper still races and permits established traffic.
-   Existing blocking tests are unchanged and must remain mandatory.
-2. P1: No native publisher connects authoritative NetworkMap processing to this
-   reference. Synthetic map callbacks do not prove actual controller/client
-   policy ordering, acknowledgements or dynamic resource/DNS set updates.
-3. P1: Every native init/reset/close/error path must close the persistent boundary
-   BEFORE overlay forwarding becomes possible. NetBird currently resets outside
-   ApplyFiltering. The experimental seam alone cannot prove that guarantee.
-4. Guard-table destruction by another privileged firewall owner is outside this
-   reference. Required production design must define exclusive ownership and
-   synchronous recovery/start ordering. Asynchronous repair is insufficient.
-5. RELATED traffic is conservatively denied for BINAT; related ICMP errors need
-   parent-tuple policy semantics and kernel tests. Echo ICMP is tested. IPv6,
-   DNAT port changes, dynamic destinations and service resources are rejected/
-   unsupported; do not silently expand them into permissive selectors.
-6. Kernel packet tests are actual UDP/TCP/ICMP and conntrack tests, but native
-   policy callbacks, router path selection, controller and client are synthetic.
-   Separate backup path is not a real metric-100/200 failover/reboot test.
-7. Native Go patch build, actual unprivileged Proxmox LXC, physical Pi and
-   isolated real NetBird controller/client acceptance remain required.
+1. **P1: hard owner death.** SIGKILL can leave a committed authorization chain
+   and kernel WireGuard device alive. Graceful Stop/reset/reload hooks cannot
+   execute then. A new mandatory real-kernel owner-loss gate demonstrates this
+   and fails; it is not an expected failure or waiver. No deployment is allowed.
+   A viable next architecture is a dedicated disposable network namespace whose
+   entire forwarding path and WireGuard device are owned by the native service,
+   with guaranteed kernel teardown on loss of every task/namespace reference.
+   That requires proving child-process/cgroup kill and reference lifetimes,
+   routes and host exposure. A watchdog/timer alone is not an equivalent proof.
+2. **P1: shipped helper remains unsafe.** All six inherited P1 gates stay
+   unchanged and failing. The experimental patch is not installed by OpenMain;
+   passing native publication tests does not resolve the old runtime's P1s.
+3. **Unverified real lifecycle.** Source wiring and Go/core packet tests do not
+   prove complete real Engine/controller ordering, live NetworkMap-envelope
+   processing, reset/reconnect and actual primary/backup metric-100/200 failover.
+   No isolated real controller/client deployment has been run in this revision.
+4. **Exclusive privileged ownership assumption.** Another privileged writer
+   deleting the guard, adding flowtables after admission or bypassing the kernel
+   hook is outside the current proof. Readback cannot make two independent
+   writers race-free. Missing native tables are checked before commit; the
+   separate guard survives owned native reset. External destruction after the
+   check remains a production blocker until exclusive lifetime is enforced.
+5. **Limited feature scope.** IPv6 BINAT, dynamic DNS/resource destinations,
+   forwarded services and DNAT port remapping remain unsupported. Unsupported
+   maps fail closed instead of publishing a permissive subset. Conservative
+   closure on config-only messages can interrupt availability until a complete
+   map arrives. Arbitrary routing/iface changes require a fresh protected scope.
+6. Physical Raspberry Pi, real Proxmox VM/unprivileged LXC, full NetBird daemon,
+   official Debian netinstall and real reboot/failover remain uncertified.
+   ARM64 Go/Python emulation and synthetic BIOS/UEFI are separate evidence.
 
 Do not integrate this experiment into installer/runtime.py, apply-binat.sh,
-binat_acl.py or bundle.files. Green reference tests do not clear PR #33's P1s.
+binat_acl.py or bundle.files. PR #33 and production integration remain blocked.

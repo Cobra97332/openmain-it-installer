@@ -2,8 +2,8 @@
 
 Do not run this against CT 110/111, Bauer, existing profiles or existing services.
 No production token, setup key, PSK, DNS name or management endpoint is required.
-The reference scripts below are executable; the native-client section is a
-future acceptance procedure, not a claim that the supplied seam is integrated.
+The core publisher scripts are executable. The real-controller section remains
+a required acceptance procedure, not a claim of completed daemon acceptance.
 
 ## Already executable isolated reference tests
 
@@ -37,11 +37,31 @@ git apply /path/to/netbird-v0.80.0-policy-barrier.patch
 go test ./client/internal/acl ./client/firewall/nftables
 ```
 
-CI also runs tests/check-native-binat-patch.sh: verified source/toolchain archives,
-compiled native ACL code and four barrier contract cases in network-none Docker.
-Use its pinned Go 1.26.7 toolchain. The patch adds only a publication seam. Stop
-here until a compiled nft backend implements it and startup/reset/close paths
-are connected. Applying this patch does not create a working BINAT client.
+CI runs `tests/check-native-binat-patch.sh`: verified source/toolchain archives,
+compiled native publisher/core contracts, actual Go-publisher kernel packets,
+a mandatory hard-owner-death kernel gate, ARM64 Go contracts under QEMU-user,
+native authoritative-map/barrier contracts and actual Engine/nft compilation.
+Use pinned Go 1.26.7. All native code is contained in the patch, not the installer.
+
+The normal packet suite accepts `/native/native-publisher-lab`, built from the
+patched `./client/firewall/binat/cmd/lab`. It receives synthetic maps over stdin,
+not real NetworkMap/controller updates. The driver creates only protected
+synthetic lab scopes and refuses a namespace with any NIC besides loopback.
+CI repeats it with `OPENMAIN_NATIVE_OWNER_DEATH_GATE=1`; that gate must also
+pass before release. It currently demonstrates a surviving grant after SIGKILL.
+No successful release is claimed from the other passing scenarios.
+
+Actual client laboratory opt-in (only disposable isolated network namespaces):
+- Root-owned `/run/netbird-binat-lab` mode 0700; `config.json` regular 0600,
+  JSON array of `Virtual`, `Real`, `Overlay`, `LAN` strings. The overlay name
+  must match that client's real WireGuard interface. Use only synthetic nets.
+- Enable both lab environment variables described in ARCHITECTURE.md. Do not
+  enable an external OpenMain ACL helper concurrently. Keep native firewall on.
+- No production configuration/identity directory mounts, public endpoints,
+  tokens or broad forwarding exposure. No flowtable/offload objects.
+- Add translation only inside the fresh isolated namespace; confirm native
+  original-destination ACLs and persistent guard before starting traffic.
+- Capture only generic local ACK serial/epoch/digests; never credentials.
 
 ## Future real-controller lab — mandatory before installer integration
 

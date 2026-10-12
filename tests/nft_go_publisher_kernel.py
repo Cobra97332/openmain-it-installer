@@ -4,6 +4,7 @@
 Only a new --network none Docker with NET_ADMIN and loopback can run this.
 No existing test/gate is replaced. Any unexpected packet aborts this test.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -227,6 +228,56 @@ try:
     request(port=50001,allowed=False);reply(udp_target,udp_source,allowed=False)
     assert owner.command('begin',ticket-1,rules).get('Prepared') is False
     request(port=50001,allowed=False)
+    # Simulate the preceding OWN v3 layout and a last committed authorization.
+    # Protected receipt and exact kernel fingerprints are retained. Never adopt
+    # foreign layouts. Resume must close before verified guard replacement.
+    publish(rules)
+    previous=json.loads(run('nft','-j','list','chain','ip','netbird_binat_experiment_v3','current'))
+    assert owner.command('release').get('Released')
+    prior=json.loads(run('nft','-j','list','chain','ip','netbird_binat_experiment_v3','guard'))
+    for row in prior['nftables']:
+        rule=row.get('rule',{})
+        exprs=rule.get('expr',[])
+        if any('counter' in e for e in exprs) and any('payload' in e.get('match',{}).get('left',{}) for e in exprs):
+            run('nft','delete','rule','ip','netbird_binat_experiment_v3','guard','handle',str(rule['handle']))
+    restored=[]
+    for row in previous['nftables']:
+        if 'rule' in row:
+            rule=dict(row['rule']);rule.pop('handle',None)
+            restored.append({'add':{'rule':rule}})
+    subprocess.run(['nft','-j','-f','-'],input=json.dumps({'nftables':restored}),text=True,check=True)
+    def fingerprint(chain):
+        rows=[]
+        for row in json.loads(run('nft','-j','list','chain','ip','netbird_binat_experiment_v3',chain))['nftables']:
+            if 'rule' not in row:continue
+            rule=dict(row['rule'])
+            for key in ['handle','table','family','chain']:rule.pop(key,None)
+            for expr in rule['expr']:
+                if 'counter' in expr:expr['counter']={}
+            rows.append(rule)
+        return hashlib.sha256(json.dumps(rows,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    receipt_path=Path('/run/netbird-binat-lab/receipt.json')
+    receipt=json.loads(receipt_path.read_text())
+    receipt['Guard']=fingerprint('guard');receipt['Current']=fingerprint('current')
+    receipt_path.write_text(json.dumps(receipt));os.chmod(receipt_path,0o600)
+    request(port=50001)  # Prove the old committed grant actually exists.
+    assert owner.command('resume').get('Resumed')
+    request(port=50001,allowed=False);reply(udp_target,udp_source,allowed=False)
+    publish(rules);request(port=50001)
+    # Matching receipt alone cannot authorize an unknown guard layout.
+    assert owner.command('release').get('Released')
+    protected=receipt_path.read_text()
+    batch('add rule ip netbird_binat_experiment_v3 guard ip saddr 203.0.113.251 counter drop comment "foreign-layout"\n')
+    unknown=run('nft','-s','-j','list','chain','ip','netbird_binat_experiment_v3','guard')
+    forged=json.loads(protected);forged['Guard']=fingerprint('guard')
+    receipt_path.write_text(json.dumps(forged));os.chmod(receipt_path,0o600)
+    assert owner.command('resume').get('Resumed') is False
+    assert run('nft','-s','-j','list','chain','ip','netbird_binat_experiment_v3','guard')==unknown
+    request(port=50001,allowed=False)
+    extra=next(row['rule']['handle'] for row in json.loads(unknown)['nftables'] if row.get('rule',{}).get('comment')=='foreign-layout')
+    run('nft','delete','rule','ip','netbird_binat_experiment_v3','guard','handle',str(extra))
+    receipt_path.write_text(protected);os.chmod(receipt_path,0o600)
+    assert owner.command('resume').get('Resumed')
     # Backup path uses separate virtual network despite overlapping real LAN.
     publish(rules);fresh('lp');frame('bp','backup0','100.64.1.10','10.81.1.20',50030);receive('lp')
     publish(rules[:2]);fresh('lp');frame('bp','backup0','100.64.1.10','10.81.1.20',50030);receive('lp',False)
@@ -243,7 +294,7 @@ try:
         native_process.kill();assert native_process.wait(timeout=5) != 0
         request(port=50001,allowed=False)
         reply(udp_target,udp_source,allowed=False)
-    print('PASS: compiled native Go publisher kernel UDP/TCP established request/reply withdrawal, new flows, DROP, concurrent close, failure/restart, multiple ACLs, overlapping-real-LAN backup path, ICMP/ports/RELATED parent, untracked virtual denial, observed-map/receipt restart, foreign rules')
+    print('PASS: compiled native Go publisher kernel UDP/TCP established request/reply withdrawal, new flows, DROP, concurrent close, failure/restart, multiple ACLs, overlapping-real-LAN backup path, ICMP/ports/RELATED parent, untracked virtual denial, observed-map/receipt restart, verified old-guard upgrade, unknown-layout refusal, foreign rules')
     print('LIMIT: native Go publisher with synthetic complete-map input; actual NetBird Engine/controller execution, abrupt process death and real failover remain unverified')
 finally:
     if native_process.poll() is None:

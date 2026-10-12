@@ -54,6 +54,11 @@ inside the pinned NetBird process, and actual Engine/ACL/nft backend call sites.
 It is opt-in only with `OPENMAIN_ISOLATED_TEST=1` and
 `NB_EXPERIMENTAL_BINAT_CONFIG=/run/netbird-binat-lab/config.json`. Configuration,
 owner lock and adoption receipt are root-owned, protected and symlink-refusing.
+The preceding owned v3 guard layout is recognized by independently compiled
+kernel fingerprints AND matching protected scope/guard/current receipts. Its
+current grants are verified empty before an atomic guard-rule replacement.
+Unknown layouts are refused unchanged even if a receipt matches them. This is
+an isolated experimental-table upgrade, not a customer/profile migration.
 Stock NetBird without the lab variable has no publisher or destination rewrite.
 Releasing the active owner atomically clears its scope registry and local ACK;
 a previous released owner cannot erase a subsequent owner's configuration.

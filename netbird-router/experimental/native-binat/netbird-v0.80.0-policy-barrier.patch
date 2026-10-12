@@ -2,7 +2,7 @@ diff --git a/client/firewall/binat/cmd/lab/main.go b/client/firewall/binat/cmd/l
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/cmd/lab/main.go
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,124 @@
 +//go:build linux
 +
 +package main
@@ -59,7 +59,27 @@ new file mode 100644
 +			encoder.Encode(map[string]any{"Error": "input"})
 +			continue
 +		}
++		if p == nil && r.Operation != "resume" {
++			encoder.Encode(map[string]any{"Error": "inactive"})
++			continue
++		}
 +		switch r.Operation {
++		case "release":
++			err = p.Close()
++			if err == nil {
++				p.Release()
++				p = nil
++			}
++			encoder.Encode(map[string]any{"Released": err == nil})
++			continue
++		case "resume":
++			if p != nil {
++				encoder.Encode(map[string]any{"Error": "active"})
++				continue
++			}
++			p, err = binat.LoadLabFromEnv()
++			encoder.Encode(map[string]any{"Resumed": err == nil})
++			continue
 +		case "observe":
 +			err = p.Observe(r.Serial, r.Digest)
 +			encoder.Encode(map[string]any{"Observed": err == nil})
@@ -101,15 +121,17 @@ new file mode 100644
 +		}
 +		encoder.Encode(ack)
 +	}
-+	if err = p.Close(); err != nil {
-+		os.Exit(1)
++	if p != nil {
++		if err = p.Close(); err != nil {
++			os.Exit(1)
++		}
 +	}
 +}
 diff --git a/client/firewall/binat/publisher_linux.go b/client/firewall/binat/publisher_linux.go
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/publisher_linux.go
-@@ -0,0 +1,699 @@
+@@ -0,0 +1,736 @@
 +//go:build linux
 +
 +// Package binat is experimental, opt-in native policy publication. No controller
@@ -417,13 +439,16 @@ new file mode 100644
 +	}
 +	return fingerprint(b, chain)
 +}
-+func (p *Publisher) guardRules(table string) string {
++func (p *Publisher) guardRules(table string) string { return p.guardLayout(table, true) }
++func (p *Publisher) guardLayout(table string, current bool) string {
 +	var b strings.Builder
 +	for _, s := range p.scopes {
 +		// Without a tuple NAT cannot translate the virtual destination. Close
 +		// that explicitly reserved header path as well; do not blanket-drop
 +		// unrelated direct real-LAN policies whose original scope is unknown.
-+		fmt.Fprintf(&b, "add rule ip %s guard ip daddr %s ct state invalid,untracked counter drop\n", table, s.Virtual)
++		if current {
++			fmt.Fprintf(&b, "add rule ip %s guard ip daddr %s ct state invalid,untracked counter drop\n", table, s.Virtual)
++		}
 +		base := "ct original ip daddr " + s.Virtual
 +		fmt.Fprintf(&b, "add rule ip %s guard %s ct state invalid,untracked counter drop\n", table, base)
 +		fmt.Fprintf(&b, "add rule ip %s guard %s ct direction original iifname %q oifname %q ip daddr %s jump current\n", table, base, s.Overlay, s.LAN, s.Real)
@@ -467,6 +492,21 @@ new file mode 100644
 +	if err != nil {
 +		return err
 +	}
++	// Compile the exact preceding v3 guard layout in a no-hook candidate too.
++	// Adoption never relies on a receipt alone or a loose rule-name match.
++	legacyCandidate := Table + "_legacy_candidate"
++	if _, err := p.run("create table ip " + legacyCandidate + "\nadd chain ip " + legacyCandidate + " current\nadd chain ip " + legacyCandidate + " guard\n" + p.guardLayout(legacyCandidate, false)); err != nil {
++		return err
++	}
++	defer p.run("delete table ip " + legacyCandidate + "\n")
++	oldData, err := p.run("list chain ip " + legacyCandidate + " guard\n")
++	if err != nil {
++		return err
++	}
++	legacy, err := fingerprint(oldData, "guard")
++	if err != nil {
++		return err
++	}
 +	p.guard = expected
 +	existing, readErr := p.read("guard")
 +	if readErr == nil {
@@ -485,14 +525,14 @@ new file mode 100644
 +			return errors.New("BINAT invalid receipt")
 +		}
 +		cfg, _ := json.Marshal(p.scopes)
-+		if state.Scope != hash(cfg) || state.Guard != expected || existing != expected {
++		if state.Scope != hash(cfg) || state.Guard != existing || (existing != expected && existing != legacy) {
 +			return errors.New("BINAT existing guard mismatch")
 +		}
 +		live, err := p.read("current")
 +		if err != nil || (live != state.Current && live != hash([]byte("[]"))) {
 +			return errors.New("BINAT existing policy modified")
 +		}
-+		p.current = live
++		p.guard, p.current = existing, live
 +		p.seenSerial, p.hasSerial, p.seenDigest, p.epoch = state.Serial, state.HasSerial, state.PolicyDigest, state.Epoch
 +		p.observedDigest = state.ObservedDigest
 +		for _, digest := range []string{p.seenDigest, p.observedDigest} {
@@ -508,7 +548,26 @@ new file mode 100644
 +			return err
 +		}
 +	}
-+	return p.closeLocked()
++	// Close and verify BEFORE changing the known legacy guard. Existing and
++	// RELATED sessions lose their authorization even if the update fails.
++	if err := p.closeLocked(); err != nil {
++		return err
++	}
++	if p.guard != expected {
++		_, updateErr := p.run("flush chain ip " + Table + " guard\n" + p.guardRules(Table))
++		actual, readErr := p.read("guard")
++		if readErr != nil || (actual != expected && actual != legacy) {
++			return ErrUnconfirmed
++		}
++		p.guard = actual
++		if err := p.closeLocked(); err != nil {
++			return err
++		}
++		if updateErr != nil || actual != expected {
++			return errors.New("BINAT guard upgrade failed; closure confirmed")
++		}
++	}
++	return nil
 +}
 +func (p *Publisher) receipt() error {
 +	if p.lock == nil {

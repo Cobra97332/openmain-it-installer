@@ -16,6 +16,7 @@ Executed locally so far:
   simultaneous update closure, multiple ACLs, strict ports/echo ICMP,
   RELATED ICMP parent entitlement/revocation, reachable NOTRACK virtual denial,
   pre-validation observation/reload and stale/contradictory map refusal,
+  verified preceding-own-guard upgrade and unknown-layout refusal,
   protected owner reload and stale
   serial refusal, overlapping-real-LAN backup path, foreign rules: PASS.
 - Debian 13 Bash syntax/ShellCheck + 222 offline tests PASS.

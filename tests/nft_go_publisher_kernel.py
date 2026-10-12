@@ -108,9 +108,9 @@ scopes=[dict(virtual='10.80.1.0/24',real='192.168.80.0/24',overlay='nb0',lan='la
 class NativeOwner:
     def __init__(self):
         self.process=native_process
-    def command(self,operation,serial=0,items=None):
+    def command(self,operation,serial=0,items=None,digest=""):
         rules=[dict(Source=r['source'],Destination=r['destination'],Protocol=r['protocol'],Action=r['action'],Ports=r['ports']) for r in items or []]
-        self.process.stdin.write(json.dumps(dict(Operation=operation,Serial=serial,Rules=rules))+'\n');self.process.stdin.flush()
+        self.process.stdin.write(json.dumps(dict(Operation=operation,Serial=serial,Rules=rules,Digest=digest))+'\n');self.process.stdin.flush()
         return json.loads(self.process.stdout.readline())
     def publish(self,serial,items):
         ack=self.command('publish',serial,items)
@@ -190,6 +190,19 @@ try:
     ticket+=1
     assert owner.command('begin',ticket,[dict(rules[0],action='unsupported')]).get('Prepared') is False
     request(port=50001,allowed=False)
+    # Explicitly untracked virtual traffic has no original tuple and no DNAT.
+    # A route/neighbor makes delivery possible; denial must come from the guard,
+    # not merely the absence of a route. No unrelated real-LAN policy is changed.
+    run('ip','route','add','10.80.1.0/24','dev','lan0')
+    run('ip','neigh','replace','10.80.1.20','lladdr',mac('lp').hex(':'),'dev','lan0','nud','permanent')
+    batch('table ip untracked_probe {\n chain raw {\n type filter hook prerouting priority -301; policy accept;\n iifname "nb0" ip daddr 10.80.1.20 udp sport 50099 notrack\n }\n}\n')
+    publish(rules);request(port=50099,allowed=False)
+    guard=json.loads(run('nft','-j','list','chain','ip','netbird_binat_experiment_v3','guard'))
+    assert any(any(e.get('counter',{}).get('packets',0)>0 for e in row.get('rule',{}).get('expr',[])) and
+               any(e.get('match',{}).get('left',{}).get('payload',{}).get('field')=='daddr' for e in row.get('rule',{}).get('expr',[]))
+               for row in guard['nftables']), 'untracked virtual denial not observed in guard'
+    run('nft','delete','table','ip','untracked_probe')
+    run('ip','route','del','10.80.1.0/24','dev','lan0')
     # Selective protocol/port grants, ICMP and denied sibling port.
     publish([dict(rules[0],protocol='udp',ports=[[12345,12345]])]);request(port=50020)
     fresh('lp');frame('np','nb0','100.64.0.10','10.80.1.20',50021,12346);receive('lp',False)
@@ -199,6 +212,14 @@ try:
     # Close invalidates a prepared publication; old Commit cannot reopen it.
     ticket+=1;assert owner.command('begin',ticket,rules).get('Prepared')
     owner.close();assert owner.command('commit').get('Error')
+    request(port=50001,allowed=False)
+    # Parsing can fail before Begin; receipt must bind that observed generation.
+    publish(rules);ticket+=100
+    assert owner.command('observe',ticket,digest='a'*64).get('Observed')
+    request(port=50001,allowed=False)
+    assert owner.command('restart').get('Restarted')
+    assert owner.command('observe',ticket-1,digest='a'*64).get('Observed') is False
+    assert owner.command('observe',ticket,digest='b'*64).get('Observed') is False
     request(port=50001,allowed=False)
     # A real Go owner release/reload adopts its protected receipt and closes first.
     publish(rules);request(port=50001)
@@ -222,7 +243,7 @@ try:
         native_process.kill();assert native_process.wait(timeout=5) != 0
         request(port=50001,allowed=False)
         reply(udp_target,udp_source,allowed=False)
-    print('PASS: compiled native Go publisher kernel UDP/TCP established request/reply withdrawal, new flows, DROP, concurrent close, failure/restart, multiple ACLs, overlapping-real-LAN backup path, ICMP/ports/RELATED parent, receipt restart, foreign rules')
+    print('PASS: compiled native Go publisher kernel UDP/TCP established request/reply withdrawal, new flows, DROP, concurrent close, failure/restart, multiple ACLs, overlapping-real-LAN backup path, ICMP/ports/RELATED parent, untracked virtual denial, observed-map/receipt restart, foreign rules')
     print('LIMIT: native Go publisher with synthetic complete-map input; actual NetBird Engine/controller execution, abrupt process death and real failover remain unverified')
 finally:
     if native_process.poll() is None:

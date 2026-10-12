@@ -61,6 +61,10 @@ This patch remains excluded from OpenMain's installer bundle.
 
 `acl.BINATRules` consumes the full authoritative NetworkMap before native work.
 It preserves every source, ACCEPT/DROP, ALL/TCP/UDP/ICMP and port/range selector.
+Before semantic validation, the publisher binds the received serial and a
+policy-only deterministic protobuf digest. A rejected partial/unsupported newer
+map therefore cannot be replaced by an older or different same-serial policy;
+that observation is retained in the protected adoption receipt.
 Explicit empty policies deny; partial, contradictory-serial, dynamic/domain,
 custom protocol and service-forwarding maps refuse publication. Virtual IPv4
 prefixes are disjoint; different virtual prefixes may map to the same real LAN.
@@ -88,7 +92,9 @@ reply tuples after earlier native ESTABLISHED/RELATED shortcuts. The current
 chain contains original source/destination/protocol/destination-port matches;
 DROP always precedes overlapping ACCEPT. RELATED ICMP uses its parent's original
 tuple, rather than a blanket RELATED allowance or blanket ICMP grant. Invalid
-and untracked scoped traffic drops. Empty current chains fall through to scoped
+and untracked scoped traffic drops. A separate reserved-virtual-header denial
+also covers untracked packets without an original tuple; the kernel test adds a
+real route/neighbor and NOTRACK rule to prove this is a guard drop, not no-route. Empty current chains fall through to scoped
 DROP. No packet marks, asynchronous authorization or conntrack deletion is used.
 
 One mutex closes before native mutation, prepares a complete candidate and
@@ -136,7 +142,10 @@ or zero controller-to-client latency guarantee is claimed.
    forwarded services and DNAT port remapping remain unsupported. Unsupported
    maps fail closed instead of publishing a permissive subset. Conservative
    closure on config-only messages can interrupt availability until a complete
-   map arrives. Arbitrary routing/iface changes require a fresh protected scope.
+   map arrives. Reordered same-serial protobuf rule lists conservatively refuse
+   publication. Arbitrary routing/iface changes require a fresh protected scope.
+   Durable generation replay protection assumes successful protected receipt
+   persistence; storage errors are not certified recovery/owner-lifetime proof.
 6. Physical Raspberry Pi, real Proxmox VM/unprivileged LXC, full NetBird daemon,
    official Debian netinstall and real reboot/failover remain uncertified.
    ARM64 Go/Python emulation and synthetic BIOS/UEFI are separate evidence.

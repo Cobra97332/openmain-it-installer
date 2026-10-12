@@ -2,7 +2,7 @@ diff --git a/client/firewall/binat/cmd/lab/main.go b/client/firewall/binat/cmd/l
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/cmd/lab/main.go
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,102 @@
 +//go:build linux
 +
 +package main
@@ -53,12 +53,17 @@ new file mode 100644
 +			Serial    uint64
 +			Rules     []binat.Rule
 +			Operation string
++			Digest    string
 +		}
 +		if json.Unmarshal(scanner.Bytes(), &r) != nil {
 +			encoder.Encode(map[string]any{"Error": "input"})
 +			continue
 +		}
 +		switch r.Operation {
++		case "observe":
++			err = p.Observe(r.Serial, r.Digest)
++			encoder.Encode(map[string]any{"Observed": err == nil})
++			continue
 +		case "restart":
 +			err = p.Close()
 +			if err == nil {
@@ -104,7 +109,7 @@ diff --git a/client/firewall/binat/publisher_linux.go b/client/firewall/binat/pu
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/publisher_linux.go
-@@ -0,0 +1,654 @@
+@@ -0,0 +1,699 @@
 +//go:build linux
 +
 +// Package binat is experimental, opt-in native policy publication. No controller
@@ -155,19 +160,20 @@ new file mode 100644
 +}
 +type Runner func(string) ([]byte, error)
 +type Publisher struct {
-+	mutex      sync.Mutex
-+	scopes     []Scope
-+	run        Runner
-+	lock       *os.File
-+	guard      string
-+	current    string
-+	pending    *prepared
-+	epoch      uint64
-+	released   bool
-+	seenSerial uint64
-+	seenDigest string
-+	hasSerial  bool
-+	last       *ACK
++	mutex          sync.Mutex
++	scopes         []Scope
++	run            Runner
++	lock           *os.File
++	guard          string
++	current        string
++	pending        *prepared
++	epoch          uint64
++	released       bool
++	seenSerial     uint64
++	seenDigest     string
++	observedDigest string
++	hasSerial      bool
++	last           *ACK
 +}
 +type prepared struct {
 +	serial, epoch            uint64
@@ -414,6 +420,10 @@ new file mode 100644
 +func (p *Publisher) guardRules(table string) string {
 +	var b strings.Builder
 +	for _, s := range p.scopes {
++		// Without a tuple NAT cannot translate the virtual destination. Close
++		// that explicitly reserved header path as well; do not blanket-drop
++		// unrelated direct real-LAN policies whose original scope is unknown.
++		fmt.Fprintf(&b, "add rule ip %s guard ip daddr %s ct state invalid,untracked counter drop\n", table, s.Virtual)
 +		base := "ct original ip daddr " + s.Virtual
 +		fmt.Fprintf(&b, "add rule ip %s guard %s ct state invalid,untracked counter drop\n", table, base)
 +		fmt.Fprintf(&b, "add rule ip %s guard %s ct direction original iifname %q oifname %q ip daddr %s jump current\n", table, base, s.Overlay, s.LAN, s.Real)
@@ -469,6 +479,7 @@ new file mode 100644
 +			Serial, Epoch         uint64
 +			HasSerial             bool
 +			PolicyDigest          string
++			ObservedDigest        string
 +		}
 +		if json.Unmarshal(receipt, &state) != nil {
 +			return errors.New("BINAT invalid receipt")
@@ -483,8 +494,13 @@ new file mode 100644
 +		}
 +		p.current = live
 +		p.seenSerial, p.hasSerial, p.seenDigest, p.epoch = state.Serial, state.HasSerial, state.PolicyDigest, state.Epoch
-+		if p.seenDigest != "" && (len(p.seenDigest) != 64 || !p.hasSerial) {
-+			return errors.New("BINAT receipt policy invalid")
++		p.observedDigest = state.ObservedDigest
++		for _, digest := range []string{p.seenDigest, p.observedDigest} {
++			if digest != "" {
++				if _, err := hex.DecodeString(digest); err != nil || len(digest) != 64 || !p.hasSerial {
++					return errors.New("BINAT receipt policy invalid")
++				}
++			}
 +		}
 +	} else {
 +		_, err = p.run("create table ip " + Table + "\nadd chain ip " + Table + " current\nadd chain ip " + Table + " guard { type filter hook postrouting priority -200; policy accept; }\n" + p.guardRules(Table))
@@ -504,7 +520,8 @@ new file mode 100644
 +		Serial, Epoch         uint64
 +		HasSerial             bool
 +		PolicyDigest          string
-+	}{hash(cfg), p.guard, p.current, p.seenSerial, p.epoch, p.hasSerial, p.seenDigest})
++		ObservedDigest        string
++	}{hash(cfg), p.guard, p.current, p.seenSerial, p.epoch, p.hasSerial, p.seenDigest, p.observedDigest})
 +	f, err := os.CreateTemp(Root, "receipt-")
 +	if err != nil {
 +		return errors.New("BINAT receipt unavailable")
@@ -653,6 +670,38 @@ new file mode 100644
 +	}
 +	return out.String(), nil
 +}
++
++// Observe binds the received authoritative policy BEFORE semantic parsing.
++// Unsupported/partial newer maps cannot be followed by a lower serial or a
++// contradictory same-serial policy, including after protected owner reload.
++func (p *Publisher) Observe(serial uint64, digest string) error {
++	p.mutex.Lock()
++	defer p.mutex.Unlock()
++	if p.released {
++		return ErrUnconfirmed
++	}
++	if err := p.closeLocked(); err != nil {
++		return err
++	}
++	if len(digest) != 64 {
++		return errors.New("BINAT invalid observation digest")
++	}
++	if _, err := hex.DecodeString(digest); err != nil {
++		return errors.New("BINAT invalid observation digest")
++	}
++	if p.hasSerial && serial < p.seenSerial {
++		return errors.New("BINAT stale observation")
++	}
++	if p.hasSerial && serial == p.seenSerial && p.observedDigest != "" && digest != p.observedDigest {
++		return errors.New("BINAT contradictory observation")
++	}
++	if !p.hasSerial || serial > p.seenSerial {
++		p.seenDigest = ""
++	}
++	p.hasSerial, p.seenSerial, p.observedDigest = true, serial, digest
++	return p.receipt()
++}
++
 +func (p *Publisher) Begin(serial uint64, rules []Rule) error {
 +	p.mutex.Lock()
 +	defer p.mutex.Unlock()
@@ -669,6 +718,7 @@ new file mode 100644
 +		p.hasSerial = true
 +		p.seenSerial = serial
 +		p.seenDigest = ""
++		p.observedDigest = ""
 +		if err := p.receipt(); err != nil {
 +			return err
 +		}
@@ -763,7 +813,7 @@ diff --git a/client/firewall/binat/publisher_linux_test.go b/client/firewall/bin
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/publisher_linux_test.go
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,253 @@
 +//go:build linux
 +
 +package binat
@@ -987,11 +1037,41 @@ new file mode 100644
 +		t.Fatal("old owner removed new owner's configuration")
 +	}
 +}
++
++func TestBINATNativeRejectedObservedMapCannotRestoreOlderOrContradictoryPolicy(t *testing.T) {
++	f := &fixture{}
++	p := publisherForFixture(f)
++	if err := p.Begin(10, []Rule{testRule}); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := p.Commit(); err != nil {
++		t.Fatal(err)
++	}
++	// The adapter subsequently rejects this newer map before Begin is possible.
++	if err := p.Observe(20, hash([]byte("unsupported full map"))); err != nil || f.open {
++		t.Fatal("observation did not close")
++	}
++	if err := p.Begin(19, []Rule{testRule}); err == nil {
++		t.Fatal("older map restored after parser rejection")
++	}
++	if err := p.Observe(20, hash([]byte("different policy"))); err == nil || f.open {
++		t.Fatal("same-serial contradiction accepted")
++	}
++	if err := p.Observe(21, hash([]byte("current complete map"))); err != nil {
++		t.Fatal(err)
++	}
++	if err := p.Begin(21, []Rule{testRule}); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := p.Commit(); err != nil {
++		t.Fatal(err)
++	}
++}
 diff --git a/client/firewall/binat/publisher_other.go b/client/firewall/binat/publisher_other.go
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/publisher_other.go
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,41 @@
 +//go:build !linux
 +
 +package binat
@@ -1031,6 +1111,8 @@ new file mode 100644
 +func (*Publisher) Commit() (ACK, error)       { return ACK{}, ErrUnconfirmed }
 +
 +func CloseActive() error { return nil }
++
++func (*Publisher) Observe(uint64, string) error { return ErrUnconfirmed }
 diff --git a/client/firewall/nftables/filter_linux.go b/client/firewall/nftables/filter_linux.go
 --- a/client/firewall/nftables/filter_linux.go
 +++ b/client/firewall/nftables/filter_linux.go
@@ -1250,15 +1332,18 @@ diff --git a/client/internal/acl/binat_map_linux.go b/client/internal/acl/binat_
 new file mode 100644
 --- /dev/null
 +++ b/client/internal/acl/binat_map_linux.go
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,117 @@
 +//go:build linux
 +
 +package acl
 +
 +import (
++	"crypto/sha256"
++	"encoding/hex"
 +	"errors"
 +	"github.com/netbirdio/netbird/client/firewall/binat"
 +	mgm "github.com/netbirdio/netbird/shared/management/proto"
++	"google.golang.org/protobuf/proto"
 +	"net/netip"
 +)
 +
@@ -1347,11 +1432,29 @@ new file mode 100644
 +	}
 +	return result, nil
 +}
++
++// Bind unsupported and partial maps too, without retaining any raw policy data.
++// A conservative deterministic policy encoding includes all proto rule fields;
++// reordered same-serial messages can refuse availability rather than grant.
++func BINATPolicyDigest(m *mgm.NetworkMap) (string, error) {
++	if m == nil {
++		return "", errors.New("BINAT missing observed policy")
++	}
++	policy := &mgm.NetworkMap{FirewallRules: m.FirewallRules, FirewallRulesIsEmpty: m.FirewallRulesIsEmpty,
++		RoutesFirewallRules: m.RoutesFirewallRules, RoutesFirewallRulesIsEmpty: m.RoutesFirewallRulesIsEmpty,
++		ForwardingRules: m.ForwardingRules}
++	raw, err := (proto.MarshalOptions{Deterministic: true}).Marshal(policy)
++	if err != nil {
++		return "", errors.New("BINAT observation encoding failed")
++	}
++	sum := sha256.Sum256(raw)
++	return hex.EncodeToString(sum[:]), nil
++}
 diff --git a/client/internal/acl/binat_map_linux_test.go b/client/internal/acl/binat_map_linux_test.go
 new file mode 100644
 --- /dev/null
 +++ b/client/internal/acl/binat_map_linux_test.go
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,51 @@
 +//go:build linux
 +
 +package acl
@@ -1385,11 +1488,29 @@ new file mode 100644
 +		t.Fatal("dynamic subset published")
 +	}
 +}
++
++func TestBINATNativeObservedDigestBindsPartialAndContradictoryPolicy(t *testing.T) {
++	m := &p.NetworkMap{Serial: 10, FirewallRulesIsEmpty: true, RoutesFirewallRulesIsEmpty: true}
++	first, err := BINATPolicyDigest(m)
++	if err != nil || len(first) != 64 {
++		t.Fatal("policy observation absent")
++	}
++	m.Serial = 11
++	same, err := BINATPolicyDigest(m)
++	if err != nil || same != first {
++		t.Fatal("generation mixed into policy digest")
++	}
++	m.RoutesFirewallRulesIsEmpty = false
++	changed, err := BINATPolicyDigest(m)
++	if err != nil || changed == first {
++		t.Fatal("partial policy unbound")
++	}
++}
 diff --git a/client/internal/acl/binat_map_other.go b/client/internal/acl/binat_map_other.go
 new file mode 100644
 --- /dev/null
 +++ b/client/internal/acl/binat_map_other.go
-@@ -0,0 +1,13 @@
+@@ -0,0 +1,15 @@
 +//go:build !linux
 +
 +package acl
@@ -1403,6 +1524,8 @@ new file mode 100644
 +func BINATRules(*mgm.NetworkMap, []binat.Scope) ([]binat.Rule, error) {
 +	return nil, errors.New("BINAT unavailable")
 +}
++
++func BINATPolicyDigest(*mgm.NetworkMap) (string, error) { return "", binat.ErrUnconfirmed }
 diff --git a/client/internal/acl/manager.go b/client/internal/acl/manager.go
 --- a/client/internal/acl/manager.go
 +++ b/client/internal/acl/manager.go
@@ -1661,7 +1784,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  		if err != nil {
  			// happens if management is unavailable for a long time.
  			// We want to cancel the operation of the whole client
-@@ -1564,7 +1623,28 @@
+@@ -1564,7 +1623,35 @@
  	return nil
  }
  
@@ -1680,6 +1803,13 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
 +		if networkMap == nil || networkMap.GetSerial() < e.networkSerial {
 +			return errors.New("BINAT stale/incomplete NetworkMap")
 +		}
++		digest, err := acl.BINATPolicyDigest(networkMap)
++		if err != nil {
++			return err
++		}
++		if err := e.binatPublisher.Observe(networkMap.GetSerial(), digest); err != nil {
++			return err
++		}
 +		rules, err := acl.BINATRules(networkMap, e.binatPublisher.Scopes())
 +		if err != nil {
 +			return err
@@ -1691,7 +1821,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	// intentionally leave it before checking serial because for now it can happen that peer IP changed but serial didn't
  	if networkMap.GetPeerConfig() != nil {
  		err := e.updateConfig(networkMap.GetPeerConfig())
-@@ -1590,6 +1670,9 @@
+@@ -1590,6 +1677,9 @@
  	if e.firewall != nil {
  		if localipfw, ok := e.firewall.(localIpUpdater); ok {
  			if err := localipfw.UpdateLocalIPs(); err != nil {
@@ -1701,7 +1831,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  				log.Errorf("failed to update local IPs: %v", err)
  			}
  		}
-@@ -1599,6 +1682,9 @@
+@@ -1599,6 +1689,9 @@
  		// This needs to be toggled before applying routes.
  		isLegacy := len(networkMap.RoutesFirewallRules) == 0 && !networkMap.RoutesFirewallRulesIsEmpty
  		if err := e.firewall.SetLegacyManagement(isLegacy); err != nil {
@@ -1711,7 +1841,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  			log.Errorf("failed to set legacy management flag: %v", err)
  		}
  	}
-@@ -1612,6 +1698,9 @@
+@@ -1612,6 +1705,9 @@
  
  	done := e.phase("dns_server")
  	if err := e.dnsServer.UpdateDNSServer(serial, dnsConfig); err != nil {
@@ -1721,7 +1851,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  		log.Errorf("failed to update dns server, err: %v", err)
  	}
  	done()
-@@ -1633,6 +1722,9 @@
+@@ -1633,6 +1729,9 @@
  	done = e.phase("routes_apply")
  	dnsRouteFeatureFlag := toDNSFeatureFlag(networkMap)
  	if err := e.routeManager.UpdateRoutes(serial, serverRoutes, clientRoutes, dnsRouteFeatureFlag); err != nil {
@@ -1731,7 +1861,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  		log.Errorf("failed to update routes: %v", err)
  	}
  	done()
-@@ -1640,6 +1732,11 @@
+@@ -1640,6 +1739,11 @@
  	done = e.phase("filtering")
  	if e.acl != nil {
  		e.acl.ApplyFiltering(networkMap, dnsRouteFeatureFlag)
@@ -1743,7 +1873,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	}
  	done()
  
-@@ -1651,6 +1748,9 @@
+@@ -1651,6 +1755,9 @@
  	// Ingress forward rules
  	done = e.phase("forward_rules")
  	if _, err := e.updateForwardRules(networkMap.GetForwardingRules()); err != nil {
@@ -1753,7 +1883,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  		log.Errorf("failed to update forward rules, err: %v", err)
  	}
  	done()
-@@ -1671,6 +1771,19 @@
+@@ -1671,6 +1778,19 @@
  	e.connMgr.SetExcludeList(e.ctx, e.toExcludedLazyPeers(remotePeers))
  	done()
  
@@ -1773,7 +1903,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	e.networkSerial = serial
  
  	return nil
-@@ -2149,6 +2262,9 @@
+@@ -2149,6 +2269,9 @@
  }
  
  func (e *Engine) close() {

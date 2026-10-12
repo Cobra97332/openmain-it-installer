@@ -9,16 +9,18 @@ customer configuration or PR #33 branch was changed.
 
 Executed locally so far:
 - Exact-source patch application PASS.
-- Native Go publisher contracts, including race detector: 9 top-level PASS
+- Native Go publisher contracts, including race detector: 10 top-level PASS
   (including ownerless reset refusal and release restoring stock ACL behavior).
 - Compiled native Go publisher real isolated nft/conntrack packets: valid and
   withdrawn ESTABLISHED UDP/TCP original/reply, new flows, explicit DROP,
   simultaneous update closure, multiple ACLs, strict ports/echo ICMP,
-  RELATED ICMP parent entitlement/revocation, protected owner reload and stale
+  RELATED ICMP parent entitlement/revocation, reachable NOTRACK virtual denial,
+  pre-validation observation/reload and stale/contradictory map refusal,
+  protected owner reload and stale
   serial refusal, overlapping-real-LAN backup path, foreign rules: PASS.
 - Debian 13 Bash syntax/ShellCheck + 222 offline tests PASS.
 - Debian 13 jq-absent bootstrap: 7 tests PASS.
-- Actual QEMU-user ARM64 native Go publisher contracts: 9 top-level PASS.
+- Actual QEMU-user ARM64 native Go publisher contracts: 10 top-level PASS.
 - Mandatory native SIGKILL gate: FAIL, unauthorized packet reaches the LAN.
 - All SIX unchanged legacy P1 kernel gates: FAIL, no assertion was weakened.
 - Native ACL/Engine build locally BLOCKED by public Go module download policy

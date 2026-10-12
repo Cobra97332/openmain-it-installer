@@ -132,6 +132,9 @@ def policy(allow=True,drop=False):
 try:
     policy();request(allowed=False) # native ACL valid, gate still unknown/closed
     command('open');udp_source,udp_target=request();reply(udp_target,udp_source)
+    before=run('nft','-s','-j','list','ruleset')
+    command('absent-opt-in',False)
+    assert run('nft','-s','-j','list','ruleset')==before
     request(src='100.64.0.11',port=51002);request(src='100.64.0.99',port=51003,allowed=False)
     # Synchronous close BEFORE incremental native ACL work, including failure.
     command('close');request(port=51004,allowed=False)

@@ -48,3 +48,13 @@ failures. The current shipped helper is unchanged and unsafe for NEW flows;
 accepted short existing-flow continuation does not waive those failures.
 Candidate restart/controller ordering, physical Pi performance, actual Proxmox
 and real metric-100/200 failover remain unverified. Keep release BLOCKED.
+
+Exact-head fd138d7 Codex review found P1 orphaned open boundary on opt-out:
+https://github.com/Cobra97332/openmain-it-installer/pull/34#discussion_r4250709144
+The follow-up inspects nft tables/chains read-only on ALL unconfigured Linux
+startup paths and refuses orphaned or uninspectable state BEFORE tunnel creation.
+Kernel regression checks absent-opt-in refusal leaves the full ruleset unchanged;
+TUN lifetime tests now also probe no-config startup AFTER actual owner death.
+A native-boundary-only orphan is covered separately. Non-Linux no-opt-in startup
+is preserved. Updated Go/race suite has 14 tests; all suite/CI checks and exact-head
+review are rerun. No old review result is applied to the new commit.

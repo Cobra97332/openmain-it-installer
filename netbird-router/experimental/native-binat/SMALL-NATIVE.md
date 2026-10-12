@@ -50,7 +50,15 @@ nonpersistent TUN. Pre-existing overlays, kernel WireGuard, non-TUN devices,
 persistent TUNs, netstack/non-native firewall backends are refused. TUN type and
 persistence are queried through NetBird's existing rtnetlink library, in the
 current network namespace; inherited sysfs mounts are not used as evidence. No automatic
-mode switch or migration is performed. The source paths are
+mode switch or migration is performed. Even WITHOUT the opt-in variable, the
+patched Linux Engine queries current-namespace nft tables/chains before creating
+any tunnel. An orphaned small/old experimental gate or native BINAT boundary
+refuses startup, including with firewall disabled or another backend. Inspection
+failure refuses startup; nothing is deleted. An incomplete opt-out cannot reuse
+an open orphan. Non-Linux stock startup without opt-in stays unchanged.
+Do not replace this binary with an unpatched stock client while experimental
+kernel state remains: that client has no orphan check. Verified manual cleanup
+is required for rollback/opt-out; it is never an automatic customer migration. The source paths are
 `client/iface/iface_new_linux.go`, `device/kernel_module_linux.go` and
 `device/device_usp_unix.go`; the pinned wireguard-go CreateTUN opens the descriptor.
 

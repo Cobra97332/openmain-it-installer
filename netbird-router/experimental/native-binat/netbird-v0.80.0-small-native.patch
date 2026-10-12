@@ -2,7 +2,7 @@ diff --git a/client/firewall/binat/cmd/small-lab/main.go b/client/firewall/binat
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/cmd/small-lab/main.go
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,190 @@
 +//go:build linux
 +
 +package main
@@ -22,6 +22,18 @@ new file mode 100644
 +)
 +
 +func main() {
++	if os.Getenv("OPENMAIN_SMALL_NO_CONFIG_PROBE") == "1" {
++		if os.Getenv("OPENMAIN_ISOLATED_TEST") != "1" {
++			panic("isolated read-only probe required")
++		}
++		os.Unsetenv("NB_EXPERIMENTAL_BINAT_CONFIG")
++		candidate, err := binat.LoadLabFromEnv()
++		if candidate != nil {
++			panic("unconfigured probe activated a gate")
++		}
++		json.NewEncoder(os.Stdout).Encode(map[string]bool{"Refused": err != nil})
++		return
++	}
 +	interfaces, err := net.Interfaces()
 +	if os.Getenv("OPENMAIN_ISOLATED_TEST") != "1" || err != nil || len(interfaces) != 1 || interfaces[0].Name != "lo" {
 +		panic("fresh isolated lab required")
@@ -123,6 +135,15 @@ new file mode 100644
 +					}
 +				}
 +			}()
++		case "absent-opt-in":
++			previous := os.Getenv("NB_EXPERIMENTAL_BINAT_CONFIG")
++			os.Unsetenv("NB_EXPERIMENTAL_BINAT_CONFIG")
++			candidate, checkErr := binat.LoadLabFromEnv()
++			err = checkErr
++			if candidate != nil {
++				candidate.Release()
++			}
++			os.Setenv("NB_EXPERIMENTAL_BINAT_CONFIG", previous)
 +		case "close":
 +			if g == nil {
 +				err = binat.ErrUnconfirmed
@@ -176,7 +197,7 @@ diff --git a/client/firewall/binat/gate_linux.go b/client/firewall/binat/gate_li
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/gate_linux.go
-@@ -0,0 +1,538 @@
+@@ -0,0 +1,581 @@
 +//go:build linux
 +
 +// Package binat provides only a synchronous availability gate. Native NetBird
@@ -192,6 +213,8 @@ new file mode 100644
 +	"encoding/json"
 +	"errors"
 +	"fmt"
++	nft "github.com/google/nftables"
++	nl "github.com/mdlayher/netlink"
 +	"github.com/vishvananda/netlink"
 +	"io"
 +	"net"
@@ -334,9 +357,13 @@ new file mode 100644
 +	sum := sha256.Sum256(data)
 +	return &Gate{scopes: append([]Scope(nil), items...), run: run, marker: "netbird-native-binat-" + hex.EncodeToString(sum[:])}, nil
 +}
-+func LoadLabFromEnv() (*Gate, error) {
++func LoadLabFromEnv() (*Gate, error) { return loadLabFromEnv(refuseOrphans) }
++func loadLabFromEnv(inspect func() error) (*Gate, error) {
 +	value := os.Getenv("NB_EXPERIMENTAL_BINAT_CONFIG")
 +	if value == "" {
++		if err := inspect(); err != nil {
++			return nil, err
++		}
 +		return nil, nil
 +	}
 +	if value != Root+"/config.json" || os.Getenv("OPENMAIN_ISOLATED_TEST") != "1" {
@@ -715,17 +742,55 @@ new file mode 100644
 +	}
 +	return nil
 +}
++
++// Always read the CURRENT namespace before a no-opt-in Engine can create its
++// tunnel. Refuse rather than modifying any unconfigured/foreign firewall state.
++func refuseOrphans() error {
++	conn, err := nft.New(nft.WithSockOptions(func(c *nl.Conn) error { return c.SetReadDeadline(time.Now().Add(10 * time.Second)) }))
++	if err != nil {
++		return ErrUnconfirmed
++	}
++	tables, err := conn.ListTables()
++	if err != nil {
++		return ErrUnconfirmed
++	}
++	chains, err := conn.ListChains()
++	if err != nil {
++		return ErrUnconfirmed
++	}
++	return orphanedBoundary(tables, chains)
++}
++func orphanedBoundary(tables []*nft.Table, chains []*nft.Chain) error {
++	for _, table := range tables {
++		if table == nil {
++			return ErrUnconfirmed
++		}
++		if table.Family == nft.TableFamilyIPv4 && (table.Name == Table || table.Name == "netbird_binat_experiment_v3") {
++			return errors.New("BINAT orphaned boundary: explicit configuration/verified manual cleanup required")
++		}
++	}
++	for _, chain := range chains {
++		if chain == nil || chain.Table == nil {
++			return ErrUnconfirmed
++		}
++		if chain.Table.Family == nft.TableFamilyIPv4 && chain.Name == "netbird-binat-native" {
++			return errors.New("BINAT orphaned native boundary: configuration required")
++		}
++	}
++	return nil
++}
 diff --git a/client/firewall/binat/gate_linux_test.go b/client/firewall/binat/gate_linux_test.go
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/gate_linux_test.go
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,209 @@
 +//go:build linux
 +
 +package binat
 +
 +import (
 +	"errors"
++	nft "github.com/google/nftables"
 +	"github.com/vishvananda/netlink"
 +	"strings"
 +	"testing"
@@ -893,27 +958,70 @@ new file mode 100644
 +		t.Fatal("cache hid a foreign/unknown layout")
 +	}
 +}
++
++func TestBINATSmallAbsentOptInStillInspectsOrphansBeforeStartup(t *testing.T) {
++	t.Setenv("NB_EXPERIMENTAL_BINAT_CONFIG", "")
++	calls := 0
++	for _, name := range []string{Table, "netbird_binat_experiment_v3"} {
++		gate, err := loadLabFromEnv(func() error {
++			calls++
++			return orphanedBoundary([]*nft.Table{{Name: name, Family: nft.TableFamilyIPv4}}, nil)
++		})
++		if gate != nil || err == nil {
++			t.Fatal("orphaned gate admitted without config")
++		}
++	}
++	if calls != 2 {
++		t.Fatal("missing opt-in skipped inspection")
++	}
++	gate, err := loadLabFromEnv(func() error {
++		return orphanedBoundary([]*nft.Table{{Name: "foreign", Family: nft.TableFamilyIPv4}}, nil)
++	})
++	if gate != nil || err != nil {
++		t.Fatal("ordinary clean startup altered")
++	}
++	if _, err := loadLabFromEnv(func() error { return ErrUnconfirmed }); err == nil {
++		t.Fatal("uninspectable state admitted")
++	}
++}
++func TestBINATSmallNativeOrphanDetectedWithoutGateTable(t *testing.T) {
++	chains := []*nft.Chain{{Name: "netbird-binat-native", Table: &nft.Table{Name: "netbird", Family: nft.TableFamilyIPv4}}}
++	if orphanedBoundary(nil, chains) == nil {
++		t.Fatal("native orphan admitted")
++	}
++	if orphanedBoundary(nil, []*nft.Chain{{Name: "ordinary", Table: &nft.Table{Name: "foreign", Family: nft.TableFamilyIPv4}}}) != nil {
++		t.Fatal("foreign rules rejected")
++	}
++}
 diff --git a/client/firewall/binat/gate_other.go b/client/firewall/binat/gate_other.go
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/gate_other.go
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,33 @@
 +//go:build !linux
 +
 +package binat
 +
-+import "errors"
++import (
++	"errors"
++	"os"
++)
 +
 +type Scope struct{ Virtual, Real, Overlay, LAN string }
 +type Gate struct{}
 +
 +var ErrUnconfirmed = errors.New("BINAT unavailable")
 +
-+func LoadLabFromEnv() (*Gate, error) { return nil, ErrUnconfirmed }
-+func (*Gate) Close() error           { return ErrUnconfirmed }
-+func (*Gate) Open(uint64) error      { return ErrUnconfirmed }
-+func (*Gate) Release()               {}
-+func (*Gate) Scopes() []Scope        { return nil }
++func LoadLabFromEnv() (*Gate, error) {
++	if os.Getenv("NB_EXPERIMENTAL_BINAT_CONFIG") == "" {
++		return nil, nil
++	}
++	return nil, ErrUnconfirmed
++}
++func (*Gate) Close() error      { return ErrUnconfirmed }
++func (*Gate) Open(uint64) error { return ErrUnconfirmed }
++func (*Gate) Release()          {}
++func (*Gate) Scopes() []Scope   { return nil }
 +
 +func (*Gate) Prepare() (uint64, error) { return 0, ErrUnconfirmed }
 +

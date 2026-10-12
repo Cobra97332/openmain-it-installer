@@ -128,6 +128,11 @@ try:
     # Kernel removes the nonpersistent TUN when the owner's last FD disappears.
     assert not any(n['ifname']=='nb0' for n in json.loads(run('ip','-j','link','show')))
     fresh('lp');inject(53999);receive('lp',False)
+    before=run('nft','-s','-j','list','ruleset')
+    probe=subprocess.run(['/native/small-native-lab'],env=dict(os.environ,OPENMAIN_SMALL_NO_CONFIG_PROBE='1'),check=True,capture_output=True,text=True)
+    assert json.loads(probe.stdout).get('Refused'), 'opt-out restart admitted an orphan'
+    assert run('nft','-s','-j','list','ruleset')==before, 'opt-out probe modified firewall state'
+
     assert run('nft','-s','-j','list','table','inet','unrelated')==foreign
     print('PASS: real QEMU nonpersistent TUN + owner UDP transport, valid flow, closed gate, '+('unconfirmed-closure fail-stop' if os.environ.get('OPENMAIN_TUN_CLOSURE_FAILURE')=='1' else 'SIGKILL')+' removes interface and blocks NEW tuple; foreign rules preserved',flush=True)
     print('LIMIT: synthetic plaintext transport, no real NetBird daemon/controller/encryption acceptance',flush=True)

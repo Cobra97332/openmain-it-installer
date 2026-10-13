@@ -1368,7 +1368,7 @@ diff --git a/client/internal/acl/binat_map_linux.go b/client/internal/acl/binat_
 new file mode 100644
 --- /dev/null
 +++ b/client/internal/acl/binat_map_linux.go
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,133 @@
 +//go:build linux
 +
 +package acl
@@ -1417,7 +1417,7 @@ new file mode 100644
 +		if !intersects {
 +			continue
 +		}
-+		if !contained || len(r.SourceRanges) == 0 {
++		if !contained {
 +			return errors.New("BINAT ambiguous route selector")
 +		}
 +		protocol := ""
@@ -1472,6 +1472,9 @@ new file mode 100644
 +		if len(ports) > 0 && protocol != "tcp" && protocol != "udp" {
 +			return errors.New("BINAT ports on unsupported protocol")
 +		}
++		// A complete v0.80.0 map can retain a rule with zero sources after
++		// membership withdrawal. Native applyRouteACL skips it and deletes
++		// the previous backend rule; it is NEVER a wildcard permission.
 +		for _, source := range r.SourceRanges {
 +			prefix, err := netip.ParsePrefix(source)
 +			if err != nil || !prefix.Addr().Is4() || prefix != prefix.Masked() {
@@ -1503,13 +1506,15 @@ diff --git a/client/internal/acl/binat_map_linux_test.go b/client/internal/acl/b
 new file mode 100644
 --- /dev/null
 +++ b/client/internal/acl/binat_map_linux_test.go
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,144 @@
 +//go:build linux
 +
 +package acl
 +
 +import (
++	"errors"
 +	"github.com/netbirdio/netbird/client/firewall/binat"
++	firewall "github.com/netbirdio/netbird/client/firewall/manager"
 +	"github.com/netbirdio/netbird/shared/management/networkmap"
 +	p "github.com/netbirdio/netbird/shared/management/proto"
 +	"github.com/netbirdio/netbird/shared/management/types"
@@ -1599,6 +1604,51 @@ new file mode 100644
 +	span.ProtoReflect().SetUnknown(nil)
 +	if err := ValidateBINATMap(m, scopes); err != nil {
 +		t.Fatal(err)
++	}
++}
++
++type binatEmptySourcesRule struct{}
++
++func (binatEmptySourcesRule) ID() firewall.RuleID { return "previous-permission" }
++
++type binatEmptySourcesBackend struct {
++	firewall.Manager
++	deleted int
++	fail    bool
++}
++
++func (b *binatEmptySourcesBackend) DeleteFilterRule(firewall.Rule) error {
++	b.deleted++
++	if b.fail {
++		return errors.New("synthetic deletion failure")
++	}
++	return nil
++}
++
++func TestBINATSmallNativeZeroSourcesWithdrawsWithoutWildcard(t *testing.T) {
++	scopes := []binat.Scope{{Virtual: "10.80.1.0/24", Real: "192.168.80.0/24", Overlay: "nb0", LAN: "lan0"}}
++	rule := &p.RouteFirewallRule{SourceRanges: nil, Destination: "10.80.1.0/24", Protocol: p.RuleProtocol_ALL, Action: p.RuleAction_ACCEPT, PortInfo: networkmap.GetProtoPortInfo(&types.RouteFirewallRule{})}
++	m := &p.NetworkMap{FirewallRulesIsEmpty: true, RoutesFirewallRules: []*p.RouteFirewallRule{rule}}
++	if err := ValidateBINATMap(m, scopes); err != nil {
++		t.Fatal(err)
++	}
++	for _, fail := range []bool{false, true} {
++		backend := &binatEmptySourcesBackend{fail: fail}
++		manager := NewDefaultManagerForBINAT(backend)
++		old := binatEmptySourcesRule{}
++		manager.routeRules[old.ID()] = old
++		err := manager.applyRouteACLs(m.RoutesFirewallRules, false)
++		if backend.deleted != 1 || (err != nil) != fail {
++			t.Fatal("native withdrawal outcome not confirmed")
++		}
++		if fail && len(manager.routeRules) != 1 || !fail && len(manager.routeRules) != 0 {
++			t.Fatal("native route tracking lost or retained incorrectly")
++		}
++		// Embedded nil Manager panics if any AddFilterRule/wildcard is attempted.
++	}
++	rule.Protocol = p.RuleProtocol_UNKNOWN
++	if ValidateBINATMap(m, scopes) == nil {
++		t.Fatal("empty-source rule bypassed semantic validation")
 +	}
 +}
 diff --git a/client/internal/acl/binat_map_other.go b/client/internal/acl/binat_map_other.go

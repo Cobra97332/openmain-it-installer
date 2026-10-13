@@ -26,7 +26,11 @@ ORIGINAL tuples. This applies to all IPv4 route destinations so a real-LAN rule
 cannot accidentally authorize a different virtual customer destination after
 DNAT. Port remapping/forwarding services are refused, not silently interpreted.
 The pinned controller's exact empty `PortInfo` message means no port
-restriction and is accepted, matching native `convertPortInfo`. Explicit zero
+restriction and is accepted, matching native `convertPortInfo`. A complete map may also retain an empty source list after membership removal:
+the native manager skips that rule and removes its previous grant. Validation
+accepts this zero-member state while still checking all destination/action/port
+semantics; it never interprets missing sources as a wildcard. Deletion failure
+keeps the gate closed. Explicit zero
 ports, invalid ranges and unknown fields remain rejected; no wildcard is inferred
 from an invalid explicit selector. A scoped native POSTROUTING filter before SNAT delegates original and reply
 traffic directly to the native routing ACL chain, then drops unmatched traffic.

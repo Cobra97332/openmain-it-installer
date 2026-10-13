@@ -37,9 +37,12 @@ ACTUALLY EXECUTED IN THIS FOLLOW-UP
 - Mandatory old publisher and small retained-veth owner-death gates: FAIL,
   unauthorized NEW packet. Neither assertion changed or waived.
 - All SIX unchanged legacy P1 packet counterexamples: FAIL, as previously.
-- QEMU VM / actual TUN lifetime / synthetic BIOS+UEFI tests rerun; exact final
-  results are recorded in the PR comment after completion. VM still fails
-  retained P1 gates. No official Debian Installer or Proxmox/Pi certification.
+- Initial QEMU VM rerun: FAIL before kernel tests because the fixture packager
+  omitted the NEW lab-contract source assets. Fixed by copying only the five
+  required public fixtures; no assertion was skipped. Initial synthetic
+  BIOS+UEFI boots: PASS. Corrected VM/TUN/BIOS/UEFI rerun results follow in PR.
+  No VM/TUN result is claimed from that early failure, and no official Debian
+  Installer or Proxmox/Pi certification is claimed.
 
 NOT EXECUTED / BLOCKERS
 The REAL patched ./client build was attempted and failed at the module download

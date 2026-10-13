@@ -25,6 +25,15 @@ traffic = load('traffic')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_unconfirmed_policy_error_is_classified_without_private_context(self):
+        text = 'BINAT native gate closure unconfirmed synthetic-private-material'
+        with patch.object(traffic.Path, 'exists', return_value=True), \
+             patch.object(traffic.Path, 'read_text', return_value=text), \
+             patch.object(traffic, 'inspect', return_value={'serial': 17, 'open': False, 'tun_exists': True}):
+            value = traffic.client_diagnostics()
+        self.assertTrue(value['binat_unconfirmed_error'])
+        self.assertNotIn('synthetic-private-material', json.dumps(value))
+
     def test_successful_native_publication_is_not_diagnosed_as_an_error(self):
         text = 'BINAT native kernel policy applied locally: serial=17 controller_ack=false'
         with patch.object(traffic.Path, 'exists', return_value=True), \

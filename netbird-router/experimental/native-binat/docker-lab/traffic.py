@@ -47,7 +47,7 @@ def client_diagnostics():
                                'BINAT unsupported route action'),
         'binat_map_selector_error': ('BINAT invalid route destination', 'BINAT invalid port',
                                    'BINAT incomplete port selector', 'BINAT unknown port selector', 'BINAT ports on unsupported protocol',
-                                   'BINAT invalid source'),
+                                   'BINAT invalid source', 'BINAT unknown route policy fields'),
         'binat_kernel_operation_error': ('BINAT gate kernel operation failed', 'BINAT opening failed'),
         'sync_handler_error': ('failed handling an update message received from Management Service:',),
         'binat_native_apply_error': ('BINAT native ACL apply failed',),
@@ -92,8 +92,15 @@ def foreign_digest(rules):
     return hashlib.sha256(json.dumps(canonical(rules), sort_keys=True).encode()).hexdigest()
 
 
+def foreign_state():
+    external, filter_table = nft('inet lab_foreign'), nft('ip filter')
+    if external is None or filter_table is None:
+        return None
+    return {'external': external, 'filter': filter_table}
+
+
 def record_foreign_reference():
-    rules = nft('inet lab_foreign')
+    rules = foreign_state()
     if rules is None:
         raise RuntimeError('lab_foreign_reference_missing')
     fd = os.open(FOREIGN_REFERENCE, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -122,7 +129,7 @@ def inspect():
     gate = nft('ip netbird_binat_native_gate_v1')
     ready = [] if gate is None else [x['rule'] for x in gate['nftables']
             if 'rule' in x and x['rule'].get('chain') == 'ready']
-    foreign = nft('inet lab_foreign')
+    foreign = foreign_state()
     nat = nft('ip lab_translation')
     # Only generic proof data. Never emit the client log or profile content.
     return {'serial': int(serials[-1]) if serials else -1,

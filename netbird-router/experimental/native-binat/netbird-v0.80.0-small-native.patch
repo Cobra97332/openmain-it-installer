@@ -1158,7 +1158,18 @@ diff --git a/client/firewall/nftables/chains_linux.go b/client/firewall/nftables
  	r.addPostroutingRules()
  
  	if err := r.conn.Flush(); err != nil {
-@@ -289,6 +311,12 @@
+@@ -195,6 +217,10 @@
+ }
+ 
+ func (r *family) acceptFilterTableRules(includeForward bool) error {
++	if binat.Active() {
++		// Preserve the iptables-backed filter table and its nft fallback too.
++		return nil
++	}
+ 	if r.filterTable == nil {
+ 		return nil
+ 	}
+@@ -289,6 +315,12 @@
  // acceptExternalChainsRules adds accept rules to external chains (non-netbird, non-iptables tables).
  // It dynamically finds chains at call time to handle chains that may have been created after startup.
  func (r *family) acceptExternalChainsRules(includeForward bool) error {
@@ -1171,6 +1182,18 @@ diff --git a/client/firewall/nftables/chains_linux.go b/client/firewall/nftables
  	chains := r.findExternalChains()
  	if len(chains) == 0 {
  		return nil
+@@ -416,6 +448,11 @@
+ }
+ 
+ func (r *family) removeAcceptFilterRules() error {
++	if binat.Active() {
++		// This mode inserted no passthroughs; preserve pre-existing matching
++		// external/filter rules during shutdown as well.
++		return nil
++	}
+ 	var merr *multierror.Error
+ 
+ 	if err := r.removeFilterTableRules(); err != nil {
 diff --git a/client/firewall/nftables/filter_linux.go b/client/firewall/nftables/filter_linux.go
 --- a/client/firewall/nftables/filter_linux.go
 +++ b/client/firewall/nftables/filter_linux.go
@@ -1368,7 +1391,7 @@ diff --git a/client/internal/acl/binat_map_linux.go b/client/internal/acl/binat_
 new file mode 100644
 --- /dev/null
 +++ b/client/internal/acl/binat_map_linux.go
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,136 @@
 +//go:build linux
 +
 +package acl
@@ -1397,6 +1420,9 @@ new file mode 100644
 +	}
 +
 +	for _, r := range m.RoutesFirewallRules {
++		if r != nil && len(r.ProtoReflect().GetUnknown()) != 0 {
++			return errors.New("BINAT unknown route policy fields")
++		}
 +		if r == nil || r.IsDynamic || len(r.Domains) > 0 || r.CustomProtocol != 0 {
 +			return errors.New("BINAT dynamic/custom route unsupported")
 +		}
@@ -1506,7 +1532,7 @@ diff --git a/client/internal/acl/binat_map_linux_test.go b/client/internal/acl/b
 new file mode 100644
 --- /dev/null
 +++ b/client/internal/acl/binat_map_linux_test.go
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,158 @@
 +//go:build linux
 +
 +package acl
@@ -1649,6 +1675,20 @@ new file mode 100644
 +	rule.Protocol = p.RuleProtocol_UNKNOWN
 +	if ValidateBINATMap(m, scopes) == nil {
 +		t.Fatal("empty-source rule bypassed semantic validation")
++	}
++}
++
++func TestBINATSmallNativeUnknownRouteFields(t *testing.T) {
++	scopes := []binat.Scope{{Virtual: "10.80.1.0/24", Real: "192.168.80.0/24", Overlay: "nb0", LAN: "lan0"}}
++	rule := &p.RouteFirewallRule{SourceRanges: []string{"100.64.0.10/32"}, Destination: "10.80.1.0/24", Protocol: p.RuleProtocol_ALL, Action: p.RuleAction_ACCEPT}
++	m := &p.NetworkMap{FirewallRulesIsEmpty: true, RoutesFirewallRules: []*p.RouteFirewallRule{rule}}
++	rule.ProtoReflect().SetUnknown([]byte{0x98, 0x06, 0x01})
++	if ValidateBINATMap(m, scopes) == nil {
++		t.Fatal("unknown route rule fields accepted")
++	}
++	rule.ProtoReflect().SetUnknown(nil)
++	if err := ValidateBINATMap(m, scopes); err != nil {
++		t.Fatal(err)
 +	}
 +}
 diff --git a/client/internal/acl/binat_map_other.go b/client/internal/acl/binat_map_other.go

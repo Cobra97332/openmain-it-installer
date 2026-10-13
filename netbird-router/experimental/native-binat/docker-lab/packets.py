@@ -80,6 +80,10 @@ def probe(lab, peer='peer', destination='198.18.10.100', allowed=True):
             session = Session(lab, peer, destination, proto)
             try:
                 reply = session.exchange()
+            except RuntimeError as error:
+                if not allowed or str(error) != 'lab_packet_probe_timeout':
+                    raise
+                reply = False
             finally:
                 session.close()
             if reply == allowed:

@@ -25,6 +25,29 @@ traffic = load('traffic')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_positive_timeout_is_bounded_but_negative_timeout_is_not_accepted(self):
+        slow, tcp, udp = Mock(), Mock(), Mock()
+        slow.exchange.side_effect = RuntimeError('lab_packet_probe_timeout')
+        tcp.exchange.return_value = udp.exchange.return_value = True
+        with patch.object(packets, 'Session', side_effect=[slow, tcp, udp]), patch.object(packets.time, 'sleep'):
+            packets.probe('isolated-lab')
+        with patch.object(packets, 'Session', return_value=slow):
+            with self.assertRaisesRegex(RuntimeError, '^lab_packet_probe_timeout$'):
+                packets.probe('isolated-lab', allowed=False)
+
+    def test_foreign_fixture_has_real_hooks_and_filter_table(self):
+        text = container.translation_script('198.18.10.0/24', 'eth1')
+        self.assertIn('chain marker { type filter hook forward', text)
+        self.assertIn('table ip filter', text)
+        self.assertIn('chain INPUT { type filter hook input', text)
+        self.assertIn('chain FORWARD { type filter hook forward', text)
+
+    def test_foreign_reference_includes_filter_table_mutations(self):
+        with patch.object(traffic, 'nft', side_effect=[{'nftables': []}, None]):
+            self.assertIsNone(traffic.foreign_state())
+        with patch.object(traffic, 'nft', side_effect=[{'nftables': []}, {'nftables': []}]):
+            self.assertEqual(set(traffic.foreign_state()), {'external', 'filter'})
+
     def test_unauthorized_packet_is_never_retried_until_denial(self):
         session = Mock()
         session.exchange.return_value = True
@@ -55,7 +78,7 @@ class NativeDockerLabTests(unittest.TestCase):
         initial = {'nftables': [{'table': {'name': 'lab_foreign', 'family': 'inet'}}]}
         changed = {'nftables': initial['nftables'] + [{'rule': {'chain': 'forward', 'expr': [{'accept': None}]}}]}
         with tempfile.TemporaryDirectory() as d, patch.object(traffic, 'FOREIGN_REFERENCE', Path(d) / 'reference'):
-            with patch.object(traffic, 'nft', return_value=initial):
+            with patch.object(traffic, 'foreign_state', return_value=initial):
                 traffic.record_foreign_reference()
             self.assertTrue(traffic.foreign_matches_reference(initial))
             self.assertFalse(traffic.foreign_matches_reference(changed))
@@ -68,7 +91,7 @@ class NativeDockerLabTests(unittest.TestCase):
             target.write_text('unrelated')
             traffic.FOREIGN_REFERENCE.symlink_to(target)
             self.assertFalse(traffic.foreign_matches_reference({'nftables': []}))
-            with patch.object(traffic, 'nft', return_value={'nftables': []}):
+            with patch.object(traffic, 'foreign_state', return_value={'nftables': []}):
                 with self.assertRaises(FileExistsError):
                     traffic.record_foreign_reference()
             self.assertEqual(target.read_text(), 'unrelated')

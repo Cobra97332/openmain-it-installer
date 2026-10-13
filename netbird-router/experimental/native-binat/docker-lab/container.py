@@ -256,7 +256,15 @@ def translation_script(virtual, dev):
  }}
 }}
 table inet lab_foreign {{
- chain marker {{
+ chain marker {{ type filter hook forward priority 0; policy accept;
+  ip saddr 203.0.113.250 counter drop
+ }}
+}}
+table ip filter {{
+ chain INPUT {{ type filter hook input priority 0; policy accept;
+  ip saddr 203.0.113.250 counter drop
+ }}
+ chain FORWARD {{ type filter hook forward priority 0; policy accept;
   ip saddr 203.0.113.250 counter drop
  }}
 }}

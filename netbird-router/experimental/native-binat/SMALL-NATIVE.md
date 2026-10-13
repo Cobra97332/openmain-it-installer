@@ -35,7 +35,8 @@ ports, invalid ranges and unknown fields remain rejected; no wildcard is inferre
 from an invalid explicit selector. A scoped native POSTROUTING filter before SNAT delegates original and reply
 traffic directly to the native routing ACL chain, then drops unmatched traffic.
 The native ESTABLISHED shortcut excludes the configured virtual prefixes. In opted-in mode NetBird's automatic external-chain passthrough writer is
-suppressed, including monitor reconciliation. Existing external INPUT/FORWARD
+suppressed for external nftables chains AND the iptables-backed filter table,
+including monitor reconciliation and shutdown cleanup. Existing external INPUT/FORWARD
 rules remain authoritative constraints too; administrators must explicitly
 permit intended traffic where those rules would otherwise drop it. Native
 INPUT rules, foreign tables and unconfigured clients retain their usual behavior.

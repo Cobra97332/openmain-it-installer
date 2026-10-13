@@ -74,6 +74,35 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash tests/check-native-binat-patch.sh small
 
+      - name: Build isolated real NetBird lab tools
+        if: ${{ !cancelled() }}
+        run: >-
+          docker build -f netbird-router/experimental/native-binat/docker-lab/Dockerfile.tools
+          -t openmain-native-lab-tools:debian13 .
+      - name: Real version-pinned controller TLS, bootstrap and API contract (no client proof)
+        if: ${{ !cancelled() }}
+        run: |
+          docker pull netbirdio/netbird-server:0.80.0@sha256:05b3d8d6d056e5062a2965d4d6e5d6d83f09f2bf9133947a8e5972e0e0e7a261
+          OPENMAIN_ISOLATED_TEST=1 python3 netbird-router/experimental/native-binat/docker-lab/lab.py \
+            --controller-only --report "$RUNNER_TEMP/native-controller.json"
+      - name: Build actual patched NetBird v0.80.0 CLI and Engine
+        if: ${{ !cancelled() }}
+        run: >-
+          docker build -f netbird-router/experimental/native-binat/docker-lab/Dockerfile.client
+          -t openmain-native-lab-client:0.80.0-small .
+      - name: Mandatory real client integration and packet gates (incomplete gates block release)
+        if: ${{ !cancelled() }}
+        run: >-
+          OPENMAIN_ISOLATED_TEST=1 python3 netbird-router/experimental/native-binat/docker-lab/lab.py
+          --report "$RUNNER_TEMP/native-clients.json"
+      - name: Preserve sanitized real-lab reports only
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-lab-reports-${{ github.event_name }}
+          path: ${{ runner.temp }}/native-*.json
+          if-no-files-found: error
+
   platform-lab:
     runs-on: ubuntu-latest
     timeout-minutes: 30

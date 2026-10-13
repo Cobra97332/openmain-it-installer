@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+FROM golang:1.26.7-bookworm AS build
+WORKDIR /src
+RUN --mount=type=secret,id=ca,target=/run/build-ca,required=false \
+    if test -f /run/build-ca; then export CURL_CA_BUNDLE=/run/build-ca; fi; \
+    curl --fail --silent --show-error --location \
+      https://codeload.github.com/netbirdio/netbird/tar.gz/refs/tags/v0.80.0 -o /tmp/source.tgz \
+    && echo 'ab453b7d015fd657c912c40986868784f77c3460f296dc07bc2c7f07f4bce7b7  /tmp/source.tgz' | sha256sum -c - \
+    && tar -xzf /tmp/source.tgz --strip-components=1 -C /src && rm /tmp/source.tgz
+COPY netbird-router/experimental/native-binat/netbird-v0.80.0-small-native.patch /tmp/native.patch
+RUN git apply --check /tmp/native.patch && git apply /tmp/native.patch
+ARG TARGETARCH
+RUN --mount=type=secret,id=ca,target=/run/build-ca,required=false \
+    --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    if test -f /run/build-ca; then export SSL_CERT_FILE=/run/build-ca; fi; \
+    CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -buildvcs=false \
+      -ldflags='-X github.com/netbirdio/netbird/version.version=0.80.0' \
+      -o /out/netbird ./client \
+    && sha256sum /tmp/native.patch >/out/patch.sha256 \
+    && printf '%s\n' fca64287cf51a85552a41b022013abbfdb335452 >/out/upstream.sha
+FROM openmain-native-lab-tools:debian13
+COPY --from=build /out /opt/native
+# This is the real client CLI/Engine, NOT cmd/small-lab.
+ENTRYPOINT ["python3", "/opt/lab/container.py"]

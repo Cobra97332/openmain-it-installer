@@ -122,3 +122,16 @@ systemd restart with the same identity, and real 100/200 failover. Verify every
 restart gets a fresh authoritative map before allowing a new flow. Verify no
 configuration-only message leaves an unexplained permanent outage. Measure Pi
 throughput/CPU and document the service-exit availability tradeoff.
+
+## Executable Docker controller/client laboratory
+
+See `docker-lab/RUNBOOK.txt` and `docker-lab/lab.py`. The version-pinned real
+combined controller, verified lab TLS, initial owner/PAT, synthetic one-off keys
+and actual DROP/port API contract have now run successfully in isolated Docker.
+The preferred small-patch REAL client Dockerfile and two overlapping LANs with
+two primary/backup pairs are provided. No callbacks or small-lab driver substitute
+for that client. Full client/Engine packet acceptance is **not yet demonstrated**:
+the local Go build is blocked by dependency-download policy, and required
+adversarial fault injectors remain incomplete. The full command fails for a
+missing real image or an incomplete gate; controller-only success never grants
+release. New CI stages run both paths while keeping every earlier P1 gate.

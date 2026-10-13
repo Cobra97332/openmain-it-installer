@@ -1,0 +1,136 @@
+REAL NETBIRD LAB — EXPERIMENTAL / PRODUCTION RELEASE BLOCKED
+
+Scope: PR #34 only, based on 5afea91b15de3fe6c19af4b7455bceb89f66ae55.
+The small native patch is unchanged. No installer integration, migration or
+production image is supplied. The old helper and all its security tests remain.
+
+WHAT THIS LAB IS
+The controller is the official combined management/signal/relay/STUN server
+0.80.0, pinned by digest in lab.py. Version is checked through its actual API.
+Client build uses the verified v0.80.0 archive, the small patch and REAL ./client
+CLI/Engine. It never substitutes the synthetic cmd/small-lab packet driver.
+
+Topology:
+  control (internal): controller.lab.test, peer, probe, four routers, tools
+  LAN A (internal): primary-a, backup-a, lan-a (192.168.88.100)
+  LAN B (internal): primary-b, backup-b, lan-b (192.168.88.100)
+  virtual A = 198.18.10.0/24; virtual B = 198.18.20.0/24
+  primary = 192.168.88.1, metric 100; backup = .3, metric 200
+
+Four router namespaces are intentional. One pair per customer prevents the
+identical real prefixes from sharing a Linux routing table. Docker transport
+IPAM uses three distinct subnets; real customer addresses are secondary addresses
+inside separate namespaces. The Docker host gets no overlapping customer route.
+Two endpoint containers serve actual TCP/UDP echo sockets. They are LAN models,
+not a simulated NetBird client/management callback.
+
+All runtime networks are internal, with no host network, published ports, Docker
+socket mounts, external IdP, production DNS or customer profiles. Runtime proxy
+variables are explicitly empty. No external ACL copier/timer runs. Only the
+native Engine authorizes traffic; laboratory nft rules perform DNAT/SNAT only.
+NetBird clients get NET_ADMIN, NET_RAW, MKNOD and access only to device c10:200.
+No SYS_ADMIN/privileged container is needed. Geo databases/updates and telemetry
+are disabled via upstream settings to avoid online initialization; this does
+not disable firewall, policies, identity validation or TLS. Geo posture is not
+part of this lab's policy coverage.
+
+Lab CA, relay/datastore secrets, initial owner password, PAT and one-off setup
+keys are generated anew. Config/key files are root-owned 0600 under 0700 private
+directories. Each peer receives only its own setup-key file. API response bodies,
+keys and profile logs are never printed/uploaded. Runtime Docker logs are disabled;
+the client keeps a private tmpfs log, queried only for generic local serials.
+Controller and client identities live only in disposable tmpfs. Cleanup removes
+the exact generated Compose project and lab credentials, not unrelated objects.
+The sanitized JSON report is 0600. If cleanup fails, the command fails and reports
+cleanup_complete=false. Do not upload private working directories or raw logs.
+
+LOCAL RUN (DISPOSABLE LINUX MACHINE ONLY)
+Run from the repository root with Docker/Compose v2 and a TUN-capable kernel.
+Builds need ordinary public Debian, Docker Hub, GitHub and Go-module access.
+During managed cloud builds pass the session CA as a BuildKit secret; never COPY
+it into the image or disable TLS verification. Example optional addition to BOTH
+build commands: --secret id=ca,src=/etc/ssl/certs/ca-certificates.crt
+
+  docker build -f netbird-router/experimental/native-binat/docker-lab/Dockerfile.tools \
+    -t openmain-native-lab-tools:debian13 .
+  docker pull netbirdio/netbird-server:0.80.0@sha256:05b3d8d6d056e5062a2965d4d6e5d6d83f09f2bf9133947a8e5972e0e0e7a261
+  docker build -f netbird-router/experimental/native-binat/docker-lab/Dockerfile.client \
+    -t openmain-native-lab-client:0.80.0-small .
+  OPENMAIN_ISOLATED_TEST=1 python3 netbird-router/experimental/native-binat/docker-lab/lab.py \
+    --report /tmp/openmain-native-clients.json
+
+Every invocation creates a random private work directory/project. Do not rerun
+into an existing report. No automatic restart or cached setup-key re-enrollment
+is performed. The three specified Docker transport subnets must be unused by
+other Docker networks; a collision is a safe startup failure, not a reason to
+alter existing networks. Run one lab at a time on the disposable test host.
+
+A controller-only command is separately available:
+  OPENMAIN_ISOLATED_TEST=1 python3 netbird-router/experimental/native-binat/docker-lab/lab.py \
+    --controller-only --report /tmp/openmain-native-controller.json
+This can succeed while real_clients_executed=false and release=blocked. It proves
+TLS/bootstrap/API semantics ONLY, never native ACL/kernel/client acceptance.
+
+ACTUAL CLIENT PACKET GATES AND LIMITS
+packets.py uses actual sockets through real client WireGuard/Engine, actual
+controller group/policy writes and the native ready chain. It requires a NEW
+local Engine publication serial after a controller mutation AND an open live
+kernel readiness chain; the old successful serial cannot satisfy withdrawal.
+It does not forge a NetworkMap or use synthetic native policy callbacks.
+
+Implemented runner cases: two overlapping LAN paths, unauthorized NEW tuples,
+TCP/UDP established request/echo tuples, membership withdrawal/restoration,
+mutation after the last observation, explicit DROP, foreign-rule fingerprint,
+primary selection and observed automatic backup use with elapsed time/counters.
+These cases HAVE NOT yet been run with the patched client in this cloud. Packet
+denial alone also does not distinguish native ACL denial from an unavailable
+peer/route; a complete proof must include native counters and packet capture.
+Echo-based request denial does NOT prove unsolicited established reply denial.
+
+REMAINING MANDATORY REAL-CLIENT GATES
+The full command returns nonzero while any REQUIRED entry lacks real evidence.
+Currently unimplemented gates are explicitly blocked:mandatory_gate_not_implemented,
+not skipped, expected failures or passes. The runner is an incomplete acceptance
+suite, not certification. Finish these before changing release=blocked:
+- RELATED-ICMP from controlled LAN sockets and separately reply-only TCP/UDP;
+- ICMP, precise TCP/UDP port/range restrictions, multiple independent sources;
+- concurrent controller updates with actual Engine reset/firewall rebuild;
+- stale/incomplete authenticated NetworkMaps and interrupted publication (needs
+  an isolated protocol/fault injector; no callback-only replacement is valid);
+- unconfirmed readback/ACK and missing native tables, with actual fatal/TUN loss;
+- hard process death, NEW-flow denial, same-identity restart with fresh map;
+- actual Engine restart without opt-in while old gate/native boundary exists;
+- complete failover AND primary return, active connections, permissions and
+  precise loss interval; current backup observation is only partial evidence;
+- foreign hooked DROP packet effects (fingerprint preservation alone is weaker).
+
+Controller write success / delivery / local kernel publication are distinct.
+The local marker says controller_ack=false. NetBird 0.80 does NOT provide a
+distributed controller acknowledgement of per-router kernel publication. Do not
+claim immediate global revocation or zero in-flight packet drainage. Brief
+existing-flow drainage is accepted by the operating model, but NEW-flow stale
+grants, unknown-policy admission and owner-death bypass are not acceptable.
+
+CI AND EXISTING GATES
+The existing six CI checks continue, including unchanged SIX legacy P1 probes,
+old publisher owner-death, small persistent-veth owner-death, QEMU VM/BIOS/UEFI,
+ARM64 and native builds. New real-controller and full-client steps execute even
+after earlier failures. Only sanitized JSON reports are archived. Missing client
+image or mandatory real gate failure is nonzero. Never equate a controller-only,
+Go-core, synthetic-policy/TUN or mocked-platform PASS with real Engine acceptance.
+
+DELIVERY IMAGE ASSESSMENT
+Dockerfile.client supports TARGETARCH=amd64/arm64, CGO-disabled real Linux CLI;
+the runtime tools/base image must first be built for that SAME platform. Build
+separately on native AMD64/ARM64 builders or a correctly configured Buildx builder.
+No tested multi-arch manifest, production image or registry release exists yet.
+Before delivery: pin runtime/toolchain digests, retain license notices/SBOM,
+sign artifacts, verify daemon signals, TUN lifetime and reboot behavior, benchmark
+userspace WG on Pi, define isolated/customer-network attachment and safe rollback.
+Do not use a stock unpatched client over existing experimental kernel state.
+Image packaging does not fix missing kernel/controller security evidence.
+
+Still required hardware/platform acceptance: real Debian-13 VM reboot/netinstall,
+unprivileged Proxmox LXC/VM TUN+nft permissions, Pi 3/4/5 ARM64 throughput/CPU and
+interface/failover behavior. QEMU-user is not Pi hardware; synthetic ISO boots
+are not real Debian Installer disk installation. No CT110/111 is used.

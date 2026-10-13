@@ -97,6 +97,8 @@ def acceptance(lab):
     sessions = []
     try:
         initial = wait_publication(lab, {r: {'serial': -1} for r in routers})
+        if not all(s['foreign_matches_initial'] for s in initial.values()):
+            raise RuntimeError('lab_foreign_rules_changed')
         for dest in ('198.18.10.100', '198.18.20.100'):
             probe(lab, destination=dest)
             probe(lab, peer='probe', destination=dest, allowed=False)
@@ -147,7 +149,7 @@ def acceptance(lab):
         if any(s.exchange() for s in sessions):
             raise RuntimeError('lab_existing_permission_survived_drop')
         result['new_drop'] = 'pass'
-        if all(observe(lab, r)['foreign_digest'] == initial[r]['foreign_digest'] for r in routers):
+        if all(observe(lab, r)['foreign_matches_initial'] for r in routers):
             result['foreign_rules_preserved'] = 'pass'
         else:
             raise RuntimeError('lab_foreign_rules_changed')

@@ -34,7 +34,7 @@ def safe_summary(report, status):
     errors = {'RuntimeError', 'ValueError', 'OSError', 'TimeoutExpired',
               'patched_client_image_missing', 'unexpected_initializer_output'}
     # Worker classes are fixed lab diagnostics, not upstream response text.
-    errors.update({'lab_local_' + c + '_failed' for c in ('ip', 'nft', 'openssl')})
+    errors.update({'lab_local_' + c + '_failed' for c in ('ip', 'nft', 'openssl', 'python3')})
     errors.update({'lab_wait_timeout', 'lab_lan_interface_ambiguous',
                    'lab_client_build_mismatch', 'lab_client_upstream_mismatch',
                    'lab_setup_pat_missing', 'lab_setup_key_missing', 'lab_controller_not_pristine',
@@ -43,7 +43,7 @@ def safe_summary(report, status):
                    'lab_packet_permission_mismatch', 'lab_established_connection_missing',
                    'lab_existing_permission_survived_local_withdrawal', 'lab_existing_permission_survived_drop',
                    'lab_controller_loss_gate_remained_open', 'lab_controller_loss_existing_flow_allowed',
-                   'lab_controller_reconnect_missing', 'lab_foreign_rules_changed', 'lab_primary_not_selected', 'lab_automatic_backup_failover_missing'})
+                   'lab_controller_reconnect_missing', 'lab_foreign_reference_missing', 'lab_foreign_rules_changed', 'lab_primary_not_selected', 'lab_automatic_backup_failover_missing'})
     error = report.get('error_class')
     if error is not None and error not in errors and not re.fullmatch(
             r'(?:lab_api_http_[1-5][0-9]{2}|docker_operation_failed:(?:run|exec|compose|image))', str(error)):

@@ -285,6 +285,8 @@ def start(name, patch_hash, resume=False):
                 {'Virtual': virtual, 'Real': '192.168.88.0/24', 'Overlay': 'wt0', 'LAN': dev}]))
             # Translation only; there is NO added filter ACCEPT or ACL copy.
             cmd('nft', '-f', '-', data=translation_script(virtual, dev))
+            # Capture BEFORE the native Engine can alter any foreign chain.
+            cmd('python3', '/opt/lab/traffic.py', 'foreign-reference')
         env['NB_EXPERIMENTAL_BINAT_CONFIG'] = '/run/netbird-binat-small-lab/config.json'
     args = ['/opt/native/netbird', 'up', '--foreground-mode', '--management-url', BASE,
             '--interface-name', 'wt0', '--disable-dns', '--hostname', name,

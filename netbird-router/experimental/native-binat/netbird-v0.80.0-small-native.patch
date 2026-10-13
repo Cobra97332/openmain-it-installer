@@ -1158,6 +1158,19 @@ diff --git a/client/firewall/nftables/chains_linux.go b/client/firewall/nftables
  	r.addPostroutingRules()
  
  	if err := r.conn.Flush(); err != nil {
+@@ -289,6 +311,12 @@
+ // acceptExternalChainsRules adds accept rules to external chains (non-netbird, non-iptables tables).
+ // It dynamically finds chains at call time to handle chains that may have been created after startup.
+ func (r *family) acceptExternalChainsRules(includeForward bool) error {
++	if binat.Active() {
++		// Experimental BINAT must honor existing firewall policy. The native
++		// routing ACL is authoritative; do not insert bypasses into foreign
++		// INPUT/FORWARD chains, including on later monitor reconciliation.
++		return nil
++	}
+ 	chains := r.findExternalChains()
+ 	if len(chains) == 0 {
+ 		return nil
 diff --git a/client/firewall/nftables/filter_linux.go b/client/firewall/nftables/filter_linux.go
 --- a/client/firewall/nftables/filter_linux.go
 +++ b/client/firewall/nftables/filter_linux.go

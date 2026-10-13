@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import stat
 import socket
 import subprocess
 import sys
@@ -82,6 +83,37 @@ def client_diagnostics():
             **{k: any(n in text for n in v) for k, v in needles.items()}}
 
 
+FOREIGN_REFERENCE = Path('/run/lab-foreign-reference')
+
+
+def foreign_digest(rules):
+    return hashlib.sha256(json.dumps(canonical(rules), sort_keys=True).encode()).hexdigest()
+
+
+def record_foreign_reference():
+    rules = nft('inet lab_foreign')
+    if rules is None:
+        raise RuntimeError('lab_foreign_reference_missing')
+    fd = os.open(FOREIGN_REFERENCE, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        f.write(foreign_digest(rules))
+
+
+def foreign_matches_reference(rules):
+    if rules is None:
+        return False
+    try:
+        fd = os.open(FOREIGN_REFERENCE, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'r') as f:
+            info = os.fstat(f.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600:
+                return False
+            value = f.read(65)
+        return bool(re.fullmatch('[a-f0-9]{64}', value)) and value == foreign_digest(rules)
+    except (OSError, ValueError):
+        return False
+
+
 def inspect():
     text = Path('/run/lab-client.log').read_text() if Path('/run/lab-client.log').exists() else ''
     serials = re.findall(r'BINAT native kernel policy applied locally: serial=(\d+) controller_ack=false', text)
@@ -97,7 +129,8 @@ def inspect():
         # sysfs can refer to the outer namespace; use actual rtnetlink instead.
         'tun_exists': subprocess.run(['ip', 'link', 'show', 'dev', 'wt0'],
                                     capture_output=True, timeout=10).returncode == 0,
-        'foreign_digest': hashlib.sha256(json.dumps(canonical(foreign), sort_keys=True).encode()).hexdigest(),
+        'foreign_digest': foreign_digest(foreign),
+        'foreign_matches_initial': foreign_matches_reference(foreign),
         'dnat_packets': sum(expr['counter']['packets'] for obj in (nat or {}).get('nftables', [])
                             for expr in obj.get('rule', {}).get('expr', []) if 'counter' in expr
                             and obj.get('rule', {}).get('chain') == 'dn')}
@@ -124,7 +157,10 @@ def socket_session(host, protocol):
 
 
 def main():
-    if sys.argv[1] == 'diagnostics':
+    if sys.argv[1] == 'foreign-reference':
+        record_foreign_reference()
+        print('{}')
+    elif sys.argv[1] == 'diagnostics':
         print(json.dumps(client_diagnostics()))
     elif sys.argv[1] == 'inspect':
         print(json.dumps(inspect()))

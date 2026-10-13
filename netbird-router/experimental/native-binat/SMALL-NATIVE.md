@@ -30,7 +30,10 @@ restriction and is accepted, matching native `convertPortInfo`. Explicit zero
 ports, invalid ranges and unknown fields remain rejected; no wildcard is inferred
 from an invalid explicit selector. A scoped native POSTROUTING filter before SNAT delegates original and reply
 traffic directly to the native routing ACL chain, then drops unmatched traffic.
-The native ESTABLISHED shortcut excludes the configured virtual prefixes. Native
+The native ESTABLISHED shortcut excludes the configured virtual prefixes. In opted-in mode NetBird's automatic external-chain passthrough writer is
+suppressed, including monitor reconciliation. Existing external INPUT/FORWARD
+rules remain authoritative constraints too; administrators must explicitly
+permit intended traffic where those rules would otherwise drop it. Native
 INPUT rules, foreign tables and unconfigured clients retain their usual behavior.
 
 A small separate scope-bound readiness gate starts CLOSED, closes before native
@@ -156,3 +159,8 @@ ARM64 kernel roundtrip under QEMU-user FAILED: it does not support
 NETLINK_NETFILTER sockets. ARM64 ABI byte tests run under QEMU-user; they are
 NOT ARM kernel/client proof. Full ARM64 VM/hardware kernel acceptance remains
 required and production release remains BLOCKED.
+
+The real-client lab captures a protected canonical foreign-table reference
+BEFORE starting the Engine. It checks that reference after first publication
+and later changes, not merely against a post-start snapshot. Symlinks, writable
+or missing references are refused; no automatic repair/removal is performed.

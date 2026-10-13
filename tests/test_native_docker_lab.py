@@ -25,6 +25,28 @@ traffic = load('traffic')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_foreign_reference_detects_startup_changes_not_only_later_changes(self):
+        initial = {'nftables': [{'table': {'name': 'lab_foreign', 'family': 'inet'}}]}
+        changed = {'nftables': initial['nftables'] + [{'rule': {'chain': 'forward', 'expr': [{'accept': None}]}}]}
+        with tempfile.TemporaryDirectory() as d, patch.object(traffic, 'FOREIGN_REFERENCE', Path(d) / 'reference'):
+            with patch.object(traffic, 'nft', return_value=initial):
+                traffic.record_foreign_reference()
+            self.assertTrue(traffic.foreign_matches_reference(initial))
+            self.assertFalse(traffic.foreign_matches_reference(changed))
+            traffic.FOREIGN_REFERENCE.chmod(0o644)
+            self.assertFalse(traffic.foreign_matches_reference(initial))
+
+    def test_foreign_reference_cannot_be_overwritten_or_follow_symlinks(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(traffic, 'FOREIGN_REFERENCE', Path(d) / 'reference'):
+            target = Path(d) / 'other'
+            target.write_text('unrelated')
+            traffic.FOREIGN_REFERENCE.symlink_to(target)
+            self.assertFalse(traffic.foreign_matches_reference({'nftables': []}))
+            with patch.object(traffic, 'nft', return_value={'nftables': []}):
+                with self.assertRaises(FileExistsError):
+                    traffic.record_foreign_reference()
+            self.assertEqual(target.read_text(), 'unrelated')
+
     def test_client_build_digest_binds_native_and_dependency_patches(self):
         import hashlib
         with tempfile.TemporaryDirectory() as d:

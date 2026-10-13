@@ -34,7 +34,8 @@ def safe_summary(report, status):
                    'lab_controller_has_foreign_policy', 'lab_fresh_local_publication_missing',
                    'lab_packet_permission_mismatch', 'lab_established_connection_missing',
                    'lab_existing_permission_survived_local_withdrawal', 'lab_existing_permission_survived_drop',
-                   'lab_foreign_rules_changed', 'lab_primary_not_selected', 'lab_automatic_backup_failover_missing'})
+                   'lab_controller_loss_gate_remained_open', 'lab_controller_loss_existing_flow_allowed',
+                   'lab_controller_reconnect_missing', 'lab_foreign_rules_changed', 'lab_primary_not_selected', 'lab_automatic_backup_failover_missing'})
     error = report.get('error_class')
     if error is not None and error not in errors and not re.fullmatch(
             r'(?:lab_api_http_[1-5][0-9]{2}|docker_operation_failed:(?:run|exec|compose|image))', str(error)):

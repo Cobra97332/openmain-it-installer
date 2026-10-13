@@ -6,7 +6,7 @@ import tempfile
 import shutil
 import subprocess
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 DIR = Path(__file__).resolve().parents[1] / 'netbird-router/experimental/native-binat/docker-lab'
 
@@ -25,6 +25,36 @@ traffic = load('traffic')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_each_withdrawal_replaces_old_sessions_and_proves_fresh_exchanges(self):
+        old = Mock()
+        tcp, udp = Mock(), Mock()
+        tcp.exchange.return_value = udp.exchange.return_value = True
+        sessions = [old]
+        with patch.object(packets, 'Session', side_effect=[tcp, udp]) as factory:
+            packets.establish_sessions('isolated-lab', sessions)
+        old.close.assert_called_once()
+        old.exchange.assert_not_called()
+        self.assertEqual(sessions, [tcp, udp])
+        self.assertEqual([c.args[-1] for c in factory.call_args_list], ['tcp', 'udp'])
+        tcp.exchange.assert_called_once()
+        udp.exchange.assert_called_once()
+
+    def test_unusable_new_session_cannot_prove_established_withdrawal(self):
+        bad = Mock()
+        bad.exchange.return_value = False
+        sessions = []
+        with patch.object(packets, 'Session', return_value=bad):
+            with self.assertRaisesRegex(RuntimeError, '^lab_established_connection_missing$'):
+                packets.establish_sessions('isolated-lab', sessions)
+        self.assertEqual(sessions, [bad])  # caller finally still closes it
+
+    def test_outage_failure_classes_are_preserved_without_raw_diagnostics(self):
+        for reason in ('lab_controller_loss_gate_remained_open',
+                       'lab_controller_loss_existing_flow_allowed', 'lab_controller_reconnect_missing'):
+            value = lab.safe_summary({'stage': 'packet_gates',
+                         'cases': {'real_client_gate_failure': reason}}, 1)
+            self.assertEqual(value['packet_error_class'], reason)
+
     def test_unconfirmed_policy_error_is_classified_without_private_context(self):
         text = 'BINAT native gate closure unconfirmed synthetic-private-material'
         with patch.object(traffic.Path, 'exists', return_value=True), \

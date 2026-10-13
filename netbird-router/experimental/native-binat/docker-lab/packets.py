@@ -78,6 +78,19 @@ def probe(lab, peer='peer', destination='198.18.10.100', allowed=True):
             session.close()
 
 
+def establish_sessions(lab, sessions):
+    # Each withdrawal needs live flows immediately beforehand. Never reuse a
+    # TCP socket broken by an earlier successful denial as revocation evidence.
+    for session in sessions:
+        session.close()
+    sessions.clear()
+    for proto in ('tcp', 'udp'):
+        session = Session(lab, 'peer', '198.18.10.100', proto)
+        sessions.append(session)
+        if not session.exchange():
+            raise RuntimeError('lab_established_connection_missing')
+
+
 def acceptance(lab):
     result = {name: 'blocked:mandatory_gate_not_implemented' for name in REQUIRED}
     routers = ('primary-a', 'backup-a', 'primary-b', 'backup-b')
@@ -88,11 +101,7 @@ def acceptance(lab):
             probe(lab, destination=dest)
             probe(lab, peer='probe', destination=dest, allowed=False)
         result.update(real_tcp_udp_binat='pass', overlapping_customer_lans='pass', unauthorized_new_tuples='pass')
-        for proto in ('tcp', 'udp'):
-            session = Session(lab, 'peer', '198.18.10.100', proto)
-            sessions.append(session)
-            if not session.exchange():
-                raise RuntimeError('lab_established_connection_missing')
+        establish_sessions(lab, sessions)
         # Mutation occurs AFTER our last observation; there is no polling ACL
         # copier or favorable writer timing in this test.
         lab.control('membership', allow=False)
@@ -106,6 +115,7 @@ def acceptance(lab):
         lab.control('membership', allow=True)
         restored = wait_publication(lab, withdrawn)
         probe(lab)
+        establish_sessions(lab, sessions)
         result['restoration'] = 'pass'
         # Keep the lab-only controller database across stop/start. Losing tmpfs
         # identities would test re-enrollment, not reconnect of the same peers.
@@ -128,6 +138,7 @@ def acceptance(lab):
                 raise RuntimeError('lab_controller_reconnect_missing')
             time.sleep(0.3)
         probe(lab)
+        establish_sessions(lab, sessions)
         result['controller_reconnect_same_identity'] = 'pass'
         restored = {r: observe(lab, r) for r in routers}
         lab.control('drop')

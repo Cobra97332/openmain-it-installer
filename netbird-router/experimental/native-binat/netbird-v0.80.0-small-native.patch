@@ -1302,7 +1302,7 @@ diff --git a/client/internal/acl/binat_map_linux.go b/client/internal/acl/binat_
 new file mode 100644
 --- /dev/null
 +++ b/client/internal/acl/binat_map_linux.go
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,130 @@
 +//go:build linux
 +
 +package acl
@@ -1387,13 +1387,16 @@ new file mode 100644
 +				// an exact empty message means no port restriction. Native
 +				// convertPortInfo treats this identically to a nil pointer.
 +			case *mgm.PortInfo_Port:
-+				if sel.Port == 0 || sel.Port > 65535 {
++				if sel == nil || sel.Port == 0 || sel.Port > 65535 {
 +					return errors.New("BINAT invalid port")
 +				}
 +				ports = append(ports, [2]uint16{uint16(sel.Port), uint16(sel.Port)})
 +			case *mgm.PortInfo_Range_:
-+				if sel.Range == nil || sel.Range.Start == 0 || sel.Range.Start > sel.Range.End || sel.Range.End > 65535 {
++				if sel == nil || sel.Range == nil || sel.Range.Start == 0 || sel.Range.Start > sel.Range.End || sel.Range.End > 65535 {
 +					return errors.New("BINAT invalid port range")
++				}
++				if len(sel.Range.ProtoReflect().GetUnknown()) != 0 {
++					return errors.New("BINAT unknown port selector")
 +				}
 +				ports = append(ports, [2]uint16{uint16(sel.Range.Start), uint16(sel.Range.End)})
 +			default:
@@ -1434,7 +1437,7 @@ diff --git a/client/internal/acl/binat_map_linux_test.go b/client/internal/acl/b
 new file mode 100644
 --- /dev/null
 +++ b/client/internal/acl/binat_map_linux_test.go
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,97 @@
 +//go:build linux
 +
 +package acl
@@ -1498,6 +1501,8 @@ new file mode 100644
 +	}
 +	rule.Protocol = p.RuleProtocol_TCP
 +	for _, invalid := range []*p.PortInfo{
++		{PortSelection: (*p.PortInfo_Port)(nil)},
++		{PortSelection: (*p.PortInfo_Range_)(nil)},
 +		{PortSelection: &p.PortInfo_Port{Port: 0}},
 +		{PortSelection: &p.PortInfo_Port{Port: 65536}},
 +		{PortSelection: &p.PortInfo_Range_{Range: nil}},
@@ -1513,6 +1518,21 @@ new file mode 100644
 +	rule.PortInfo.ProtoReflect().SetUnknown([]byte{0x18, 0x01})
 +	if ValidateBINATMap(m, scopes) == nil {
 +		t.Fatal("unknown port fields accepted")
++	}
++}
++
++func TestBINATSmallNativeUnknownNestedPortRange(t *testing.T) {
++	scopes := []binat.Scope{{Virtual: "10.80.1.0/24", Real: "192.168.80.0/24", Overlay: "nb0", LAN: "lan0"}}
++	span := &p.PortInfo_Range{Start: 443, End: 445}
++	span.ProtoReflect().SetUnknown([]byte{0x18, 0x01})
++	rule := &p.RouteFirewallRule{SourceRanges: []string{"100.64.0.10/32"}, Destination: "10.80.1.0/24", Protocol: p.RuleProtocol_TCP, Action: p.RuleAction_ACCEPT, PortInfo: &p.PortInfo{PortSelection: &p.PortInfo_Range_{Range: span}}}
++	m := &p.NetworkMap{FirewallRulesIsEmpty: true, RoutesFirewallRules: []*p.RouteFirewallRule{rule}}
++	if ValidateBINATMap(m, scopes) == nil {
++		t.Fatal("unknown nested port-range fields accepted")
++	}
++	span.ProtoReflect().SetUnknown(nil)
++	if err := ValidateBINATMap(m, scopes); err != nil {
++		t.Fatal(err)
 +	}
 +}
 diff --git a/client/internal/acl/binat_map_other.go b/client/internal/acl/binat_map_other.go

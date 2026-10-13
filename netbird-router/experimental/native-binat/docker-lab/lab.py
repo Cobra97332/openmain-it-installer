@@ -31,15 +31,20 @@ def safe_summary(report, status):
                    'lab_client_build_mismatch', 'lab_client_upstream_mismatch',
                    'lab_setup_pat_missing', 'lab_setup_key_missing', 'lab_controller_not_pristine',
                    'lab_controller_version_mismatch', 'lab_setup_not_confirmed',
-                   'lab_controller_has_foreign_policy'})
+                   'lab_controller_has_foreign_policy', 'lab_fresh_local_publication_missing',
+                   'lab_packet_permission_mismatch', 'lab_established_connection_missing',
+                   'lab_existing_permission_survived_local_withdrawal', 'lab_existing_permission_survived_drop',
+                   'lab_foreign_rules_changed', 'lab_primary_not_selected', 'lab_automatic_backup_failover_missing'})
     error = report.get('error_class')
     if error is not None and error not in errors and not re.fullmatch(
             r'(?:lab_api_http_[1-5][0-9]{2}|docker_operation_failed:(?:run|exec|compose|image))', str(error)):
         error = 'unclassified'
     cases = report.get('cases', {})
+    packet_error = cases.get('real_client_gate_failure')
     return {'release': 'blocked', 'exit_status': status,
             'stage': report.get('stage') if report.get('stage') in stages else 'unknown',
-            'error_class': error, 'real_clients_executed': report.get('real_clients_executed') is True,
+            'error_class': error, 'packet_error_class': packet_error if packet_error in errors else None,
+            'real_clients_executed': report.get('real_clients_executed') is True,
             'passed_cases': sum(v == 'pass' for v in cases.values()),
             'failed_or_blocked_cases': sum(v != 'pass' for v in cases.values())}
 
@@ -232,6 +237,16 @@ def main():
                                                              'patched_client_image_missing', 'unexpected_initializer_output'))):
             report['error_class'] = str(e)
     finally:
+        if status and not args.controller_only and report['stage'] in ('configure', 'packet_gates'):
+            diagnostics = {}
+            for name in PEERS:
+                try:
+                    value = json.loads(lab.exec(name, 'python3', '/opt/lab/traffic.py', 'diagnostics'))
+                    diagnostics[name] = {k: v for k, v in value.items() if type(v) is bool}
+                except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired):
+                    diagnostics[name] = {'diagnostics_unavailable': True}
+            report['client_diagnostics'] = diagnostics
+            print(json.dumps({'client_diagnostics': diagnostics}))
         report['cleanup_complete'] = lab.cleanup()
         if not report['cleanup_complete']:
             status = 1

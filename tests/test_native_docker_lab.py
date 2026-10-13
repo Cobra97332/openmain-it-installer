@@ -21,9 +21,21 @@ def load(name):
 lab = load('lab')
 packets = load('packets')
 container = load('container')
+traffic = load('traffic')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_client_diagnostics_export_only_fixed_flags_not_log_content(self):
+        secret = 'synthetic-private-material'
+        text = 'certificate signed by unknown authority ' + secret
+        with patch.object(traffic.Path, 'exists', return_value=True), \
+             patch.object(traffic.Path, 'read_text', return_value=text), \
+             patch.object(traffic, 'inspect', return_value={'serial': -1, 'open': False, 'tun_exists': False}):
+            value = traffic.client_diagnostics()
+        self.assertTrue(value['tls_error'])
+        self.assertTrue(all(type(v) is bool for v in value.values()))
+        self.assertNotIn(secret, json.dumps(value))
+
     def test_translation_only_accepts_exact_laboratory_scopes(self):
         for virtual, dev in [('0.0.0.0/0', 'eth0'), ('198.18.10.0/24', 'eth0";accept')]:
             with self.assertRaisesRegex(RuntimeError, 'lab_translation_scope_refused'):

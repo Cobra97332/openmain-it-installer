@@ -23,6 +23,7 @@ def run(command, log):
 
 def main():
     parser=argparse.ArgumentParser()
+    parser.add_argument('--native-readback', help='Compiled conntrack ABI probe; mandatory when supplied')
     parser.add_argument('--native-small',help='Compiled small native driver for mandatory TUN-lifetime proof in VM')
     parser.add_argument('--rootfs',default='/lab/amd64')
     parser.add_argument('--work',default='/lab/qemu')
@@ -58,6 +59,12 @@ def main():
             raise SystemExit('Verified regular native driver path required')
         destination=root/'native/small-native-lab'
         destination.parent.mkdir(exist_ok=True);shutil.copyfile(driver,destination);destination.chmod(0o755)
+    if args.native_readback:
+        probe=Path(args.native_readback)
+        if not probe.is_absolute() or not probe.is_file() or probe.is_symlink():
+            raise SystemExit('Verified regular native readback probe required')
+        destination=root/'native/ct-readback'
+        destination.parent.mkdir(exist_ok=True);shutil.copyfile(probe,destination);destination.chmod(0o755)
     kernel=next(Path('/boot').glob('vmlinuz-*-amd64'))
     initrd=kernel.with_name(kernel.name.replace('vmlinuz-','initrd.img-'))
     version=kernel.name.removeprefix('vmlinuz-')
@@ -121,6 +128,10 @@ systemctl --no-block poweroff
         text=qa.read_text()
         text=text.replace('  packet_status=0', '  packet_status=0\n  OPENMAIN_ISOLATED_TEST=1 unshare --net python3 tests/nft_small_tun_lifetime.py || packet_status=1\n  OPENMAIN_ISOLATED_TEST=1 OPENMAIN_TUN_CLOSURE_FAILURE=1 unshare --net python3 tests/nft_small_tun_lifetime.py || packet_status=1')
         qa.write_text(text)
+    if args.native_readback:
+        qa=root/'root/qa.sh'
+        qa.write_text(qa.read_text().replace('  packet_status=0',
+            '  packet_status=0\n  OPENMAIN_ISOLATED_TEST=1 unshare --net /native/ct-readback || packet_status=1'))
     if args.unit_only:
         script=root/'root/qa.sh'
         text=script.read_text()

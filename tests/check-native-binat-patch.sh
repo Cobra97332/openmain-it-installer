@@ -90,6 +90,9 @@ if [[ $variant == small ]]; then
   docker_local run --rm --network none -v "$lab/ct-abi.test:/lab/ct-abi.test:ro" \
     openmain-router-test:debian13 /lab/ct-abi.test -test.v -test.run '^TestBINATCtDirection' -test.count=1
   "$lab/go/bin/go" build -buildvcs=false -o "$lab/ct-readback" ./client/firewall/binat/cmd/ct-readback
+  if [[ -n ${OPENMAIN_NATIVE_READBACK_EXPORT:-} ]]; then
+    install -m 0755 "$lab/ct-readback" "$OPENMAIN_NATIVE_READBACK_EXPORT"
+  fi
   docker_local run --rm --network none --cap-add NET_ADMIN -e OPENMAIN_ISOLATED_TEST=1 \
     -v "$lab/ct-readback:/native/ct-readback:ro" openmain-router-test:debian13 /native/ct-readback
   GOARCH=arm64 CGO_ENABLED=0 compile ct-abi-arm64.test github.com/google/nftables/expr

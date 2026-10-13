@@ -124,6 +124,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           OPENMAIN_NATIVE_DRIVER_EXPORT: ${{ runner.temp }}/openmain-platform-lab/small-native-lab
+          OPENMAIN_NATIVE_READBACK_EXPORT: ${{ runner.temp }}/openmain-platform-lab/ct-readback
         run: |
           docker build -f tests/Dockerfile.router -t openmain-router-test:debian13 .
           bash tests/check-native-binat-patch.sh small
@@ -132,7 +133,7 @@ jobs:
         run: >-
           docker run --rm --network none -e OPENMAIN_ISOLATED_TEST=1
           -v "$RUNNER_TEMP/openmain-platform-lab:/lab" -v "$PWD:/src:ro"
-          openmain-platform-lab:debian13 python3 tests/qemu_platforms.py --native-small /lab/small-native-lab
+          openmain-platform-lab:debian13 python3 tests/qemu_platforms.py --native-small /lab/small-native-lab --native-readback /lab/ct-readback
       - name: Actual ARM64 Python with simulated router APIs
         if: ${{ !cancelled() }}
         run: >-

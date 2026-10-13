@@ -32,7 +32,7 @@ def cmd(*args, data=None):
     r = subprocess.run(args, input=data, text=True, stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, timeout=45)
     if r.returncode:
-        raise RuntimeError('local_command_failed:' + args[0])
+        raise RuntimeError('lab_local_' + Path(args[0]).name + '_failed')
     return r.stdout
 
 

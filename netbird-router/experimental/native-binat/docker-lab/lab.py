@@ -20,6 +20,30 @@ ROUTERS = ('primary-a', 'backup-a', 'primary-b', 'backup-b')
 PEERS = ('peer', 'probe') + ROUTERS
 
 
+def safe_summary(report, status):
+    stages = {'prepare', 'client_image', 'controller_bootstrap', 'enrollment_keys',
+              'client_compose', 'configure', 'packet_gates'} | {'start_' + n for n in PEERS}
+    errors = {'RuntimeError', 'ValueError', 'OSError', 'TimeoutExpired',
+              'patched_client_image_missing', 'unexpected_initializer_output'}
+    # Worker classes are fixed lab diagnostics, not upstream response text.
+    errors.update({'lab_local_' + c + '_failed' for c in ('ip', 'nft', 'openssl')})
+    errors.update({'lab_wait_timeout', 'lab_lan_interface_ambiguous',
+                   'lab_client_build_mismatch', 'lab_client_upstream_mismatch',
+                   'lab_setup_pat_missing', 'lab_setup_key_missing', 'lab_controller_not_pristine',
+                   'lab_controller_version_mismatch', 'lab_setup_not_confirmed',
+                   'lab_controller_has_foreign_policy'})
+    error = report.get('error_class')
+    if error is not None and error not in errors and not re.fullmatch(
+            r'(?:lab_api_http_[1-5][0-9]{2}|docker_operation_failed:(?:run|exec|compose|image))', str(error)):
+        error = 'unclassified'
+    cases = report.get('cases', {})
+    return {'release': 'blocked', 'exit_status': status,
+            'stage': report.get('stage') if report.get('stage') in stages else 'unknown',
+            'error_class': error, 'real_clients_executed': report.get('real_clients_executed') is True,
+            'passed_cases': sum(v == 'pass' for v in cases.values()),
+            'failed_or_blocked_cases': sum(v != 'pass' for v in cases.values())}
+
+
 def docker(*args, data=None, check=True):
     env = dict(os.environ)
     for k in ('DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'):
@@ -164,28 +188,37 @@ def main():
               'mode': 'controller_only' if args.controller_only else 'real_clients',
               'controller_ack': False, 'private_work_directory': str(work)}
     status = 1
+    report['stage'] = 'prepare'
     try:
         lab.prepare()
         if args.controller_only:
+            report['stage'] = 'controller_bootstrap'
             lab.compose('up', '-d', '--pull', 'never', 'controller', 'tools')
             report['cases'].update(lab.control('bootstrap'))
             report['cases'].update(lab.control('api_contract'))
             status = 0  # explicitly ONLY the controller/API command succeeds
         else:
+            report['stage'] = 'client_image'
             image = docker('image', 'inspect', CLIENT, check=False)
             if image.returncode or not image.stdout:
                 raise RuntimeError('patched_client_image_missing')
             # Generate individual setup-key files before Docker creates the
             # client bind mounts; each client sees only its own one-off key.
             lab.compose('up', '-d', '--pull', 'never', 'controller', 'tools', 'lan-a', 'lan-b')
+            report['stage'] = 'controller_bootstrap'
             report['cases'].update(lab.control('bootstrap'))
+            report['stage'] = 'enrollment_keys'
             report['cases'].update(lab.control('enrollment_keys'))
+            report['stage'] = 'client_compose'
             lab.compose('up', '-d', '--pull', 'never', *PEERS)
             for name in PEERS:
+                report['stage'] = 'start_' + name
                 report['cases'].update(json.loads(lab.exec(name, 'python3', '/opt/lab/container.py',
                                                           'start', name, report['patch_sha256'])))
+            report['stage'] = 'configure'
             report['cases'].update(lab.control('configure'))
             report['real_clients_executed'] = True
+            report['stage'] = 'packet_gates'
             packet_cases = json.loads(run_packets(lab))
             if 'backup_observed_after_seconds' in packet_cases:
                 report['observations'] = {'backup_observed_after_seconds': packet_cases.pop('backup_observed_after_seconds')}
@@ -205,7 +238,8 @@ def main():
         fd = os.open(args.report, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, 'w') as f:
             json.dump(report, f, indent=2)
-        print(json.dumps({'report': str(args.report), 'release': 'blocked', 'exit_status': status}))
+        # Fixed classifications only, never API responses, log lines or keys.
+        print(json.dumps(safe_summary(report, status)))
     return status
 
 

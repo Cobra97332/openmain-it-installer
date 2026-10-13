@@ -24,6 +24,22 @@ container = load('container')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_summary_never_emits_unclassified_failure_or_case_text(self):
+        secret = 'synthetic-private-material'
+        report = {'stage': secret, 'error_class': secret, 'cases': {secret: secret}}
+        result = lab.safe_summary(report, 1)
+        self.assertNotIn(secret, json.dumps(result))
+        self.assertEqual(result['stage'], 'unknown')
+        self.assertEqual(result['error_class'], 'unclassified')
+        self.assertEqual(result['failed_or_blocked_cases'], 1)
+
+    def test_summary_preserves_safe_integration_failure_stage(self):
+        result = lab.safe_summary({'stage': 'start_primary-a', 'error_class': 'lab_local_nft_failed',
+                                  'cases': {'bootstrap': 'pass'}}, 1)
+        self.assertEqual(result['stage'], 'start_primary-a')
+        self.assertEqual(result['error_class'], 'lab_local_nft_failed')
+        self.assertEqual(result['passed_cases'], 1)
+
     def test_failed_preparation_before_compose_still_removes_credentials(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

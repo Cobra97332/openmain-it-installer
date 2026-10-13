@@ -3,6 +3,14 @@
 Apply `netbird-v0.80.0-small-native.patch` to the pinned upstream NetBird v0.80.0
 source described in ARCHITECTURE.md. Apply ONE patch: the earlier
 `policy-barrier.patch` remains a research reference with its tests unchanged.
+The small candidate additionally needs the separately recorded
+`google-nftables-v0.3.0-ct-direction.patch`. The build-only
+`prepare-native-dependency.sh` verifies the exact upstream version/file hash,
+copies the public module to the disposable source tree and applies the UAPI fix.
+Dockerfile.client and check-native-binat-patch.sh perform this automatically.
+Native and dependency patch digests are both bound into the client build marker;
+a stale client built from only one matching patch is refused.
+
 Neither patch is included in the OpenMain installer bundle. No existing router,
 NetBird identity, BINAT mapping, PSK or configuration is migrated.
 
@@ -131,3 +139,20 @@ the shipped helper still has independent NEW-flow P1s. Overall CI cannot be call
 successful while those gates fail. Do not integrate or merge this experiment
 until actual native clients/controller, lifecycle and platform acceptance pass
 and an exact-head security review confirms the boundaries.
+
+## Kernel readback ABI correction (mandatory, no fallback)
+
+Linux nftables encodes `NFTA_CT_DIRECTION` as NLA_U8. google/nftables v0.3.0
+incorrectly decodes it as uint32, making native original-tuple readback fail with
+`attribute 3 is not a uint32; length: 1` AFTER successful kernel installation.
+This was reproduced with the exact dependency and a real isolated kernel.
+The separate dependency patch encodes/decodes the correct byte, rejects unknown
+directions/malformed encodings and preserves the public Go field type.
+Original AND reply address/port rules now roundtrip with unchanged UserData and
+nonzero handles. Kernel confirmation is retained; no parse-error waiver exists.
+
+Actual AMD64 kernel roundtrip and Go/race ABI tests pass locally. An attempted
+ARM64 kernel roundtrip under QEMU-user FAILED: it does not support
+NETLINK_NETFILTER sockets. ARM64 ABI byte tests run under QEMU-user; they are
+NOT ARM kernel/client proof. Full ARM64 VM/hardware kernel acceptance remains
+required and production release remains BLOCKED.

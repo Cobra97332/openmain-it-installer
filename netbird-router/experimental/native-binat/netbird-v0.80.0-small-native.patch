@@ -1,3 +1,56 @@
+diff --git a/client/firewall/binat/cmd/ct-readback/main.go b/client/firewall/binat/cmd/ct-readback/main.go
+new file mode 100644
+--- /dev/null
++++ b/client/firewall/binat/cmd/ct-readback/main.go
+@@ -0,0 +1,48 @@
++// Real kernel ABI proof, not an Engine/controller or packet authorization proof.
++package main
++
++import (
++	"fmt"
++	nft "github.com/google/nftables"
++	"github.com/google/nftables/expr"
++	"net"
++	"os"
++)
++
++func main() {
++	ifaces, err := net.Interfaces()
++	if err != nil || os.Getenv("OPENMAIN_ISOLATED_TEST") != "1" || len(ifaces) != 1 || ifaces[0].Name != "lo" {
++		panic("isolated network-none namespace required")
++	}
++	c := &nft.Conn{}
++	table := c.AddTable(&nft.Table{Name: "lab_binat_ct_readback", Family: nft.TableFamilyIPv4})
++	chain := c.AddChain(&nft.Chain{Name: "probe", Table: table})
++	for _, dir := range []uint32{0, 1} {
++		for _, key := range []expr.CtKey{expr.CtKeySRC, expr.CtKeyDST, expr.CtKeyPROTOSRC, expr.CtKeyPROTODST} {
++			name := fmt.Sprintf("synthetic-%d-%d", dir, key)
++			c.AddRule(&nft.Rule{Table: table, Chain: chain, UserData: []byte(name), Exprs: []expr.Any{&expr.Ct{Key: key, Register: 1, Direction: dir}, &expr.Verdict{Kind: expr.VerdictDrop}}})
++		}
++	}
++	if err := c.Flush(); err != nil {
++		panic(fmt.Errorf("synthetic kernel installation failed: %w", err))
++	}
++	defer func() {
++		c.DelTable(table)
++		if c.Flush() != nil {
++			panic("synthetic cleanup failed")
++		}
++	}()
++	rows, err := c.GetRules(table, chain)
++	if err != nil || len(rows) != 8 {
++		panic("mandatory conntrack kernel readback failed")
++	}
++	seen := map[string]bool{}
++	for _, row := range rows {
++		ct, ok := row.Exprs[0].(*expr.Ct)
++		if !ok || ct.Register != 1 || ct.Direction > 1 || row.Handle == 0 || string(row.UserData) != fmt.Sprintf("synthetic-%d-%d", ct.Direction, ct.Key) || seen[string(row.UserData)] {
++			panic("kernel tuple/identity metadata changed")
++		}
++		seen[string(row.UserData)] = true
++	}
++	fmt.Println("PASS: actual kernel original/reply address/port readback, stable UserData and handles; not full Engine authorization")
++}
 diff --git a/client/firewall/binat/cmd/small-lab/main.go b/client/firewall/binat/cmd/small-lab/main.go
 new file mode 100644
 --- /dev/null

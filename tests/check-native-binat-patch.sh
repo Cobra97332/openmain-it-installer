@@ -34,6 +34,10 @@ cd "$lab/netbird-0.80.0"
 git apply --check "$repo/netbird-router/experimental/native-binat/netbird-v0.80.0-${patch_name}.patch"
 git apply "$repo/netbird-router/experimental/native-binat/netbird-v0.80.0-${patch_name}.patch"
 export GOPATH="$lab/modules" GOCACHE="$lab/cache" GOPROXY=https://proxy.golang.org
+if [[ $variant == small ]]; then
+  GO_BINARY="$lab/go/bin/go" bash "$repo/netbird-router/experimental/native-binat/prepare-native-dependency.sh" \
+    "$repo/netbird-router/experimental/native-binat/google-nftables-v0.3.0-ct-direction.patch"
+fi
 compile() {
   local output=$1 package=$2
   if ! "$lab/go/bin/go" test -c -buildvcs=false -o "$lab/$output" "$package" >"$lab/compiler.log" 2>&1; then
@@ -82,11 +86,22 @@ docker_local run --rm --network none -v "$lab/acl.test:/lab/acl.test:ro" \
 compile engine.test ./client/internal
 compile nftables.test ./client/firewall/nftables
 if [[ $variant == small ]]; then
+  compile ct-abi.test github.com/google/nftables/expr
+  docker_local run --rm --network none -v "$lab/ct-abi.test:/lab/ct-abi.test:ro" \
+    openmain-router-test:debian13 /lab/ct-abi.test -test.v -test.run '^TestBINATCtDirection' -test.count=1
+  "$lab/go/bin/go" build -buildvcs=false -o "$lab/ct-readback" ./client/firewall/binat/cmd/ct-readback
+  docker_local run --rm --network none --cap-add NET_ADMIN -e OPENMAIN_ISOLATED_TEST=1 \
+    -v "$lab/ct-readback:/native/ct-readback:ro" openmain-router-test:debian13 /native/ct-readback
+  GOARCH=arm64 CGO_ENABLED=0 compile ct-abi-arm64.test github.com/google/nftables/expr
+  docker_local run --rm --network none -v "$lab/ct-abi-arm64.test:/lab/ct-abi.test:ro" \
+    openmain-router-test:debian13 qemu-aarch64 /lab/ct-abi.test -test.v -test.run '^TestBINATCtDirection' -test.count=1
+  # QEMU-user rejects NETLINK_NETFILTER. Actual ARM kernel proof requires a VM;
+  # the ABI byte tests above must not be reported as an ARM kernel roundtrip.
   compile sync-loss.test ./shared/management/client
   docker_local run --rm --network none -v "$lab/sync-loss.test:/lab/sync-loss.test:ro" \
     openmain-router-test:debian13 /lab/sync-loss.test -test.v -test.run '^TestBINATSync' -test.count=1
   if ! "$lab/go/bin/go" test -race -count=1 -run '^TestBINAT' \
-    ./client/firewall/binat ./shared/management/client >"$lab/compiler.log" 2>&1; then
+    ./client/firewall/binat ./shared/management/client github.com/google/nftables/expr >"$lab/compiler.log" 2>&1; then
     echo "Native BINAT gate/stream-loss race tests failed; no acceptance claimed." >&2
     exit 1
   fi

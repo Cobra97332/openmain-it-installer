@@ -25,6 +25,19 @@ traffic = load('traffic')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_client_build_digest_binds_native_and_dependency_patches(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as d:
+            native, dependency = Path(d) / 'native.patch', Path(d) / 'dependency.patch'
+            native.write_bytes(b'native')
+            dependency.write_bytes(b'ABI-u8')
+            with patch.object(lab, 'PATCH', native), patch.object(lab, 'DEPENDENCY_PATCH', dependency):
+                first = lab.patchset_digest()
+                wire = hashlib.sha256(b'native').hexdigest() + '\n' + hashlib.sha256(b'ABI-u8').hexdigest() + '\n'
+                self.assertEqual(first, hashlib.sha256(wire.encode()).hexdigest())
+                dependency.write_bytes(b'other ABI')
+                self.assertNotEqual(first, lab.patchset_digest())
+
     def test_each_withdrawal_replaces_old_sessions_and_proves_fresh_exchanges(self):
         old = Mock()
         tcp, udp = Mock(), Mock()

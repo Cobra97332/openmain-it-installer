@@ -16,6 +16,14 @@ TOOLS = 'openmain-native-lab-tools:debian13'
 CLIENT = 'openmain-native-lab-client:0.80.0-small'
 ROOT = Path(__file__).resolve().parents[4]
 PATCH = ROOT / 'netbird-router/experimental/native-binat/netbird-v0.80.0-small-native.patch'
+DEPENDENCY_PATCH = PATCH.parent / 'google-nftables-v0.3.0-ct-direction.patch'
+
+
+def patchset_digest():
+    hashes = ''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '\n' for p in (PATCH, DEPENDENCY_PATCH))
+    return hashlib.sha256(hashes.encode('ascii')).hexdigest()
+
+
 ROUTERS = ('primary-a', 'backup-a', 'primary-b', 'backup-b')
 PEERS = ('peer', 'probe') + ROUTERS
 
@@ -189,7 +197,9 @@ def main():
     work = Path(tempfile.mkdtemp(prefix='om-binat-lab-', dir=os.environ.get('TMPDIR', '/tmp')))
     os.chmod(work, 0o700)
     lab = Lab(work, args.tools_image)
-    report = {'release': 'blocked', 'patch_sha256': hashlib.sha256(PATCH.read_bytes()).hexdigest(),
+    report = {'release': 'blocked', 'patchset_sha256': patchset_digest(),
+              'dependency_patch_sha256': hashlib.sha256(DEPENDENCY_PATCH.read_bytes()).hexdigest(),
+              'patch_sha256': hashlib.sha256(PATCH.read_bytes()).hexdigest(),
               'upstream': 'fca64287cf51a85552a41b022013abbfdb335452',
               'controller_image': CONTROLLER, 'real_clients_executed': False, 'cases': {},
               'mode': 'controller_only' if args.controller_only else 'real_clients',
@@ -221,7 +231,7 @@ def main():
             for name in PEERS:
                 report['stage'] = 'start_' + name
                 report['cases'].update(json.loads(lab.exec(name, 'python3', '/opt/lab/container.py',
-                                                          'start', name, report['patch_sha256'])))
+                                                          'start', name, report['patchset_sha256'])))
             report['stage'] = 'configure'
             report['cases'].update(lab.control('configure'))
             report['real_clients_executed'] = True

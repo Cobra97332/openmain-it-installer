@@ -1,0 +1,100 @@
+diff --git a/expr/ct.go b/expr/ct.go
+--- a/expr/ct.go
++++ b/expr/ct.go
+@@ -16,6 +16,7 @@
+ 
+ import (
+ 	"encoding/binary"
++	"errors"
+ 
+ 	"github.com/google/nftables/binaryutil"
+ 	"github.com/mdlayher/netlink"
+@@ -158,9 +159,12 @@
+ 
+ 	switch e.Key {
+ 	case CtKeySRC, CtKeyDST, CtKeyPROTOSRC, CtKeyPROTODST:
++		if e.Direction > 1 {
++			return nil, errors.New("invalid conntrack direction")
++		}
+ 		regData, err = netlink.MarshalAttributes(
+ 			[]netlink.Attribute{
+-				{Type: unix.NFTA_CT_DIRECTION, Data: binaryutil.BigEndian.PutUint32(e.Direction)},
++				{Type: unix.NFTA_CT_DIRECTION, Data: []byte{byte(e.Direction)}},
+ 			},
+ 		)
+ 		if err != nil {
+@@ -185,7 +189,10 @@
+ 		case unix.NFTA_CT_DREG:
+ 			e.Register = ad.Uint32()
+ 		case unix.NFTA_CT_DIRECTION:
+-			e.Direction = ad.Uint32()
++			e.Direction = uint32(ad.Uint8())
++			if e.Direction > 1 {
++				return errors.New("invalid conntrack direction")
++			}
+ 		}
+ 	}
+ 	return ad.Err()
+diff --git a/expr/binat_ct_direction_test.go b/expr/binat_ct_direction_test.go
+new file mode 100644
+--- /dev/null
++++ b/expr/binat_ct_direction_test.go
+@@ -0,0 +1,58 @@
++package expr
++
++import (
++	"github.com/google/nftables/binaryutil"
++	"github.com/mdlayher/netlink"
++	"golang.org/x/sys/unix"
++	"testing"
++)
++
++func TestBINATCtDirectionABI(t *testing.T) {
++	for _, direction := range []uint32{0, 1} {
++		want := &Ct{Key: CtKeyDST, Register: 1, Direction: direction}
++		data, err := want.marshalData(2)
++		if err != nil {
++			t.Fatal(err)
++		}
++		ad, err := netlink.NewAttributeDecoder(data)
++		if err != nil {
++			t.Fatal(err)
++		}
++		found := false
++		for ad.Next() {
++			if ad.Type() == unix.NFTA_CT_DIRECTION {
++				found = true
++				field := ad.Bytes()
++				if len(field) != 1 || field[0] != byte(direction) {
++					t.Fatal("direction is not a kernel u8")
++				}
++			}
++		}
++		if ad.Err() != nil || !found {
++			t.Fatal("direction attribute missing or invalid")
++		}
++		var got Ct
++		if err := got.unmarshal(2, data); err != nil {
++			t.Fatal(err)
++		}
++		if got.Direction != direction || got.Key != want.Key || got.Register != want.Register {
++			t.Fatal("direction roundtrip changed")
++		}
++	}
++}
++
++func TestBINATCtDirectionRejectMalformed(t *testing.T) {
++	if _, err := (&Ct{Key: CtKeyDST, Register: 1, Direction: 2}).marshalData(2); err == nil {
++		t.Fatal("unknown direction accepted")
++	}
++	for _, field := range [][]byte{binaryutil.BigEndian.PutUint32(0), {2}, {}} {
++		data, err := netlink.MarshalAttributes([]netlink.Attribute{{Type: unix.NFTA_CT_DIRECTION, Data: field}})
++		if err != nil {
++			t.Fatal(err)
++		}
++		var ct Ct
++		if ct.unmarshal(2, data) == nil {
++			t.Fatal("invalid direction encoding accepted")
++		}
++	}
++}

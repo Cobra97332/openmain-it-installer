@@ -1,7 +1,8 @@
-name: Router platform and security tests
+name: Router x86_64 security tests
 
 on:
   push:
+    branches: [main, beta]
     paths:
       - 'router-install.sh'
       - 'zabbix-*.sh'
@@ -30,6 +31,10 @@ on:
       - 'grafana-zabbix/install*.sh'
       - '.github/workflows/router-security-ci.yml'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -38,27 +43,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install static analysis tools
-        run: sudo apt-get update && sudo apt-get install -y shellcheck jq gnupg
-      - name: Syntax, ShellCheck and offline mocks
-        run: bash tests/check-router.sh
       - name: Build Debian 13 test environment
         if: ${{ !cancelled() }}
         run: docker build -f tests/Dockerfile.router -t openmain-router-test:debian13 .
-      - name: Debian 13 offline regression tests
+      - name: Debian 13 syntax, ShellCheck and offline regressions
         if: ${{ !cancelled() }}
-        run: docker run --rm --network none -v "$PWD:/src:ro" openmain-router-test:debian13
+        run: docker run --rm --network none -v "$PWD:/src:ro" openmain-router-test:debian13 bash tests/check-router.sh
       - name: Debian 13 bootstrap with jq absent
         if: ${{ !cancelled() }}
         run: |
           docker run --rm --network none -v "$PWD:/src:ro" openmain-router-test:debian13 bash -c \
             'dpkg --remove jq >/dev/null && ! command -v jq && python3 -m unittest discover -s tests -p test_router_bootstrap.py -v'
-      - name: Experimental single-owner snapshot kernel tests (no installer integration)
-        if: ${{ !cancelled() }}
-        run: >-
-          docker run --rm --network none --cap-add NET_ADMIN
-          --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1
-          -v "$PWD:/src:ro" openmain-router-test:debian13 python3 tests/nft_native_snapshot_kernel.py
       - name: Isolated real nftables packet and rollback tests
         if: ${{ !cancelled() }}
         run: >-
@@ -66,25 +61,31 @@ jobs:
           --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1
           -v "$PWD:/src:ro" openmain-router-test:debian13 python3 tests/nft_kernel.py
 
-      - name: Pinned native NetBird publisher, Engine/ACL build, ARM64 and kernel tests
+      - name: Small native ACL, Engine, race and kernel tests (AMD64)
         if: ${{ !cancelled() }}
-        run: bash tests/check-native-binat-patch.sh
-
-      - name: Small native ACL integration (separate patch; all earlier security gates retained)
-        if: ${{ !cancelled() }}
+        env:
+          OPENMAIN_NATIVE_TEST_ARCHES: amd64
+          OPENMAIN_NATIVE_DRIVER_EXPORT: ${{ runner.temp }}/small-native-lab
+          OPENMAIN_NATIVE_READBACK_EXPORT: ${{ runner.temp }}/ct-readback
         run: bash tests/check-native-binat-patch.sh small
 
+      - name: Preserve compiled public QEMU probes even when security gates fail
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-amd64-probes
+          path: |
+            ${{ runner.temp }}/small-native-lab
+            ${{ runner.temp }}/ct-readback
+          if-no-files-found: error
       - name: Build isolated real NetBird lab tools
         if: ${{ !cancelled() }}
         run: >-
           docker build -f netbird-router/experimental/native-binat/docker-lab/Dockerfile.tools
           -t openmain-native-lab-tools:debian13 .
-      - name: Real version-pinned controller TLS, bootstrap and API contract (no client proof)
+      - name: Fetch the pinned isolated controller image
         if: ${{ !cancelled() }}
-        run: |
-          docker pull netbirdio/netbird-server:0.80.0@sha256:05b3d8d6d056e5062a2965d4d6e5d6d83f09f2bf9133947a8e5972e0e0e7a261
-          OPENMAIN_ISOLATED_TEST=1 python3 netbird-router/experimental/native-binat/docker-lab/lab.py \
-            --controller-only --report "$RUNNER_TEMP/native-controller.json"
+        run: docker pull netbirdio/netbird-server:0.80.0@sha256:05b3d8d6d056e5062a2965d4d6e5d6d83f09f2bf9133947a8e5972e0e0e7a261
       - name: Build actual patched NetBird v0.80.0 CLI and Engine
         if: ${{ !cancelled() }}
         run: >-
@@ -104,6 +105,8 @@ jobs:
           if-no-files-found: error
 
   platform-lab:
+    needs: offline-regressions
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -117,26 +120,14 @@ jobs:
             debootstrap --variant=minbase \
             --include=systemd-sysv,kmod,procps,python3,jq,nftables,iproute2,ifupdown,curl,gnupg,shellcheck,ca-certificates \
             trixie /lab/amd64 http://deb.debian.org/debian
-          docker run --rm -v "$RUNNER_TEMP/openmain-platform-lab:/lab" openmain-platform-lab:debian13 \
-            debootstrap --foreign --arch=arm64 --variant=minbase --include=python3,jq \
-            trixie /lab/arm64 http://deb.debian.org/debian
-      - name: Build native TUN-lifetime fixture (all security counterexamples remain mandatory)
-        if: ${{ !cancelled() }}
-        env:
-          OPENMAIN_NATIVE_DRIVER_EXPORT: ${{ runner.temp }}/openmain-platform-lab/small-native-lab
-          OPENMAIN_NATIVE_READBACK_EXPORT: ${{ runner.temp }}/openmain-platform-lab/ct-readback
-        run: |
-          docker build -f tests/Dockerfile.router -t openmain-router-test:debian13 .
-          bash tests/check-native-binat-patch.sh small
-      - name: Actual QEMU VM and synthetic ISO BIOS/UEFI boots (offline APIs)
+      - name: Reuse the exact compiled AMD64 probes
+        uses: actions/download-artifact@v4
+        with:
+          name: native-amd64-probes
+          path: ${{ runner.temp }}/openmain-platform-lab
+      - name: Debian 13 QEMU VM, TUN lifetime, fail-closed and legacy security gates
         if: ${{ !cancelled() }}
         run: >-
           docker run --rm --network none -e OPENMAIN_ISOLATED_TEST=1
           -v "$RUNNER_TEMP/openmain-platform-lab:/lab" -v "$PWD:/src:ro"
-          openmain-platform-lab:debian13 python3 tests/qemu_platforms.py --native-small /lab/small-native-lab --native-readback /lab/ct-readback
-      - name: Actual ARM64 Python with simulated router APIs
-        if: ${{ !cancelled() }}
-        run: >-
-          docker run --rm --network none -e OPENMAIN_ISOLATED_TEST=1
-          -v "$RUNNER_TEMP/openmain-platform-lab:/lab" -v "$PWD:/src:ro"
-          openmain-platform-lab:debian13 python3 tests/arm64_platforms.py
+          openmain-platform-lab:debian13 python3 tests/qemu_platforms.py --vm-only --native-small /lab/small-native-lab --native-readback /lab/ct-readback

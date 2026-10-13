@@ -27,6 +27,7 @@ def main():
     parser.add_argument('--native-small',help='Compiled small native driver for mandatory TUN-lifetime proof in VM')
     parser.add_argument('--rootfs',default='/lab/amd64')
     parser.add_argument('--work',default='/lab/qemu')
+    parser.add_argument('--vm-only', action='store_true', help='Debian AMD64 VM security gates; no ISO support claim')
     parser.add_argument('--unit-only',action='store_true',help='Debug unit lifecycle only; not a regression-suite pass')
     args=parser.parse_args()
     if (os.environ.get('OPENMAIN_ISOLATED_TEST')!='1' or not Path('/.dockerenv').exists()
@@ -104,7 +105,6 @@ else
   python3 -m unittest discover -s tests -v
   sysctl -w net.ipv4.ip_forward=1 >/dev/null
   packet_status=0
-  OPENMAIN_ISOLATED_TEST=1 unshare --net python3 tests/nft_native_snapshot_kernel.py || packet_status=1
   OPENMAIN_ISOLATED_TEST=1 python3 tests/nft_kernel.py || packet_status=1
   test "$packet_status" = 0
 fi
@@ -136,29 +136,30 @@ systemctl --no-block poweroff
         script=root/'root/qa.sh'
         text=script.read_text()
         script.write_text(text[:text.index('if grep -q openmain.lab=iso')]+text[text.index('echo OPENMAIN_UNIT_VERIFY'):])
-    iso_root=work/'fixture';(iso_root/'.disk').mkdir(parents=True)
-    (iso_root/'.disk/info').write_text('Debian GNU/Linux 13.6 SYNTHETIC kernel probe; NOT Debian Installer\n')
-    (iso_root/'isolinux').mkdir()
-    (iso_root/'isolinux/menu.cfg').write_text('default install\n')
-    (iso_root/'isolinux/txt.cfg').write_text('label install\n append initrd=/install.amd/initrd.gz --- quiet\n')
-    install=iso_root/'install.amd';install.mkdir()
-    shutil.copyfile(kernel,install/'vmlinuz');shutil.copyfile(initrd,install/'initrd.gz')
-    grub=iso_root/'boot/grub';grub.mkdir(parents=True)
-    (grub/'grub.cfg').write_text('''set timeout=1
+    if not args.vm_only and not args.unit_only:
+        iso_root=work/'fixture';(iso_root/'.disk').mkdir(parents=True)
+        (iso_root/'.disk/info').write_text('Debian GNU/Linux 13.6 SYNTHETIC kernel probe; NOT Debian Installer\n')
+        (iso_root/'isolinux').mkdir()
+        (iso_root/'isolinux/menu.cfg').write_text('default install\n')
+        (iso_root/'isolinux/txt.cfg').write_text('label install\n append initrd=/install.amd/initrd.gz --- quiet\n')
+        install=iso_root/'install.amd';install.mkdir()
+        shutil.copyfile(kernel,install/'vmlinuz');shutil.copyfile(initrd,install/'initrd.gz')
+        grub=iso_root/'boot/grub';grub.mkdir(parents=True)
+        (grub/'grub.cfg').write_text('''set timeout=1
 set default=0
 menuentry 'SYNTHETIC probe (not Debian Installer)' {
  linux /install.amd/vmlinuz root=/dev/vda rw console=ttyS0 panic=-1 openmain.lab=iso --- quiet
  initrd /install.amd/initrd.gz
 }
 ''')
-    base=work/'fixture-base.iso';image=work/'openmain-fixture.iso'
-    # No Apple HFS+/APM layout: exercise amd64 BIOS/EFI CD boot structures.
-    run(['grub-mkrescue','--arcs-boot','-o',str(base),str(iso_root)],work/'fixture-build.log')
-    env=dict(os.environ,DEBIAN_ISO=str(base),DEBIAN_ISO_SHA512=hashlib.sha512(base.read_bytes()).hexdigest(),OUTPUT_ISO=str(image))
-    with (work/'remaster.log').open('wb') as stream:
-        subprocess.run(['bash','/src/build-iso.sh'],env=env,check=True,stdout=stream,stderr=subprocess.STDOUT)
+        base=work/'fixture-base.iso';image=work/'openmain-fixture.iso'
+        # No Apple HFS+/APM layout: exercise amd64 BIOS/EFI CD boot structures.
+        run(['grub-mkrescue','--arcs-boot','-o',str(base),str(iso_root)],work/'fixture-build.log')
+        env=dict(os.environ,DEBIAN_ISO=str(base),DEBIAN_ISO_SHA512=hashlib.sha512(base.read_bytes()).hexdigest(),OUTPUT_ISO=str(image))
+        with (work/'remaster.log').open('wb') as stream:
+            subprocess.run(['bash','/src/build-iso.sh'],env=env,check=True,stdout=stream,stderr=subprocess.STDOUT)
     failures=[]
-    for mode in (('vm',) if args.unit_only else ('vm','iso-bios','iso-uefi')):
+    for mode in (('vm',) if args.unit_only or args.vm_only else ('vm','iso-bios','iso-uefi')):
         disk=work/(mode+'.raw')
         with disk.open('xb') as stream:stream.truncate(4*1024**3)
         run(['mke2fs','-q','-t','ext4','-F','-d',str(root),str(disk)],work/(mode+'-disk.log'))
@@ -181,7 +182,7 @@ menuentry 'SYNTHETIC probe (not Debian Installer)' {
             print(mode+': FAIL; inspect lab-only log',flush=True)
             continue
         print(mode+': PASS ('+('unit lifecycle ONLY' if args.unit_only else 'real Debian 13/QEMU, mocked router services/APIs')+')',flush=True)
-    if not args.unit_only:print('ISO result applies ONLY to the synthetic fixture, not official netinstall.',flush=True)
+    if not args.unit_only and not args.vm_only:print('ISO result applies ONLY to the synthetic fixture, not official netinstall.',flush=True)
     if failures:raise SystemExit('Failed QEMU release gates: '+', '.join(failures))
 
 

@@ -1,5 +1,9 @@
 # Experimental native BINAT policy publication — BLOCKED
 
+Current internal AMD64 CI scope and historical-versus-current test obligations:
+[INTERNAL-TEST-SCOPE.md](INTERNAL-TEST-SCOPE.md). The historical broad lab
+requirements below are not a claim of current platform support or approval.
+
 Base: OpenMain f0d8738b982bdd68090ffd3c1f1cd821b03f982c (PR #33).
 This directory is excluded from the installer bundle. Neither installer behavior
 nor the unsafe existing helper is changed. **Do not deploy or merge PR #33.**

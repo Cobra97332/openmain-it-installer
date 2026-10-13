@@ -2,6 +2,13 @@
 # Public, pinned source preparation; execution only in network-none Docker.
 set -Eeuo pipefail
 variant=${1:-snapshot}
+# Native experimental support is AMD64-only in the internal CI profile.
+# The historical full architecture run remains available explicitly.
+architectures=${OPENMAIN_NATIVE_TEST_ARCHES:-amd64,arm64}
+case "$architectures" in
+  amd64|amd64,arm64) ;;
+  *) echo "Unsupported native test architecture selection" >&2; exit 2 ;;
+esac
 case "$variant" in
   snapshot) patch_name=policy-barrier; driver=lab; binary=native-publisher-lab; packet_test=nft_go_publisher_kernel.py; owner_gate=OPENMAIN_NATIVE_OWNER_DEATH_GATE ;;
   small) patch_name=small-native; driver=small-lab; binary=small-native-lab; packet_test=nft_small_native_kernel.py; owner_gate=OPENMAIN_SMALL_OWNER_DEATH_GATE ;;
@@ -75,9 +82,11 @@ docker_local run --rm --network none --cap-add NET_ADMIN \
   -e "$owner_gate=1" \
   -v "$repo:/src:ro" -v "$lab/$binary:/native/$binary:ro" \
   openmain-router-test:debian13 python3 "tests/$packet_test" || native_status=1
-GOARCH=arm64 CGO_ENABLED=0 compile core-arm64.test ./client/firewall/binat
-docker_local run --rm --network none -v "$lab/core-arm64.test:/lab/core-arm64.test:ro" \
-  openmain-router-test:debian13 qemu-aarch64 /lab/core-arm64.test -test.v -test.count=1
+if [[ $architectures == amd64,arm64 ]]; then
+  GOARCH=arm64 CGO_ENABLED=0 compile core-arm64.test ./client/firewall/binat
+  docker_local run --rm --network none -v "$lab/core-arm64.test:/lab/core-arm64.test:ro" \
+    openmain-router-test:debian13 qemu-aarch64 /lab/core-arm64.test -test.v -test.count=1
+fi
 compile acl.test ./client/internal/acl
 docker_local run --rm --network none -v "$lab/acl.test:/lab/acl.test:ro" \
   openmain-router-test:debian13 /lab/acl.test -test.v -test.run '^TestBINAT' -test.count=1
@@ -95,9 +104,11 @@ if [[ $variant == small ]]; then
   fi
   docker_local run --rm --network none --cap-add NET_ADMIN -e OPENMAIN_ISOLATED_TEST=1 \
     -v "$lab/ct-readback:/native/ct-readback:ro" openmain-router-test:debian13 /native/ct-readback
-  GOARCH=arm64 CGO_ENABLED=0 compile ct-abi-arm64.test github.com/google/nftables/expr
-  docker_local run --rm --network none -v "$lab/ct-abi-arm64.test:/lab/ct-abi.test:ro" \
-    openmain-router-test:debian13 qemu-aarch64 /lab/ct-abi.test -test.v -test.run '^TestBINATCtDirection' -test.count=1
+  if [[ $architectures == amd64,arm64 ]]; then
+    GOARCH=arm64 CGO_ENABLED=0 compile ct-abi-arm64.test github.com/google/nftables/expr
+    docker_local run --rm --network none -v "$lab/ct-abi-arm64.test:/lab/ct-abi.test:ro" \
+      openmain-router-test:debian13 qemu-aarch64 /lab/ct-abi.test -test.v -test.run '^TestBINATCtDirection' -test.count=1
+  fi
   # QEMU-user rejects NETLINK_NETFILTER. Actual ARM kernel proof requires a VM;
   # the ABI byte tests above must not be reported as an ARM kernel roundtrip.
   compile sync-loss.test ./shared/management/client

@@ -1,5 +1,9 @@
 # Small native BINAT candidate — LAB ONLY, RELEASE BLOCKED
 
+Current internal AMD64 CI scope and historical-versus-current test obligations:
+[INTERNAL-TEST-SCOPE.md](INTERNAL-TEST-SCOPE.md). The historical broad lab
+requirements below are not a claim of current platform support or approval.
+
 Apply `netbird-v0.80.0-small-native.patch` to the pinned upstream NetBird v0.80.0
 source described in ARCHITECTURE.md. Apply ONE patch: the earlier
 `policy-barrier.patch` remains a research reference with its tests unchanged.

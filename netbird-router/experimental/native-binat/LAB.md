@@ -1,5 +1,9 @@
 # Required native NetBird acceptance lab (NOT yet executed)
 
+Current internal AMD64 CI scope and historical-versus-current test obligations:
+[INTERNAL-TEST-SCOPE.md](INTERNAL-TEST-SCOPE.md). The historical broad lab
+requirements below are not a claim of current platform support or approval.
+
 Do not run this against CT 110/111, Bauer, existing profiles or existing services.
 No production token, setup key, PSK, DNS name or management endpoint is required.
 The core publisher scripts are executable. The real-controller section remains

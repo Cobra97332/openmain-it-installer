@@ -59,7 +59,7 @@ def topology(work, project, tools=TOOLS):
             device_cgroup_rules=['c 10:200 rwm'],
             environment=dict(proxies, NB_WG_KERNEL_DISABLED='true', OPENMAIN_ISOLATED_TEST='1'),
             entrypoint=['sleep', 'infinity'], networks=networks,
-            volumes=[str(work / 'runtime/ca') + ':/lab-ca:ro',
+            volumes=[str(work / 'runtime/ca/cert.pem') + ':/lab-ca/cert.pem:ro',
                      str(work / 'runtime/keys' / name) + ':/lab-key:ro',
                      str(Path(__file__).parent) + ':/opt/lab:ro'],
             tmpfs=['/run:mode=0755', '/var/lib/netbird:mode=0700', '/tmp:mode=1777'],
@@ -123,17 +123,25 @@ class Lab:
     def cleanup(self):
         # Only this random, exclusively allocated project. No prune, host nft or
         # unrelated containers/volumes. Private evidence directory is retained.
+        stopped = True
         if self.file.exists():
-            if self.compose('down', '--remove-orphans', check=False).returncode:
-                return False
-            # Remove ONLY lab-generated keys/configuration. No host profile
-            # was mounted; the exclusive mkdtemp root is the sole writable bind.
+            try:
+                stopped = self.compose('down', '--remove-orphans', check=False).returncode == 0
+            except (RuntimeError, OSError, subprocess.TimeoutExpired):
+                stopped = False
+        # Initialization can fail BEFORE compose.json exists. Credential cleanup
+        # is therefore independent of Compose creation and stack teardown.
+        try:
             r = docker('run', '--rm', '--network', 'none', '--cap-drop', 'ALL',
                        '--cap-add', 'DAC_OVERRIDE', '--security-opt', 'no-new-privileges:true',
                        '-v', str(self.work) + ':/lab', '--entrypoint', 'python3', self.tools,
-                       '-c', 'import shutil; shutil.rmtree("/lab/runtime")', check=False)
-            return r.returncode == 0
-        return True
+                       '-c', 'from pathlib import Path\nimport shutil\np=Path("/lab/runtime")\n'
+                             'if p.is_symlink(): raise SystemExit(1)\n'
+                             'if p.exists(): shutil.rmtree(p)\n'
+                             'if p.exists() or p.is_symlink(): raise SystemExit(1)\n', check=False)
+            return stopped and r.returncode == 0
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            return False
 
 
 def main():

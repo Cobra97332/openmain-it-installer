@@ -36,7 +36,8 @@ part of this lab's policy coverage.
 
 Lab CA, relay/datastore secrets, initial owner password, PAT and one-off setup
 keys are generated anew. Config/key files are root-owned 0600 under 0700 private
-directories. Each peer receives only its own setup-key file. API response bodies,
+directories. Each peer receives only its own setup-key file and the public CA
+certificate; the CA signing key is NEVER mounted into clients. API response bodies,
 keys and profile logs are never printed/uploaded. Runtime Docker logs are disabled;
 the client keeps a private tmpfs log, queried only for generic local serials.
 Controller and client identities live only in disposable tmpfs. Cleanup removes

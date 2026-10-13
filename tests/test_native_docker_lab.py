@@ -3,6 +3,8 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import shutil
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -22,6 +24,32 @@ container = load('container')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_failed_preparation_before_compose_still_removes_credentials(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            runtime = root / 'runtime'
+            runtime.mkdir()
+            (runtime / 'private-lab-material').write_text('synthetic-only')
+            owner = lab.Lab(root)
+            self.assertFalse(owner.file.exists())
+            def wipe(*args, **kwargs):
+                self.assertEqual(args[0], 'run')
+                self.assertIn('none', args)
+                self.assertIn(str(root) + ':/lab', args)
+                self.assertIn('p.is_symlink()', args[-1])
+                shutil.rmtree(runtime)
+                return subprocess.CompletedProcess(args, 0, '', '')
+            with patch.object(lab, 'docker', side_effect=wipe):
+                self.assertTrue(owner.cleanup())
+            self.assertFalse(runtime.exists())
+
+    def test_failed_credential_cleanup_cannot_report_complete(self):
+        with tempfile.TemporaryDirectory() as d:
+            owner = lab.Lab(Path(d))
+            failed = subprocess.CompletedProcess([], 1, '', '')
+            with patch.object(lab, 'docker', return_value=failed):
+                self.assertFalse(owner.cleanup())
+
     def test_all_runtime_networks_internal_no_host_ports_or_socket(self):
         doc = lab.topology(Path('/tmp/disposable'), 'om-binat-test')
         self.assertEqual(len(doc['networks']), 3)
@@ -46,6 +74,9 @@ class NativeDockerLabTests(unittest.TestCase):
             self.assertEqual(set(service['cap_add']), {'NET_ADMIN', 'NET_RAW', 'MKNOD'})
             self.assertEqual(service['device_cgroup_rules'], ['c 10:200 rwm'])
             self.assertNotIn('/var/lib/netbird:', ' '.join(service['volumes']))
+            self.assertIn('/tmp/disposable/runtime/ca/cert.pem:/lab-ca/cert.pem:ro', service['volumes'])
+            self.assertNotIn('/tmp/disposable/runtime/ca:/lab-ca:ro', service['volumes'])
+            self.assertIn('/tmp/disposable/runtime/keys/' + name + ':/lab-key:ro', service['volumes'])
         self.assertIn('@sha256:', doc['services']['controller']['image'])
         self.assertEqual(doc['services']['controller']['environment']['NB_DISABLE_GEOLOCATION'], 'true')
 

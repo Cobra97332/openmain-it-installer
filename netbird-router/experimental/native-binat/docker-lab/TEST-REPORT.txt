@@ -24,9 +24,15 @@ ACTUALLY EXECUTED IN THIS FOLLOW-UP
 - Full command with absent patched image: FAIL safely before client deployment;
   classified patched_client_image_missing, cleanup_complete=true. No fixture
   driver fallback or dummy enrollment key used.
-- Bash syntax + ShellCheck + 228 Debian-13 offline regressions: PASS.
-  Includes 6 NEW lab isolation/report/build/TLS/credential contracts. These
+- Bash syntax + ShellCheck + 230 Debian-13 offline regressions: PASS.
+  Includes 8 NEW lab isolation/report/build/TLS/credential/cleanup contracts. These
   contracts are mocks, not real NetBird client integration.
+- New Codex reviews found two lab P2s: partial-preparation credential cleanup
+  and accidental whole-CA-directory mounts into clients. Fixed independent
+  cleanup/confirmed-failure reporting and certificate-only client mounts.
+  Actual Docker negative test proves cleanup of generated private material after
+  Compose write failure. A certificate-only mount probe checks that the CA
+  signing key is absent, without starting or claiming a real NetBird client.
 - Debian-13 bootstrap with jq actually removed, 7 tests: PASS.
 - Native small core Go tests WITH race detector: PASS.
 - Actual ARM64 native Go core under QEMU-user, 14 tests: PASS.

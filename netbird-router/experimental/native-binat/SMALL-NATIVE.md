@@ -17,7 +17,10 @@ While opted in, native IPv4 route-rule address/protocol/port loads use conntrack
 ORIGINAL tuples. This applies to all IPv4 route destinations so a real-LAN rule
 cannot accidentally authorize a different virtual customer destination after
 DNAT. Port remapping/forwarding services are refused, not silently interpreted.
-A scoped native POSTROUTING filter before SNAT delegates original and reply
+The pinned controller's exact empty `PortInfo` message means no port
+restriction and is accepted, matching native `convertPortInfo`. Explicit zero
+ports, invalid ranges and unknown fields remain rejected; no wildcard is inferred
+from an invalid explicit selector. A scoped native POSTROUTING filter before SNAT delegates original and reply
 traffic directly to the native routing ACL chain, then drops unmatched traffic.
 The native ESTABLISHED shortcut excludes the configured virtual prefixes. Native
 INPUT rules, foreign tables and unconfigured clients retain their usual behavior.
@@ -29,6 +32,18 @@ An observed policy-only digest/serial refuses older or contradictory maps in the
 same owner lifetime, including after rejected maps. There is no cached permission
 or serial receipt to restore across restart: a fresh full authenticated map must
 succeed. Readiness is a LOCAL result, never controller confirmation.
+
+Management `Sync()` retries transport failures internally; waiting for its outer
+return is insufficient. The current Engine therefore registers a synchronous
+stream-disconnection listener on the existing management client. A failed Sync
+stream closes and confirms the local gate, advancing its epoch, BEFORE retry.
+The callback runs outside the transport state mutex and never takes the Engine
+sync mutex. Reconnect does not reopen it: only a new full validated NetworkMap
+and native kernel publication do. Shutdown unregisters this Engine's listener.
+Ordinary clients without BINAT retain their behavior; Job-stream failures are
+not used as policy events. No additional process, polling or ACL copy is added.
+This source-level transport correction still needs the mandatory actual-client
+controller-outage/reconnection packet proof before release.
 
 The owned gate layout must match its closed/open kernel reference exactly;
 unknown layouts are refused unchanged. Closed/open layout references are compiled once and cached for this owner

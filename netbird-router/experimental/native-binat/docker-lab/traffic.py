@@ -45,7 +45,7 @@ def client_diagnostics():
                                'BINAT forwarding services unsupported', 'BINAT unsupported route protocol',
                                'BINAT unsupported route action'),
         'binat_map_selector_error': ('BINAT invalid route destination', 'BINAT invalid port',
-                                   'BINAT incomplete port selector', 'BINAT ports on unsupported protocol',
+                                   'BINAT incomplete port selector', 'BINAT unknown port selector', 'BINAT ports on unsupported protocol',
                                    'BINAT invalid source'),
         'binat_kernel_operation_error': ('BINAT gate kernel operation failed', 'BINAT opening failed'),
         'sync_handler_error': ('failed handling an update message received from Management Service:',),
@@ -55,7 +55,7 @@ def client_diagnostics():
                                'BINAT native ACL readback failed', 'BINAT native ACL chain missing'),
         'binat_gate_error': ('BINAT guard', 'BINAT reference', 'BINAT unknown', 'BINAT closure', 'BINAT unconfirmed'),
         'config_only_closure_seen': ('BINAT config-only sync: guard remains closed',),
-        'binat_closure_error': ('BINAT reset closure unconfirmed', 'BINAT stream-end closure unconfirmed'),
+        'binat_closure_error': ('BINAT reset closure unconfirmed', 'BINAT stream-end closure unconfirmed', 'BINAT stream-loss closure unconfirmed'),
     }
     alive = False
     if Path('/run/lab-client.pid').exists():

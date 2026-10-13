@@ -82,6 +82,15 @@ docker_local run --rm --network none -v "$lab/acl.test:/lab/acl.test:ro" \
 compile engine.test ./client/internal
 compile nftables.test ./client/firewall/nftables
 if [[ $variant == small ]]; then
+  compile sync-loss.test ./shared/management/client
+  docker_local run --rm --network none -v "$lab/sync-loss.test:/lab/sync-loss.test:ro" \
+    openmain-router-test:debian13 /lab/sync-loss.test -test.v -test.run '^TestBINATSync' -test.count=1
+  if ! "$lab/go/bin/go" test -race -count=1 -run '^TestBINAT' \
+    ./client/firewall/binat ./shared/management/client >"$lab/compiler.log" 2>&1; then
+    echo "Native BINAT gate/stream-loss race tests failed; no acceptance claimed." >&2
+    exit 1
+  fi
+  echo "PASS: native gate/stream-loss Go race tests"
   docker_local run --rm --network none -v "$lab/nftables.test:/lab/nftables.test:ro" \
     openmain-router-test:debian13 /lab/nftables.test -test.v -test.run '^TestBINATSmall' -test.count=1
 fi

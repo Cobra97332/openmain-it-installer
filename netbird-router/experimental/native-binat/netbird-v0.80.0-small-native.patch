@@ -1302,7 +1302,7 @@ diff --git a/client/internal/acl/binat_map_linux.go b/client/internal/acl/binat_
 new file mode 100644
 --- /dev/null
 +++ b/client/internal/acl/binat_map_linux.go
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,127 @@
 +//go:build linux
 +
 +package acl
@@ -1378,7 +1378,14 @@ new file mode 100644
 +		}
 +		var ports [][2]uint16
 +		if r.PortInfo != nil {
++			if len(r.PortInfo.ProtoReflect().GetUnknown()) != 0 {
++				return errors.New("BINAT unknown port selector")
++			}
 +			switch sel := r.PortInfo.PortSelection.(type) {
++			case nil:
++				// NetBird v0.80.0 GetProtoPortInfo always returns a message;
++				// an exact empty message means no port restriction. Native
++				// convertPortInfo treats this identically to a nil pointer.
 +			case *mgm.PortInfo_Port:
 +				if sel.Port == 0 || sel.Port > 65535 {
 +					return errors.New("BINAT invalid port")
@@ -1427,14 +1434,16 @@ diff --git a/client/internal/acl/binat_map_linux_test.go b/client/internal/acl/b
 new file mode 100644
 --- /dev/null
 +++ b/client/internal/acl/binat_map_linux_test.go
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,80 @@
 +//go:build linux
 +
 +package acl
 +
 +import (
 +	"github.com/netbirdio/netbird/client/firewall/binat"
++	"github.com/netbirdio/netbird/shared/management/networkmap"
 +	p "github.com/netbirdio/netbird/shared/management/proto"
++	"github.com/netbirdio/netbird/shared/management/types"
 +	"testing"
 +)
 +
@@ -1470,6 +1479,40 @@ new file mode 100644
 +	}
 +	if ValidateBINATMap(nil, scopes) == nil {
 +		t.Fatal("missing map accepted")
++	}
++}
++
++func TestBINATSmallNativeControllerEmptyPortInfo(t *testing.T) {
++	scopes := []binat.Scope{{Virtual: "10.80.1.0/24", Real: "192.168.80.0/24", Overlay: "nb0", LAN: "lan0"}}
++	empty := networkmap.GetProtoPortInfo(&types.RouteFirewallRule{})
++	if empty == nil || empty.GetPortSelection() != nil {
++		t.Fatal("pinned controller port encoding changed")
++	}
++	rule := &p.RouteFirewallRule{SourceRanges: []string{"100.64.0.10/32"}, Destination: "10.80.1.0/24", Action: p.RuleAction_ACCEPT, PortInfo: empty}
++	m := &p.NetworkMap{FirewallRulesIsEmpty: true, RoutesFirewallRules: []*p.RouteFirewallRule{rule}}
++	for _, protocol := range []p.RuleProtocol{p.RuleProtocol_ALL, p.RuleProtocol_TCP, p.RuleProtocol_UDP, p.RuleProtocol_ICMP} {
++		rule.Protocol = protocol
++		if err := ValidateBINATMap(m, scopes); err != nil {
++			t.Fatalf("native unrestricted protocol rejected: %v", err)
++		}
++	}
++	rule.Protocol = p.RuleProtocol_TCP
++	for _, invalid := range []*p.PortInfo{
++		{PortSelection: &p.PortInfo_Port{Port: 0}},
++		{PortSelection: &p.PortInfo_Port{Port: 65536}},
++		{PortSelection: &p.PortInfo_Range_{Range: nil}},
++		{PortSelection: &p.PortInfo_Range_{Range: &p.PortInfo_Range{Start: 443, End: 0}}},
++		{PortSelection: &p.PortInfo_Range_{Range: &p.PortInfo_Range{Start: 445, End: 443}}},
++	} {
++		rule.PortInfo = invalid
++		if ValidateBINATMap(m, scopes) == nil {
++			t.Fatal("malformed explicit port selector accepted")
++		}
++	}
++	rule.PortInfo = &p.PortInfo{}
++	rule.PortInfo.ProtoReflect().SetUnknown([]byte{0x18, 0x01})
++	if ValidateBINATMap(m, scopes) == nil {
++		t.Fatal("unknown port fields accepted")
 +	}
 +}
 diff --git a/client/internal/acl/binat_map_other.go b/client/internal/acl/binat_map_other.go
@@ -1588,7 +1631,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  }
  
  // stopLocked tears down everything Start may have brought up, in the order
-@@ -432,6 +442,12 @@
+@@ -432,6 +442,15 @@
  // step is nil-guarded. It does not wait on shutdownWg — the caller does that
  // after releasing the lock, since the goroutines also take syncMsgMux.
  func (e *Engine) stopLocked() {
@@ -1596,12 +1639,15 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
 +		if e.binatGate.Close() != nil {
 +			log.Error("BINAT shutdown closure unconfirmed")
 +		}
++		if listener, ok := e.mgmClient.(interface{ SetSyncDisconnectListener(func(error)) }); ok {
++			listener.SetSyncDisconnectListener(nil)
++		}
 +		defer e.binatGate.Release()
 +	}
  	if e.connMgr != nil {
  		e.connMgr.Close()
  	}
-@@ -555,6 +571,21 @@
+@@ -555,6 +574,38 @@
  		return fmt.Errorf("engine already stopped: %w", ctxErr)
  	}
  
@@ -1620,10 +1666,27 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
 +		e.binatGate.Release()
 +		return errors.New("BINAT requires active routed native firewall")
 +	}
++	if publisher != nil {
++		listener, ok := e.mgmClient.(interface{ SetSyncDisconnectListener(func(error)) })
++		if !ok {
++			_ = publisher.Close()
++			publisher.Release()
++			return errors.New("BINAT management transport cannot confirm stream loss")
++		}
++		listener.SetSyncDisconnectListener(func(error) {
++			// Close increments the epoch too: an in-flight publication cannot
++			// reopen after this loss. This callback never takes syncMsgMux.
++			if publisher.Close() != nil {
++				log.Error("BINAT stream-loss closure unconfirmed")
++			} else {
++				log.Info("BINAT stream-loss closure confirmed locally controller_ack=false")
++			}
++		})
++	}
  	e.started = true
  
  	// Tear down any partially-initialized state on a failed start. Cancel the
-@@ -575,6 +606,16 @@
+@@ -575,6 +626,16 @@
  
  	e.exposeManager = expose.NewManager(e.ctx, e.mgmClient)
  
@@ -1640,7 +1703,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	wgIface, err := e.newWgIface()
  	if err != nil {
  		log.Errorf("failed creating wireguard interface instance %s: [%s]", e.config.WgIfaceName, err)
-@@ -641,6 +682,12 @@
+@@ -641,6 +702,12 @@
  		return fmt.Errorf("create wg interface: %w", err)
  	}
  
@@ -1653,7 +1716,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	if filteredDevice := e.wgInterface.GetDevice(); filteredDevice != nil {
  		filteredDevice.SetPanicHandler(e.triggerClientRestart)
  	}
-@@ -654,6 +701,16 @@
+@@ -654,6 +721,16 @@
  	// depends on the DNS server, and the firewall depends on the wg interface.
  	e.dnsServer.SetFirewall(e.firewall)
  
@@ -1670,7 +1733,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	e.udpMux, err = e.wgInterface.Up()
  	if err != nil {
  		log.Errorf("failed to pull up wgInterface [%s]: %s", e.wgInterface.Name(), err.Error())
-@@ -679,7 +736,11 @@
+@@ -679,7 +756,11 @@
  
  	// if inbound conns are blocked there is no need to create the ACL manager
  	if e.firewall != nil && !e.config.BlockInbound {
@@ -1683,7 +1746,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	}
  
  	if err := e.dnsServer.Initialize(); err != nil {
-@@ -1003,7 +1064,7 @@
+@@ -1003,7 +1084,7 @@
  	}
  }
  
@@ -1692,7 +1755,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	started := time.Now()
  	defer func() {
  		duration := time.Since(started)
-@@ -1013,6 +1074,17 @@
+@@ -1013,6 +1094,17 @@
  	e.syncMsgMux.Lock()
  	defer e.syncMsgMux.Unlock()
  
@@ -1710,7 +1773,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	// Check context INSIDE lock to ensure atomicity with shutdown
  	if e.ctx.Err() != nil {
  		return e.ctx.Err()
-@@ -1081,6 +1153,9 @@
+@@ -1081,6 +1173,9 @@
  	//   NetworkMap == nil                 -> config-only update (e.g. relay token rotation),
  	//                                        leave the previously applied checks untouched
  	if nm == nil {
@@ -1720,7 +1783,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  		return nil
  	}
  
-@@ -1514,6 +1589,9 @@
+@@ -1514,6 +1609,9 @@
  			log.Warnf("posture checks not refreshed before the sync connect, sending the previous results")
  		}
  		err := e.mgmClient.Sync(e.ctx, e.syncInfoFunc(info), e.handleSync)
@@ -1730,7 +1793,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  		if err != nil {
  			// happens if management is unavailable for a long time.
  			// We want to cancel the operation of the whole client
-@@ -1564,7 +1642,37 @@
+@@ -1564,7 +1662,37 @@
  	return nil
  }
  
@@ -1769,7 +1832,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	// intentionally leave it before checking serial because for now it can happen that peer IP changed but serial didn't
  	if networkMap.GetPeerConfig() != nil {
  		err := e.updateConfig(networkMap.GetPeerConfig())
-@@ -1590,6 +1698,9 @@
+@@ -1590,6 +1718,9 @@
  	if e.firewall != nil {
  		if localipfw, ok := e.firewall.(localIpUpdater); ok {
  			if err := localipfw.UpdateLocalIPs(); err != nil {
@@ -1779,7 +1842,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  				log.Errorf("failed to update local IPs: %v", err)
  			}
  		}
-@@ -1599,6 +1710,9 @@
+@@ -1599,6 +1730,9 @@
  		// This needs to be toggled before applying routes.
  		isLegacy := len(networkMap.RoutesFirewallRules) == 0 && !networkMap.RoutesFirewallRulesIsEmpty
  		if err := e.firewall.SetLegacyManagement(isLegacy); err != nil {
@@ -1789,7 +1852,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  			log.Errorf("failed to set legacy management flag: %v", err)
  		}
  	}
-@@ -1612,6 +1726,9 @@
+@@ -1612,6 +1746,9 @@
  
  	done := e.phase("dns_server")
  	if err := e.dnsServer.UpdateDNSServer(serial, dnsConfig); err != nil {
@@ -1799,7 +1862,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  		log.Errorf("failed to update dns server, err: %v", err)
  	}
  	done()
-@@ -1633,6 +1750,9 @@
+@@ -1633,6 +1770,9 @@
  	done = e.phase("routes_apply")
  	dnsRouteFeatureFlag := toDNSFeatureFlag(networkMap)
  	if err := e.routeManager.UpdateRoutes(serial, serverRoutes, clientRoutes, dnsRouteFeatureFlag); err != nil {
@@ -1809,7 +1872,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  		log.Errorf("failed to update routes: %v", err)
  	}
  	done()
-@@ -1640,6 +1760,11 @@
+@@ -1640,6 +1780,11 @@
  	done = e.phase("filtering")
  	if e.acl != nil {
  		e.acl.ApplyFiltering(networkMap, dnsRouteFeatureFlag)
@@ -1821,7 +1884,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	}
  	done()
  
-@@ -1651,6 +1776,9 @@
+@@ -1651,6 +1796,9 @@
  	// Ingress forward rules
  	done = e.phase("forward_rules")
  	if _, err := e.updateForwardRules(networkMap.GetForwardingRules()); err != nil {
@@ -1831,7 +1894,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  		log.Errorf("failed to update forward rules, err: %v", err)
  	}
  	done()
-@@ -1671,6 +1799,18 @@
+@@ -1671,6 +1819,18 @@
  	e.connMgr.SetExcludeList(e.ctx, e.toExcludedLazyPeers(remotePeers))
  	done()
  
@@ -1850,7 +1913,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	e.networkSerial = serial
  
  	return nil
-@@ -2149,6 +2289,9 @@
+@@ -2149,6 +2309,9 @@
  }
  
  func (e *Engine) close() {
@@ -1901,3 +1964,96 @@ new file mode 100644
 +func isBINATNativeFirewall(fw.Manager) bool { return false }
 +
 +func confirmBINATNativeFirewall(fw.Manager) error { return binat.ErrUnconfirmed }
+diff --git a/shared/management/client/binat_sync_test.go b/shared/management/client/binat_sync_test.go
+new file mode 100644
+--- /dev/null
++++ b/shared/management/client/binat_sync_test.go
+@@ -0,0 +1,50 @@
++package client
++
++import (
++	"errors"
++	"sync"
++	"testing"
++)
++
++func TestBINATSyncLossClosesBeforeRetryWithoutTransportLock(t *testing.T) {
++	c := &GrpcClient{}
++	want := errors.New("synthetic stream loss")
++	closed := false
++	c.SetSyncDisconnectListener(func(err error) {
++		if err != want || c.syncStreamError() != want {
++			t.Error("disconnect state not visible")
++		}
++		closed = true
++	})
++	c.setSyncStreamDisconnected(want)
++	if !closed {
++		t.Fatal("stream loss returned before local closure")
++	}
++	c.SetSyncDisconnectListener(nil)
++	closed = false
++	c.setSyncStreamDisconnected(want)
++	if closed {
++		t.Fatal("released engine listener invoked")
++	}
++}
++
++func TestBINATSyncDisconnectListenerReplacementRace(t *testing.T) {
++	c := &GrpcClient{}
++	var wg sync.WaitGroup
++	wg.Add(2)
++	go func() {
++		defer wg.Done()
++		for i := 0; i < 100; i++ {
++			c.SetSyncDisconnectListener(func(error) {})
++		}
++		c.SetSyncDisconnectListener(nil)
++	}()
++	go func() {
++		defer wg.Done()
++		for i := 0; i < 100; i++ {
++			c.setSyncStreamDisconnected(errors.New("synthetic"))
++			c.setSyncStreamConnected()
++		}
++	}()
++	wg.Wait()
++}
+diff --git a/shared/management/client/grpc.go b/shared/management/client/grpc.go
+--- a/shared/management/client/grpc.go
++++ b/shared/management/client/grpc.go
+@@ -74,6 +74,8 @@
+ 	// connection while the Sync stream keeps failing.
+ 	syncStreamMu  sync.RWMutex
+ 	syncStreamErr error
++	// Synchronous local policy closure before a failed stream is retried.
++	syncDisconnectListener func(error)
+ }
+ 
+ type ExposeRequest struct {
+@@ -813,10 +815,24 @@
+ 	c.syncStreamErr = nil
+ }
+ 
++// SetSyncDisconnectListener binds the current Engine's local DENY boundary.
++// It never copies policy or opens a gate; only a full NetworkMap can do that.
++func (c *GrpcClient) SetSyncDisconnectListener(listener func(error)) {
++	c.syncStreamMu.Lock()
++	defer c.syncStreamMu.Unlock()
++	c.syncDisconnectListener = listener
++}
++
+ func (c *GrpcClient) setSyncStreamDisconnected(err error) {
+ 	c.syncStreamMu.Lock()
+-	defer c.syncStreamMu.Unlock()
+ 	c.syncStreamErr = err
++	listener := c.syncDisconnectListener
++	c.syncStreamMu.Unlock()
++	// Do not hold transport state locks while confirming kernel closure. In
++	// particular, the callback may consult syncStreamError(). No async worker.
++	if listener != nil {
++		listener(err)
++	}
+ }
+ 
+ func (c *GrpcClient) syncStreamError() error {

@@ -38,8 +38,12 @@ def client_diagnostics():
         'permission_error': ('permission denied', 'operation not permitted'),
         'binat_start_error': ('BINAT requires', 'BINAT overlay', 'BINAT existing guard', 'BINAT orphan'),
         'binat_map_error': ('BINAT stale/incomplete', 'BINAT complete', 'BINAT ambiguous'),
-        'binat_native_error': ('BINAT native',),
+        'binat_native_error': ('BINAT native ACL apply failed', 'BINAT native chain',
+                               'BINAT native hook changed', 'BINAT native postrouting boundary missing',
+                               'BINAT native handle missing', 'BINAT native tracked ACL absent',
+                               'BINAT native ACL readback failed', 'BINAT native ACL chain missing'),
         'binat_gate_error': ('BINAT guard', 'BINAT reference', 'BINAT unknown', 'BINAT closure', 'BINAT unconfirmed'),
+        'config_only_closure_seen': ('BINAT config-only sync: guard remains closed',),
         'binat_closure_error': ('BINAT reset closure unconfirmed', 'BINAT stream-end closure unconfirmed'),
     }
     alive = False
@@ -52,6 +56,8 @@ def client_diagnostics():
     state = inspect()
     return {'process_exists': alive, 'local_publication_seen': state['serial'] >= 0,
             'gate_open': state['open'], 'tun_exists': state['tun_exists'],
+            'gate_table_present': state.get('gate_table_present', False),
+            'ready_rule_present': state.get('ready_rule_present', False),
             **{k: any(n in text for n in v) for k, v in needles.items()}}
 
 
@@ -65,6 +71,7 @@ def inspect():
     nat = nft('ip lab_translation')
     # Only generic proof data. Never emit the client log or profile content.
     return {'serial': int(serials[-1]) if serials else -1,
+        'gate_table_present': gate is not None, 'ready_rule_present': bool(ready),
         'open': len(ready) == 1 and ready[0].get('comment') == 'native-policy-ready',
         # sysfs can refer to the outer namespace; use actual rtnetlink instead.
         'tun_exists': subprocess.run(['ip', 'link', 'show', 'dev', 'wt0'],

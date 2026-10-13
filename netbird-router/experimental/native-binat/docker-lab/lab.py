@@ -72,8 +72,9 @@ def topology(work, project, tools=TOOLS):
         command=['--config', '/etc/netbird/config.yaml'],
         environment=dict(proxies, NB_SETUP_PAT_ENABLED='true', NB_DISABLE_GEOLOCATION='true'),
         networks={'control': {'aliases': ['controller.lab.test']}},
-        volumes=[str(work / 'runtime/controller') + ':/etc/netbird:ro'],
-        tmpfs=['/var/lib/netbird:mode=0700', '/tmp:mode=1777'])
+        volumes=[str(work / 'runtime/controller') + ':/etc/netbird:ro',
+                 str(work / 'runtime/server-state') + ':/var/lib/netbird'],
+        tmpfs=['/tmp:mode=1777'])
     # Tools hold ONLY lab credentials. No Docker socket is mounted into containers.
     services['tools'] = dict(base, image=tools, entrypoint=['sleep', 'infinity'],
         environment=proxies, networks=['control'],

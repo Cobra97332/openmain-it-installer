@@ -40,7 +40,7 @@ def initialize():
     os.umask(0o077)
     root = Path('/lab/runtime')
     root.mkdir(mode=0o700)  # never reinitialize or overwrite an existing identity
-    for name in ('controller', 'ca', 'keys'):
+    for name in ('controller', 'ca', 'keys', 'server-state'):
         (root / name).mkdir(mode=0o700)
     ca, controller = root / 'ca', root / 'controller'
     cmd('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2',

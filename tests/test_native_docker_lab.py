@@ -25,6 +25,16 @@ traffic = load('traffic')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_successful_native_publication_is_not_diagnosed_as_an_error(self):
+        text = 'BINAT native kernel policy applied locally: serial=17 controller_ack=false'
+        with patch.object(traffic.Path, 'exists', return_value=True), \
+             patch.object(traffic.Path, 'read_text', return_value=text), \
+             patch.object(traffic, 'inspect', return_value={'serial': 17, 'open': True, 'tun_exists': True}):
+            value = traffic.client_diagnostics()
+        self.assertFalse(value['binat_native_error'])
+        self.assertTrue(value['local_publication_seen'])
+        self.assertTrue(value['gate_open'])
+
     def test_client_diagnostics_export_only_fixed_flags_not_log_content(self):
         secret = 'synthetic-private-material'
         text = 'certificate signed by unknown authority ' + secret
@@ -98,6 +108,9 @@ class NativeDockerLabTests(unittest.TestCase):
             self.assertNotIn('SYS_ADMIN', service.get('cap_add', []))
             self.assertEqual(service['environment']['HTTPS_PROXY'], '')
             self.assertEqual(service['logging']['driver'], 'none')
+        state = '/tmp/disposable/runtime/server-state:/var/lib/netbird'
+        self.assertIn(state, doc['services']['controller']['volumes'])
+        self.assertNotIn('/var/lib/netbird:mode=0700', doc['services']['controller']['tmpfs'])
 
     def test_four_separate_real_lan_router_namespaces(self):
         doc = lab.topology(Path('/tmp/disposable'), 'om-binat-test')

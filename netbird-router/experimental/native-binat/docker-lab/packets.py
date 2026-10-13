@@ -13,7 +13,17 @@ REQUIRED = ('real_tcp_udp_binat', 'overlapping_customer_lans', 'unauthorized_new
     'related_icmp', 'concurrent_policy_reset', 'unknown_stale_networkmap',
     'kernel_ack_failure', 'no_optin_orphan_restart', 'icmp_port_protocol_restrictions',
     'multiple_independent_acl_sources', 'fresh_map_after_native_firewall_rebuild',
-    'established_reply_only_tcp_udp')
+    'established_reply_only_tcp_udp', 'controller_outage_fail_closed', 'controller_reconnect_same_identity')
+
+
+def wait_closed(lab, routers, timeout=90):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        states = {r: observe(lab, r) for r in routers}
+        if all(not value['open'] for value in states.values()):
+            return states
+        time.sleep(0.3)
+    raise RuntimeError('lab_controller_loss_gate_remained_open')
 
 
 def observe(lab, router):
@@ -97,6 +107,29 @@ def acceptance(lab):
         restored = wait_publication(lab, withdrawn)
         probe(lab)
         result['restoration'] = 'pass'
+        # Keep the lab-only controller database across stop/start. Losing tmpfs
+        # identities would test re-enrollment, not reconnect of the same peers.
+        lab.compose('stop', '-t', '2', 'controller')
+        wait_closed(lab, routers)
+        probe(lab, allowed=False)
+        if any(s.exchange() for s in sessions):
+            raise RuntimeError('lab_controller_loss_existing_flow_allowed')
+        result['controller_outage_fail_closed'] = 'pass'
+        lab.compose('start', 'controller')
+        deadline = time.monotonic() + 90
+        while True:
+            try:
+                lab.control('same_identity')
+                if all(observe(lab, r)['open'] for r in routers):
+                    break
+            except RuntimeError:
+                pass
+            if time.monotonic() > deadline:
+                raise RuntimeError('lab_controller_reconnect_missing')
+            time.sleep(0.3)
+        probe(lab)
+        result['controller_reconnect_same_identity'] = 'pass'
+        restored = {r: observe(lab, r) for r in routers}
         lab.control('drop')
         wait_publication(lab, {r: restored[r] for r in ('primary-a', 'backup-a')})
         probe(lab, allowed=False)

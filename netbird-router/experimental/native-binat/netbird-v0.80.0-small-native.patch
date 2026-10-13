@@ -1710,7 +1710,17 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	// Check context INSIDE lock to ensure atomicity with shutdown
  	if e.ctx.Err() != nil {
  		return e.ctx.Err()
-@@ -1514,6 +1586,9 @@
+@@ -1081,6 +1153,9 @@
+ 	//   NetworkMap == nil                 -> config-only update (e.g. relay token rotation),
+ 	//                                        leave the previously applied checks untouched
+ 	if nm == nil {
++		if e.binatGate != nil {
++			log.Info("BINAT config-only sync: guard remains closed")
++		}
+ 		return nil
+ 	}
+ 
+@@ -1514,6 +1589,9 @@
  			log.Warnf("posture checks not refreshed before the sync connect, sending the previous results")
  		}
  		err := e.mgmClient.Sync(e.ctx, e.syncInfoFunc(info), e.handleSync)
@@ -1720,7 +1730,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  		if err != nil {
  			// happens if management is unavailable for a long time.
  			// We want to cancel the operation of the whole client
-@@ -1564,7 +1639,37 @@
+@@ -1564,7 +1642,37 @@
  	return nil
  }
  
@@ -1759,7 +1769,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	// intentionally leave it before checking serial because for now it can happen that peer IP changed but serial didn't
  	if networkMap.GetPeerConfig() != nil {
  		err := e.updateConfig(networkMap.GetPeerConfig())
-@@ -1590,6 +1695,9 @@
+@@ -1590,6 +1698,9 @@
  	if e.firewall != nil {
  		if localipfw, ok := e.firewall.(localIpUpdater); ok {
  			if err := localipfw.UpdateLocalIPs(); err != nil {
@@ -1769,7 +1779,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  				log.Errorf("failed to update local IPs: %v", err)
  			}
  		}
-@@ -1599,6 +1707,9 @@
+@@ -1599,6 +1710,9 @@
  		// This needs to be toggled before applying routes.
  		isLegacy := len(networkMap.RoutesFirewallRules) == 0 && !networkMap.RoutesFirewallRulesIsEmpty
  		if err := e.firewall.SetLegacyManagement(isLegacy); err != nil {
@@ -1779,7 +1789,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  			log.Errorf("failed to set legacy management flag: %v", err)
  		}
  	}
-@@ -1612,6 +1723,9 @@
+@@ -1612,6 +1726,9 @@
  
  	done := e.phase("dns_server")
  	if err := e.dnsServer.UpdateDNSServer(serial, dnsConfig); err != nil {
@@ -1789,7 +1799,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  		log.Errorf("failed to update dns server, err: %v", err)
  	}
  	done()
-@@ -1633,6 +1747,9 @@
+@@ -1633,6 +1750,9 @@
  	done = e.phase("routes_apply")
  	dnsRouteFeatureFlag := toDNSFeatureFlag(networkMap)
  	if err := e.routeManager.UpdateRoutes(serial, serverRoutes, clientRoutes, dnsRouteFeatureFlag); err != nil {
@@ -1799,7 +1809,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  		log.Errorf("failed to update routes: %v", err)
  	}
  	done()
-@@ -1640,6 +1757,11 @@
+@@ -1640,6 +1760,11 @@
  	done = e.phase("filtering")
  	if e.acl != nil {
  		e.acl.ApplyFiltering(networkMap, dnsRouteFeatureFlag)
@@ -1811,7 +1821,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	}
  	done()
  
-@@ -1651,6 +1773,9 @@
+@@ -1651,6 +1776,9 @@
  	// Ingress forward rules
  	done = e.phase("forward_rules")
  	if _, err := e.updateForwardRules(networkMap.GetForwardingRules()); err != nil {
@@ -1821,7 +1831,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  		log.Errorf("failed to update forward rules, err: %v", err)
  	}
  	done()
-@@ -1671,6 +1796,18 @@
+@@ -1671,6 +1799,18 @@
  	e.connMgr.SetExcludeList(e.ctx, e.toExcludedLazyPeers(remotePeers))
  	done()
  
@@ -1840,7 +1850,7 @@ diff --git a/client/internal/engine.go b/client/internal/engine.go
  	e.networkSerial = serial
  
  	return nil
-@@ -2149,6 +2286,9 @@
+@@ -2149,6 +2289,9 @@
  }
  
  func (e *Engine) close() {

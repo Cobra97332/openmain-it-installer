@@ -244,6 +244,25 @@ def lan_dev():
     return found[0]
 
 
+def translation_script(virtual, dev):
+    if virtual not in ('198.18.10.0/24', '198.18.20.0/24') or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_.-]{0,14}', dev):
+        raise RuntimeError('lab_translation_scope_refused')
+    return f'''table ip lab_translation {{
+ chain dn {{ type nat hook prerouting priority -101; policy accept;
+  iifname "wt0" ip daddr {virtual} counter dnat ip prefix to ip daddr map {{ {virtual} : 192.168.88.0/24 }}
+ }}
+ chain sn {{ type nat hook postrouting priority srcnat; policy accept;
+  oifname "{dev}" ct status dnat counter masquerade
+ }}
+}}
+table inet lab_foreign {{
+ chain marker {{
+  ip saddr 203.0.113.250 counter drop
+ }}
+}}
+'''
+
+
 def start(name, patch_hash, resume=False):
     os.umask(0o077)
     if name not in NAMES or Path('/opt/native/patch.sha256').read_text().split()[0] != patch_hash:
@@ -265,16 +284,7 @@ def start(name, patch_hash, resume=False):
             write('/run/netbird-binat-small-lab/config.json', json.dumps([
                 {'Virtual': virtual, 'Real': '192.168.88.0/24', 'Overlay': 'wt0', 'LAN': dev}]))
             # Translation only; there is NO added filter ACCEPT or ACL copy.
-            cmd('nft', '-f', '-', data=f'''table ip lab_translation {{
- chain dn {{ type nat hook prerouting priority -101; policy accept;
-  iifname "wt0" ip daddr {virtual} counter dnat ip prefix to ip daddr map {{ {virtual} : 192.168.88.0/24 }}
- }}
- chain sn {{ type nat hook postrouting priority srcnat; policy accept;
-  oifname "{dev}" ct status dnat counter masquerade
- }}
-}}
-table inet lab_foreign {{ chain marker {{ ip saddr 203.0.113.250 counter drop; }} }}
-''')
+            cmd('nft', '-f', '-', data=translation_script(virtual, dev))
         env['NB_EXPERIMENTAL_BINAT_CONFIG'] = '/run/netbird-binat-small-lab/config.json'
     args = ['/opt/native/netbird', 'up', '--foreground-mode', '--management-url', BASE,
             '--interface-name', 'wt0', '--disable-dns', '--hostname', name,

@@ -24,6 +24,11 @@ container = load('container')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_translation_only_accepts_exact_laboratory_scopes(self):
+        for virtual, dev in [('0.0.0.0/0', 'eth0'), ('198.18.10.0/24', 'eth0";accept')]:
+            with self.assertRaisesRegex(RuntimeError, 'lab_translation_scope_refused'):
+                container.translation_script(virtual, dev)
+
     def test_summary_never_emits_unclassified_failure_or_case_text(self):
         secret = 'synthetic-private-material'
         report = {'stage': secret, 'error_class': secret, 'cases': {secret: secret}}

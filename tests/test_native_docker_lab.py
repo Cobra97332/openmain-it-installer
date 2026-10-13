@@ -25,6 +25,32 @@ traffic = load('traffic')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_unauthorized_packet_is_never_retried_until_denial(self):
+        session = Mock()
+        session.exchange.return_value = True
+        with patch.object(packets, 'Session', return_value=session) as factory:
+            with self.assertRaisesRegex(RuntimeError, '^lab_unauthorized_tcp_reply_observed$'):
+                packets.probe('isolated-lab', allowed=False)
+        factory.assert_called_once()
+        session.close.assert_called_once()
+
+    def test_positive_transport_setup_can_wait_without_relaxing_permissions(self):
+        first, tcp, udp = Mock(), Mock(), Mock()
+        first.exchange.return_value = False
+        tcp.exchange.return_value = udp.exchange.return_value = True
+        with patch.object(packets, 'Session', side_effect=[first, tcp, udp]), patch.object(packets.time, 'sleep'):
+            packets.probe('isolated-lab')
+        first.close.assert_called_once()
+        tcp.close.assert_called_once()
+        udp.close.assert_called_once()
+
+    def test_authorized_transport_failure_remains_a_mandatory_failure(self):
+        session = Mock()
+        session.exchange.return_value = False
+        with patch.object(packets, 'Session', return_value=session), patch.object(packets.time, 'monotonic', side_effect=[0, 26]):
+            with self.assertRaisesRegex(RuntimeError, '^lab_authorized_tcp_reply_missing$'):
+                packets.probe('isolated-lab')
+
     def test_foreign_reference_detects_startup_changes_not_only_later_changes(self):
         initial = {'nftables': [{'table': {'name': 'lab_foreign', 'family': 'inet'}}]}
         changed = {'nftables': initial['nftables'] + [{'rule': {'chain': 'forward', 'expr': [{'accept': None}]}}]}

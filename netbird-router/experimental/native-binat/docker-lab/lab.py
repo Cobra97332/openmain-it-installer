@@ -40,7 +40,9 @@ def safe_summary(report, status):
                    'lab_setup_pat_missing', 'lab_setup_key_missing', 'lab_controller_not_pristine',
                    'lab_controller_version_mismatch', 'lab_setup_not_confirmed',
                    'lab_controller_has_foreign_policy', 'lab_fresh_local_publication_missing',
-                   'lab_packet_permission_mismatch', 'lab_established_connection_missing',
+                   'lab_packet_permission_mismatch', 'lab_packet_target_refused',
+                   'lab_authorized_tcp_reply_missing', 'lab_authorized_udp_reply_missing',
+                   'lab_unauthorized_tcp_reply_observed', 'lab_unauthorized_udp_reply_observed', 'lab_established_connection_missing',
                    'lab_existing_permission_survived_local_withdrawal', 'lab_existing_permission_survived_drop',
                    'lab_controller_loss_gate_remained_open', 'lab_controller_loss_existing_flow_allowed',
                    'lab_controller_reconnect_missing', 'lab_foreign_reference_missing', 'lab_foreign_rules_changed', 'lab_primary_not_selected', 'lab_automatic_backup_failover_missing'})

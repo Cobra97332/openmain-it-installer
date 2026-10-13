@@ -69,13 +69,26 @@ class Session:
 
 
 def probe(lab, peer='peer', destination='198.18.10.100', allowed=True):
+    if peer not in ('peer', 'probe') or destination not in ('198.18.10.100', '198.18.20.100'):
+        raise RuntimeError('lab_packet_target_refused')
     for proto in ('tcp', 'udp'):
-        session = Session(lab, peer, destination, proto)
-        try:
-            if session.exchange() != allowed:
-                raise RuntimeError('lab_packet_permission_mismatch')
-        finally:
-            session.close()
+        # Kernel publication is not a WireGuard/ICE transport-ready ACK.
+        # Only positive setup/restoration may wait for transport. A single
+        # unauthorized reply fails immediately; never retry until denial.
+        deadline = time.monotonic() + (25 if allowed else 0)
+        while True:
+            session = Session(lab, peer, destination, proto)
+            try:
+                reply = session.exchange()
+            finally:
+                session.close()
+            if reply == allowed:
+                break
+            if not allowed:
+                raise RuntimeError('lab_unauthorized_' + proto + '_reply_observed')
+            if time.monotonic() >= deadline:
+                raise RuntimeError('lab_authorized_' + proto + '_reply_missing')
+            time.sleep(0.3)
 
 
 def establish_sessions(lab, sessions):

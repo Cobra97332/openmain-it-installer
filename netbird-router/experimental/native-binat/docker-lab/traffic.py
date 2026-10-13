@@ -80,6 +80,8 @@ def client_diagnostics():
             'gate_open': state['open'], 'tun_exists': state['tun_exists'],
             'gate_table_present': state.get('gate_table_present', False),
             'ready_rule_present': state.get('ready_rule_present', False),
+            'scoped_dnat_seen': state.get('dnat_packets', 0) > 0,
+            'scoped_readiness_counter_seen': state.get('ready_packets', 0) > 0,
             **{k: any(n in text for n in v) for k, v in needles.items()}}
 
 
@@ -124,6 +126,7 @@ def inspect():
     nat = nft('ip lab_translation')
     # Only generic proof data. Never emit the client log or profile content.
     return {'serial': int(serials[-1]) if serials else -1,
+        'ready_packets': sum(e['counter']['packets'] for r in ready for e in r.get('expr', []) if 'counter' in e),
         'gate_table_present': gate is not None, 'ready_rule_present': bool(ready),
         'open': len(ready) == 1 and ready[0].get('comment') == 'native-policy-ready',
         # sysfs can refer to the outer namespace; use actual rtnetlink instead.

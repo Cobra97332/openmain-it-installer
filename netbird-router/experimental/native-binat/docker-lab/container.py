@@ -172,8 +172,7 @@ def api_contract():
     api('/api/policies/' + pid, 'DELETE')
     api('/api/groups/' + src, 'DELETE')
     api('/api/groups/' + dst, 'DELETE')
-    keys()
-    return {'real_controller_accepts_drop_ports': 'pass', 'real_controller_setup_keys': 'pass'}
+    return {'real_controller_accepts_drop_ports': 'pass'}
 
 
 def configure():

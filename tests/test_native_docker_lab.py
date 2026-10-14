@@ -25,6 +25,44 @@ traffic = load('traffic')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_full_client_contract_failure_stops_before_enrollment(self):
+        from contextlib import redirect_stdout
+        import io
+        for controller_only in (False, True):
+            instance = Mock()
+            instance.cleanup.return_value = True
+            def control(operation):
+                if operation == 'api_contract':
+                    raise RuntimeError('lab_controller_policy_contract')
+                return {'bootstrap': 'pass'}
+            instance.control.side_effect = control
+            image = Mock(returncode=0, stdout='synthetic-image')
+            with tempfile.TemporaryDirectory() as d:
+                report = Path(d) / 'report.json'
+                argv = ['lab.py', '--report', str(report)]
+                if controller_only:
+                    argv.append('--controller-only')
+                work = Path(d) / 'work'
+                work.mkdir()
+                with patch.object(lab.sys, 'argv', argv), patch.dict(lab.os.environ, {'OPENMAIN_ISOLATED_TEST': '1'}), \
+                     patch.object(lab.tempfile, 'mkdtemp', return_value=str(work)), \
+                     patch.object(lab, 'Lab', return_value=instance), patch.object(lab, 'docker', return_value=image), \
+                     redirect_stdout(io.StringIO()):
+                    self.assertEqual(lab.main(), 1)
+                self.assertEqual([c.args[0] for c in instance.control.call_args_list], ['bootstrap', 'api_contract'])
+                instance.exec.assert_not_called()
+                data = json.loads(report.read_text())
+                self.assertFalse(data['real_clients_executed'])
+                self.assertEqual(data['release'], 'blocked')
+
+    def test_controller_policy_contract_does_not_duplicate_setup_keys(self):
+        response = {'rules': [{'action': 'drop', 'ports': ['8443']}]}
+        with patch.object(container, 'group', side_effect=['source', 'destination']), \
+             patch.object(container, 'policy', return_value='policy'), \
+             patch.object(container, 'api', return_value=response), patch.object(container, 'keys') as keys:
+            self.assertEqual(container.api_contract(), {'real_controller_accepts_drop_ports': 'pass'})
+            keys.assert_not_called()
+
     def test_positive_timeout_is_bounded_but_negative_timeout_is_not_accepted(self):
         slow, tcp, udp = Mock(), Mock(), Mock()
         slow.exchange.side_effect = RuntimeError('lab_packet_probe_timeout')

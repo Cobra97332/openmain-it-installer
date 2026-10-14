@@ -1,141 +1,61 @@
-# Required native NetBird acceptance lab (NOT yet executed)
+# Isolated native BINAT lab — no production approval
 
-Current internal AMD64 CI scope and historical-versus-current test obligations:
-[INTERNAL-TEST-SCOPE.md](INTERNAL-TEST-SCOPE.md). The historical broad lab
-requirements below are not a claim of current platform support or approval.
+Use the selected small patch described in ARCHITECTURE.md. The existing
+controller manages all synthetic identities, groups and policies. No additional
+OpenMain authorizer is run. Never use CT 110/111, customer profiles or tokens.
 
-Do not run this against CT 110/111, Bauer, existing profiles or existing services.
-No production token, setup key, PSK, DNS name or management endpoint is required.
-The core publisher scripts are executable. The real-controller section remains
-a required acceptance procedure, not a claim of completed daemon acceptance.
+## Current commands
 
-## Already executable isolated reference tests
-
-Prepare tests/Dockerfile.router using Debian mirrors. Then disconnect execution:
+Build the disposable Debian test images before disconnecting test networks.
 
 ```sh
-docker run --rm --network none --cap-add NET_ADMIN \
-  --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1 \
-  -v "$PWD:/src:ro" openmain-router-test:debian13 \
-  python3 tests/nft_native_snapshot_kernel.py
+bash tests/check-router.sh
+OPENMAIN_NATIVE_TEST_ARCHES=amd64 bash tests/check-native-binat-patch.sh small
 
-# Must still run; currently blocks release of the OLD implementation.
-docker run --rm --network none --cap-add NET_ADMIN \
-  --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1 \
-  -v "$PWD:/src:ro" openmain-router-test:debian13 \
-  python3 tests/nft_kernel.py
+OPENMAIN_ISOLATED_TEST=1 python3 \
+  netbird-router/experimental/native-binat/docker-lab/lab.py \
+  --report /path/to/new-protected-report.json
 ```
 
-These tests use synthetic ACL maps and actual kernel packets/conntrack. Do not
-report them as a real NetBird policy lifecycle test. Both must eventually pass
-against the integrated implementation; do not remove the older release gates.
+The full Docker run uses the actual patched v0.80.0 Engine and pinned controller,
+internal Docker networks, synthetic certificates and generated disposable keys.
+It includes bootstrap and the native DROP/port API contract before enrollment.
+Contract verification never creates setup keys; the enrollment step owns their
+single creation. Contract failure aborts before client startup. Only sanitized
+fixed diagnostic classes/results may be published.
 
-## Native client build gate
+`--controller-only` remains a diagnostic for actual TLS/bootstrap/API/key
+creation, not a successful client or packet acceptance test.
 
-Obtain exactly netbirdio/netbird v0.80.0/fca64287cf51a85552a41b022013abbfdb335452.
-Verify ARCHITECTURE.md archive hash. From that source tree:
+For QEMU use a new work directory and independently prepared Debian 13 root:
 
 ```sh
-git apply --check /path/to/netbird-v0.80.0-policy-barrier.patch
-git apply /path/to/netbird-v0.80.0-policy-barrier.patch
-go test ./client/internal/acl ./client/firewall/nftables
+python3 tests/qemu_platforms.py --vm-only \
+  --native-small /path/to/verified/small-native-lab \
+  --native-readback /path/to/verified/ct-readback
 ```
 
-CI runs `tests/check-native-binat-patch.sh`: verified source/toolchain archives,
-compiled native publisher/core contracts, actual Go-publisher kernel packets,
-a mandatory hard-owner-death kernel gate, ARM64 Go contracts under QEMU-user,
-native authoritative-map/barrier contracts and actual Engine/nft compilation.
-Use pinned Go 1.26.7. All native code is contained in the patch, not the installer.
+Run only inside the script's explicitly isolated network-none Docker context.
+Do not use `--unit-only` as security evidence. The VM executes ABI readback,
+nonpersistent TUN SIGKILL/closure-failure packet tests and unchanged legacy P1
+counterexamples. Compiled-driver tests are synthetic transport/policy fixtures;
+they are not a second real-controller/Engine integration proof.
 
-The normal packet suite accepts `/native/native-publisher-lab`, built from the
-patched `./client/firewall/binat/cmd/lab`. It receives synthetic maps over stdin,
-not real NetworkMap/controller updates. The driver creates only protected
-synthetic lab scopes and refuses a namespace with any NIC besides loopback.
-CI repeats it with `OPENMAIN_NATIVE_OWNER_DEATH_GATE=1`; that gate must also
-pass before release. It currently demonstrates a surviving grant after SIGKILL.
-No successful release is claimed from the other passing scenarios.
+## Interpretation
 
-Actual client laboratory opt-in (only disposable isolated network namespaces):
-- Root-owned `/run/netbird-binat-lab` mode 0700; `config.json` regular 0600,
-  JSON array of `Virtual`, `Real`, `Overlay`, `LAN` strings. The overlay name
-  must match that client's real WireGuard interface. Use only synthetic nets.
-- Enable both lab environment variables described in ARCHITECTURE.md. Do not
-  enable an external OpenMain ACL helper concurrently. Keep native firewall on.
-- No production configuration/identity directory mounts, public endpoints,
-  tokens or broad forwarding exposure. No flowtable/offload objects.
-- Add translation only inside the fresh isolated namespace; confirm native
-  original-destination ACLs and persistent guard before starting traffic.
-- Capture only generic local ACK serial/epoch/digests; never credentials.
+Mandatory properties: syntax, translation, native policy enforcement, customer
+separation and fail-closed. The CI is AMD64-only. Twelve missing real-client
+cases may be consolidated when equivalent proofs exist, but are not presently
+marked successful or waived. The legacy new-flow bypasses remain relevant
+because the installer still ships that path. Its gates intentionally fail.
 
-## Future real-controller lab — mandatory before installer integration
+At starting head e5c002f577d4cd094c30f63fa84027e74366d0b7 both router CI jobs
+failed; monitoring validation passed. Earlier actual-client runs passed 23
+cases but left twelve blocked. Treat those as historical results, not proof
+for a future commit. This revision also restores the API contract accidentally
+omitted from the previous full-client orchestration.
 
-1. Prepare disposable lab-only controller, ordinary peer, primary and backup
-   clients. Pin all images/binaries and use NetBird's version-matched official
-   self-hosted deployment instructions. Set an outbound-deny isolated network;
-   expose the controller only inside it. Use lab-local DNS and a lab CA with
-   verified TLS; do not use production domains or disable TLS verification.
-2. Generate identities/setup keys exclusively in that controller. Use clean
-   profile directories and never mount host NetBird state. Capture no key or
-   token contents. Archive hashes, versions and non-secret IDs only.
-3. Native backend installs its persistent DENY boundary before enabling the
-   overlay/router. Disable neither firewall nor independent policies. Do not
-   start the current external ACL reconciler alongside the native publisher.
-4. Use separate isolated customer LANs with the same real prefix, different
-   virtual prefixes and primary/backup route metrics 100/200. Prove actual
-   metric/path changes rather than manually choosing a packet interface.
-5. Establish long-lived TCP and bidirectional UDP sessions. Confirm conntrack
-   state and counters without dumping unrelated tables or secret profiles.
-   Withdraw a source group through the synthetic controller. Define and record
-   native publication ACK; send old/new tuples and replies immediately afterward.
-   No post-withdrawal packet may pass the authorization hook. State delivery
-   latency and already-in-flight packets separately.
-6. Inject DROP during refresh, multiple independent overlapping source policies,
-   port restrictions, echo ICMP and RELATED ICMP errors. Invalid/partial maps and
-   interrupted publication must not restore an older ACCEPT snapshot.
-7. Kill/restart the client during every update stage; delete/rebuild its ordinary
-   native table via the native reset path. The persistent boundary remains closed
-   until the latest complete map succeeds. Test rejected nft transactions and
-   table-missing startup; abort acceptance on any unconfirmed closure.
-8. Preserve a foreign firewall table and a foreign DROP policy and independent
-   peer policies byte-for-byte; verify their packet effects still apply.
-9. Repeat on disposable Debian-13 VM, fresh unprivileged Proxmox LXC with TUN,
-   nftables/conntrack capabilities, and Raspberry Pi 3/4/5 ARM64. Exercise real
-   reboot/failover. QEMU synthetic BIOS/UEFI fixtures are not netinstall acceptance.
-10. Publish complete traces/counters and exact client/controller/installer SHAs.
-    Obtain Codex security review of that same head. Only after all mandatory
-    gates pass may a separate change propose installer integration.
-
-## Small native candidate
-
-Follow SMALL-NATIVE.md and apply only the small patch to the pinned clean source.
-Use its protected `/run/netbird-binat-small-lab/config.json`, with both lab env
-variables and explicit `NB_WG_KERNEL_DISABLED=true`. Keep native nftables enabled;
-no existing overlay interface or persistent TUN may be adopted. Do not enable the
-external helper or the old full-snapshot patch in this client/namespace.
-
-Run `bash tests/check-native-binat-patch.sh small`. The QEMU fixture additionally
-requires `tests/qemu_platforms.py --native-small /path/to/small-native-lab`; both
-TUN lifetime scenarios run before the unchanged legacy release gates. Do not use
-`--unit-only` to claim acceptance. The veth-death counterexample remains failing
-and is explicitly distinguished from verified process-owned TUN behavior.
-
-Before integration, use actual isolated clients/controller as described above:
-verify full-map delivery, normal policy refresh, original/reply TCP/UDP/ICMP,
-management disconnect, an invalid map, native update/readback failures, SIGKILL,
-systemd restart with the same identity, and real 100/200 failover. Verify every
-restart gets a fresh authoritative map before allowing a new flow. Verify no
-configuration-only message leaves an unexplained permanent outage. Measure Pi
-throughput/CPU and document the service-exit availability tradeoff.
-
-## Executable Docker controller/client laboratory
-
-See `docker-lab/RUNBOOK.txt` and `docker-lab/lab.py`. The version-pinned real
-combined controller, verified lab TLS, initial owner/PAT, synthetic one-off keys
-and actual DROP/port API contract have now run successfully in isolated Docker.
-The preferred small-patch REAL client Dockerfile and two overlapping LANs with
-two primary/backup pairs are provided. No callbacks or small-lab driver substitute
-for that client. Full client/Engine packet acceptance is **not yet demonstrated**:
-the local Go build is blocked by dependency-download policy, and required
-adversarial fault injectors remain incomplete. The full command fails for a
-missing real image or an incomplete gate; controller-only success never grants
-release. New CI stages run both paths while keeping every earlier P1 gate.
+Local Proxmox VM/LXC capability tests, actual Engine reset/restart, complete
+failover/recovery and unresolved native firewall P1s remain acceptance work.
+No production approval follows from a smaller CI. Historical procedures and
+unselected snapshot research are retained in RESEARCH-HISTORY.md.

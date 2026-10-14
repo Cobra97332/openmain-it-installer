@@ -1,175 +1,58 @@
-# Small native BINAT candidate — LAB ONLY, RELEASE BLOCKED
+# Selected small native patch — AMD64, LAB ONLY
 
-Current internal AMD64 CI scope and historical-versus-current test obligations:
-[INTERNAL-TEST-SCOPE.md](INTERNAL-TEST-SCOPE.md). The historical broad lab
-requirements below are not a claim of current platform support or approval.
+[ARCHITECTURE.md](ARCHITECTURE.md) defines the single-authority design.
+Only NetBird decides permissions. BINAT configuration contains virtual/real
+prefixes and interfaces, never users, groups or grants.
 
-Apply `netbird-v0.80.0-small-native.patch` to the pinned upstream NetBird v0.80.0
-source described in ARCHITECTURE.md. Apply ONE patch: the earlier
-`policy-barrier.patch` remains a research reference with its tests unchanged.
-The small candidate additionally needs the separately recorded
-`google-nftables-v0.3.0-ct-direction.patch`. The build-only
-`prepare-native-dependency.sh` verifies the exact upstream version/file hash,
-copies the public module to the disposable source tree and applies the UAPI fix.
-Dockerfile.client and check-native-binat-patch.sh perform this automatically.
-Native and dependency patch digests are both bound into the client build marker;
-a stale client built from only one matching patch is refused.
+## Build
 
-Neither patch is included in the OpenMain installer bundle. No existing router,
-NetBird identity, BINAT mapping, PSK or configuration is migrated.
+Apply `netbird-v0.80.0-small-native.patch` to clean NetBird v0.80.0, upstream
+`fca64287cf51a85552a41b022013abbfdb335452`.
+Archive SHA256: `ab453b7d015fd657c912c40986868784f77c3460f296dc07bc2c7f07f4bce7b7`.
+The build helper additionally applies
+`google-nftables-v0.3.0-ct-direction.patch` to the exact verified dependency.
+Linux encodes NFTA_CT_DIRECTION as NLA_U8; the dependency incorrectly used
+uint32. The fix preserves kernel readback instead of ignoring its error.
 
-## Authorization and lifecycle
+`Dockerfile.client` builds the actual CLI/Engine, not a policy callback fixture.
+Native and dependency patch digests jointly identify the build. There is no
+additional runtime library/service beyond the native process and nftables.
+Neither patch is installed by the existing OpenMain installer.
 
-NetBird's existing ACL manager remains the ONLY policy publisher. Its native
-RuleIDs, source groups/sets, ACCEPT/DROP order, protocols and port selectors are
-retained. No second complete-map rule compiler, durable serial receipt, copied
-ACL handles, controller ACK protocol, polling process or new service is added.
+## Runtime boundaries
 
-While opted in, native IPv4 route-rule address/protocol/port loads use conntrack
-ORIGINAL tuples. This applies to all IPv4 route destinations so a real-LAN rule
-cannot accidentally authorize a different virtual customer destination after
-DNAT. Port remapping/forwarding services are refused, not silently interpreted.
-The pinned controller's exact empty `PortInfo` message means no port
-restriction and is accepted, matching native `convertPortInfo`. A complete map may also retain an empty source list after membership removal:
-the native manager skips that rule and removes its previous grant. Validation
-accepts this zero-member state while still checking all destination/action/port
-semantics; it never interprets missing sources as a wildcard. Deletion failure
-keeps the gate closed. Explicit zero
-ports, invalid ranges and unknown fields remain rejected; no wildcard is inferred
-from an invalid explicit selector. A scoped native POSTROUTING filter before SNAT delegates original and reply
-traffic directly to the native routing ACL chain, then drops unmatched traffic.
-The native ESTABLISHED shortcut excludes the configured virtual prefixes. In opted-in mode NetBird's automatic external-chain passthrough writer is
-suppressed for external nftables chains AND the iptables-backed filter table,
-including monitor reconciliation and shutdown cleanup. Existing external INPUT/FORWARD
-rules remain authoritative constraints too; administrators must explicitly
-permit intended traffic where those rules would otherwise drop it. Native
-INPUT rules, foreign tables and unconfigured clients retain their usual behavior.
+* NetBird's existing route ACL manager owns the rules and their removal.
+* Native route loads use ORIGINAL tuples; a scoped check calls the same native
+  chain for original/reply traffic. No rules are copied into a parallel ACL.
+* CLOSED/READY tracks native publication health, not who is allowed access.
+  Complete validated maps and confirmed native kernel publication reopen it;
+  failed updates, unknown selectors, reset and management disconnect close it.
+* No cached grants are restored across restart. Local serial/epoch/digest checks
+  prevent obsolete completions reopening a closed scope.
+* Existing userspace WireGuard, fresh verified nonpersistent TUN and native
+  nftables are required. Persistent interfaces and alternate backends are
+  refused. Unconfirmed closure fail-stops the process; TUN lifetime is tested.
+* Orphaned experimental state is refused without destructive cleanup. Do not
+  roll back to an unpatched client over remaining experimental rules.
 
-A small separate scope-bound readiness gate starts CLOSED, closes before native
-changes and opens only after complete-map validation, native success and local
-kernel readback. An in-memory epoch rejects an open racing with reset/closure.
-An observed policy-only digest/serial refuses older or contradictory maps in the
-same owner lifetime, including after rejected maps. There is no cached permission
-or serial receipt to restore across restart: a fresh full authenticated map must
-succeed. Readiness is a LOCAL result, never controller confirmation.
+No external ACL polling, second publisher, durable policy receipt, user store or
+new recovery daemon is needed. The earlier complete-map publisher is archived
+research, not an alternative suggested for internal operation.
 
-Management `Sync()` retries transport failures internally; waiting for its outer
-return is insufficient. The current Engine therefore registers a synchronous
-stream-disconnection listener on the existing management client. A failed Sync
-stream closes and confirms the local gate, advancing its epoch, BEFORE retry.
-The callback runs outside the transport state mutex and never takes the Engine
-sync mutex. Reconnect does not reopen it: only a new full validated NetworkMap
-and native kernel publication do. Shutdown unregisters this Engine's listener.
-Ordinary clients without BINAT retain their behavior; Job-stream failures are
-not used as policy events. No additional process, polling or ACL copy is added.
-This source-level transport correction still needs the mandatory actual-client
-controller-outage/reconnection packet proof before release.
+## Current limits
 
-The owned gate layout must match its closed/open kernel reference exactly;
-unknown layouts are refused unchanged. Closed/open layout references are compiled once and cached for this owner
-lifetime; every check still reads the live kernel. Random no-hook candidate
-names avoid a startup collision after owner death. A killed startup can leave
-an inert candidate table for later manual lab cleanup, never an active grant.
-These bounded local nft invocations run
-only inside NetBird lifecycle callbacks. They are not ACL synchronization timers.
+New connections must obey locally applied NetBird policy. Brief continuation of
+existing connections after withdrawal is accepted; the current implementation
+has stronger original/reply checks, which are preserved. No distributed zero
+latency or controller-to-kernel acknowledgement is claimed.
 
-## Small, existing dataplane instead of another lifetime supervisor
+Native firewalld trust and stale foreign passthrough findings remain open P1s.
+They prevent approval; being private/internal does not make them irrelevant.
+The selected supported target is Debian 13 AMD64. Proxmox VM/LXC still require
+local TUN/capability acceptance. ARM64/Pi is not an experimental delivery target.
+Existing customers, kernel-WireGuard installations, identities and mappings are
+unchanged. No automatic migration or installer integration is included.
 
-Kernel WireGuard devices can outlive NetBird. A new actual-packet counterexample
-proves a NEW connection can pass after the policy-owner process dies. Merely
-accepting delayed established-flow revocation does not fix that failure.
-
-The candidate therefore requires NetBird's EXISTING userspace WireGuard mode:
-`NB_WG_KERNEL_DISABLED=true`, a fresh overlay interface and a verified
-nonpersistent TUN. Pre-existing overlays, kernel WireGuard, non-TUN devices,
-persistent TUNs, netstack/non-native firewall backends are refused. TUN type and
-persistence are queried through NetBird's existing rtnetlink library, in the
-current network namespace; inherited sysfs mounts are not used as evidence. No automatic
-mode switch or migration is performed. Even WITHOUT the opt-in variable, the
-patched Linux Engine queries current-namespace nft tables/chains before creating
-any tunnel. An orphaned small/old experimental gate or native BINAT boundary
-refuses startup, including with firewall disabled or another backend. Inspection
-failure refuses startup; nothing is deleted. An incomplete opt-out cannot reuse
-an open orphan. Non-Linux stock startup without opt-in stays unchanged.
-Do not replace this binary with an unpatched stock client while experimental
-kernel state remains: that client has no orphan check. Verified manual cleanup
-is required for rollback/opt-out; it is never an automatic customer migration. The source paths are
-`client/iface/iface_new_linux.go`, `device/kernel_module_linux.go` and
-`device/device_usp_unix.go`; the pinned wireguard-go CreateTUN opens the descriptor.
-
-A hard process death closes the transport/TUN descriptors; the kernel removes
-the nonpersistent TUN. If an owned gate closure cannot be confirmed after that
-TUN has been verified, NetBird exits immediately instead of continuing with an
-unknown grant. Its existing service may restart it, but startup remains closed
-until a fresh complete policy applies. This can interrupt availability, including
-on transient nft read failures. No extra supervisor or automatic firewall repair
-is introduced. Unknown owned layouts require investigation; foreign rules are
-never erased to recover availability.
-
-Assumptions: no independent privileged writer duplicates/persists the TUN,
-replaces the guard/native rules, installs flowtable bypasses or impersonates its
-interface. This is not protection against a malicious local root process.
-
-## Guarantees, accepted risks and required proof
-
-New accesses must be evaluated against the locally delivered native policy;
-unsupported/incomplete maps must not reopen the gate. The implementation also
-tries to deny established original/reply traffic on policy removal, stronger
-than the agreed operating model. Packet drainage and zero controller delivery
-latency are NOT guaranteed. Brief existing-flow continuation is accepted; an
-unbounded NEW-flow grant after owner death is not. Userspace-WireGuard throughput,
-real daemon ordering/reconnect and real primary/backup failover need acceptance.
-
-Debian 13 AMD64/ARM64 are the target. Proxmox VM/LXC and Pi must provide TUN and
-native nftables. Raspberry Pi hardware performance, real Proxmox and actual
-isolated NetBird clients/controller have NOT been certified by source/fixture
-checks. Existing kernel-WireGuard customers remain unchanged and unsupported by
-this experiment; adopting this constraint needs separate operational approval.
-
-## Tests — retain failures honestly
-
-`bash tests/check-native-binat-patch.sh small` builds this separate patch, runs
-native Go tests, real kernel gate/UDP/TCP/RELATED-ICMP tests, ARM64 QEMU-user,
-and compiles the actual ACL manager, Engine and nft backend. The old variant and
-all SIX legacy P1 counterexamples still run. The small gate-only veth-owner-death
-counterexample also still runs and fails: that fixture retains a dataplane which
-the real candidate explicitly refuses. It is NOT silently removed/waived or
-reported as passed. It demonstrates why the TUN constraint is necessary.
-
-The platform CI additionally executes `nft_small_tun_lifetime.py` twice in fresh
-QEMU network namespaces: SIGKILL and unconfirmed-closure fail-stop. Those tests
-use actual TUN, UDP socket, nftables, conntrack and captured LAN packets. The
-transport is synthetic plaintext, NOT real WireGuard/NetBird enrollment. They
-must prove an authorized flow, closed-gate denial, descriptor/interface loss and
-denial of a NEW tuple after owner exit; unknown owned layouts/foreign rules stay
-unchanged. BIOS/UEFI results remain synthetic remaster boot probes, not official
-Debian Installer acceptance.
-
-No security assertion was weakened. Some legacy assertions require immediate
-existing-flow revocation beyond the accepted model, but remain unchanged because
-the shipped helper still has independent NEW-flow P1s. Overall CI cannot be called
-successful while those gates fail. Do not integrate or merge this experiment
-until actual native clients/controller, lifecycle and platform acceptance pass
-and an exact-head security review confirms the boundaries.
-
-## Kernel readback ABI correction (mandatory, no fallback)
-
-Linux nftables encodes `NFTA_CT_DIRECTION` as NLA_U8. google/nftables v0.3.0
-incorrectly decodes it as uint32, making native original-tuple readback fail with
-`attribute 3 is not a uint32; length: 1` AFTER successful kernel installation.
-This was reproduced with the exact dependency and a real isolated kernel.
-The separate dependency patch encodes/decodes the correct byte, rejects unknown
-directions/malformed encodings and preserves the public Go field type.
-Original AND reply address/port rules now roundtrip with unchanged UserData and
-nonzero handles. Kernel confirmation is retained; no parse-error waiver exists.
-
-Actual AMD64 kernel roundtrip and Go/race ABI tests pass locally. An attempted
-ARM64 kernel roundtrip under QEMU-user FAILED: it does not support
-NETLINK_NETFILTER sockets. ARM64 ABI byte tests run under QEMU-user; they are
-NOT ARM kernel/client proof. Full ARM64 VM/hardware kernel acceptance remains
-required and production release remains BLOCKED.
-
-The real-client lab captures a protected canonical foreign-table reference
-BEFORE starting the Engine. It checks that reference after first publication
-and later changes, not merely against a post-start snapshot. Symlinks, writable
-or missing references are refused; no automatic repair/removal is performed.
+See [INTERNAL-TEST-SCOPE.md](INTERNAL-TEST-SCOPE.md) for actual evidence and
+unresolved cases. Passing synthetic nftables tests alone is not actual Engine
+acceptance. Production approval remains blocked.

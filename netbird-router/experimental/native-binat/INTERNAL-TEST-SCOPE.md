@@ -45,7 +45,7 @@ The unselected full-snapshot publisher and Python snapshot kernel experiment
 are no longer required CI jobs. Neither is installed or used by the selected
 client. Their source, regressions and known security findings remain intact;
 they must not be deployed based on this candidate's results. Manual research:
-`bash tests/check-native-binat-patch.sh` and `tests/nft_native_snapshot_kernel.py`.
+`bash tests/check-native-binat-patch.sh snapshot` and `tests/nft_native_snapshot_kernel.py`.
 
 ARM64 build/emulation and synthetic ISO BIOS/UEFI boots are outside this support
 scope. The scripts remain available manually. `tests/qemu_platforms.py --vm-only`

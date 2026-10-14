@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Public, pinned source preparation; execution only in network-none Docker.
 set -Eeuo pipefail
-variant=${1:-snapshot}
+variant=${1:-small}
 # Native experimental support is AMD64-only in the internal CI profile.
 # The historical full architecture run remains available explicitly.
 architectures=${OPENMAIN_NATIVE_TEST_ARCHES:-amd64,arm64}

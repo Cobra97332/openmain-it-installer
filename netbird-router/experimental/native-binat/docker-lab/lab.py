@@ -38,7 +38,7 @@ def safe_summary(report, status):
     errors.update({'lab_wait_timeout', 'lab_lan_interface_ambiguous',
                    'lab_client_build_mismatch', 'lab_client_upstream_mismatch',
                    'lab_setup_pat_missing', 'lab_setup_key_missing', 'lab_controller_not_pristine',
-                   'lab_controller_version_mismatch', 'lab_setup_not_confirmed',
+                   'lab_controller_version_mismatch', 'lab_controller_policy_contract', 'lab_setup_not_confirmed',
                    'lab_controller_has_foreign_policy', 'lab_fresh_local_publication_missing',
                    'lab_packet_permission_mismatch', 'lab_packet_target_refused',
                    'lab_authorized_tcp_reply_missing', 'lab_authorized_udp_reply_missing',
@@ -215,6 +215,7 @@ def main():
             lab.compose('up', '-d', '--pull', 'never', 'controller', 'tools')
             report['cases'].update(lab.control('bootstrap'))
             report['cases'].update(lab.control('api_contract'))
+            report['cases'].update(lab.control('enrollment_keys'))
             status = 0  # explicitly ONLY the controller/API command succeeds
         else:
             report['stage'] = 'client_image'
@@ -226,6 +227,9 @@ def main():
             lab.compose('up', '-d', '--pull', 'never', 'controller', 'tools', 'lan-a', 'lan-b')
             report['stage'] = 'controller_bootstrap'
             report['cases'].update(lab.control('bootstrap'))
+            # The full client run includes the same native DROP/port contract.
+            # It creates no setup keys; enrollment_keys owns that single step.
+            report['cases'].update(lab.control('api_contract'))
             report['stage'] = 'enrollment_keys'
             report['cases'].update(lab.control('enrollment_keys'))
             report['stage'] = 'client_compose'

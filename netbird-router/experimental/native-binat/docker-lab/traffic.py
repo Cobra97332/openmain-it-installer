@@ -208,7 +208,10 @@ def socket_session(host, protocol, port=None, passive=False):
 
 
 def main():
-    if sys.argv[1] == 'related':
+    if sys.argv[1] == 'passive-proof':
+        from passive import read
+        print(json.dumps(read()))
+    elif sys.argv[1] == 'related':
         from related import client
         client(sys.argv[2])
     elif sys.argv[1] == 'foreign-reference':

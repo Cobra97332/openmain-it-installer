@@ -162,16 +162,25 @@ def establish_sessions(lab, sessions):
 def ping(lab, allowed):
     deadline = time.monotonic() + 25
     while True:
-        reply = json.loads(lab.exec('peer', 'python3', '/opt/lab/traffic.py', 'ping', '198.18.10.100'))['reply']
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError('lab_icmp_permission_mismatch')
+        reply = json.loads(lab.exec('peer', 'python3', '/opt/lab/traffic.py', 'ping', '198.18.10.100',
+                                   timeout=remaining))['reply']
+        if time.monotonic() >= deadline:
+            raise RuntimeError('lab_icmp_permission_mismatch')
         if reply == allowed:
             return
         if not allowed or time.monotonic() >= deadline:
             raise RuntimeError('lab_icmp_permission_mismatch')
-        time.sleep(0.3)
+        time.sleep(min(0.3, max(0, deadline - time.monotonic())))
 
 
 def extended_policy_cases(lab, result):
-    b_routers = ('primary-b', 'backup-b')
+    # Each control call mutates ONE policy only. All routers acknowledge the
+    # intervening map before the next write, so a prior queued map cannot stand
+    # in for the next operation's publication barrier.
+    b_routers = ('primary-a', 'backup-a', 'primary-b', 'backup-b')
     previous = {r: observe(lab, r) for r in b_routers}
     lab.control('split_sources')
     wait_publication(lab, previous)
@@ -188,19 +197,23 @@ def extended_policy_cases(lab, result):
     result['multiple_independent_acl_sources'] = 'pass'
 
     # Prove the alternate services and ICMP work before testing their denial.
-    for proto, port in (('tcp', 8082), ('udp', 8083)):
+    for proto, port in (('tcp', 8082), ('udp', 8083), ('tcp', 8081), ('udp', 8080)):
         probe(lab, protocols=(proto,), port=port)
     ping(lab, True)
-    a_routers = ('primary-a', 'backup-a')
+    a_routers = b_routers
+    for operation in ('extra_udp', 'extra_icmp'):
+        previous = {r: observe(lab, r) for r in a_routers}
+        lab.control(operation)
+        wait_publication(lab, previous)
     previous = {r: observe(lab, r) for r in a_routers}
-    lab.control('restrict_a', icmp=True)
+    lab.control('restrict_a')
     wait_publication(lab, previous)
     probe(lab)
-    for proto, port in (('tcp', 8082), ('udp', 8083)):
+    for proto, port in (('tcp', 8082), ('udp', 8083), ('tcp', 8081), ('udp', 8080)):
         probe(lab, protocols=(proto,), port=port, allowed=False)
     ping(lab, True)
     previous = {r: observe(lab, r) for r in a_routers}
-    lab.control('restrict_a', icmp=False)
+    lab.control('remove_icmp')
     wait_publication(lab, previous)
     ping(lab, False)
     probe(lab)
@@ -208,8 +221,11 @@ def extended_policy_cases(lab, result):
     lab.control('restore_a')
     wait_publication(lab, previous)
     ping(lab, True)
-    for proto, port in (('tcp', 8082), ('udp', 8083)):
+    for proto, port in (('tcp', 8082), ('udp', 8083), ('tcp', 8081), ('udp', 8080)):
         probe(lab, protocols=(proto,), port=port)
+    previous = {r: observe(lab, r) for r in a_routers}
+    lab.control('remove_udp')
+    wait_publication(lab, previous)
     result['icmp_port_protocol_restrictions'] = 'pass'
 
 
@@ -222,6 +238,12 @@ def related_error(lab, session, allowed):
     after = sum(observe(lab, r)['related_packets'] for r in routers)
     if after <= before:
         raise RuntimeError('lab_related_classification_missing')
+
+
+def prove_passive_sender(lab, barrier):
+    emitted = json.loads(lab.exec('lan-a', 'python3', '/opt/lab/traffic.py', 'passive-proof'))
+    if any(type(emitted.get(p)) is not int or emitted[p] <= barrier for p in ('tcp', 'udp')):
+        raise RuntimeError('lab_passive_sender_unproven')
 
 
 def acceptance(lab):
@@ -270,6 +292,7 @@ def acceptance(lab):
         result['related_icmp'] = 'pass'
         if any(s.exchange({'after_ns': barrier}) for s in passive):
             raise RuntimeError('lab_reply_only_withdrawal_failed')
+        prove_passive_sender(lab, barrier)
         result['established_reply_only_tcp_udp'] = 'pass'
         if any(s.exchange() for s in sessions):
             raise RuntimeError('lab_existing_permission_survived_local_withdrawal')

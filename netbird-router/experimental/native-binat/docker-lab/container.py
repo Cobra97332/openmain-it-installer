@@ -145,7 +145,7 @@ def group(name, peers=None):
 
 def policy(name, src, dst, protocol='all', action='accept', ports=None):
     rule = {'name': name, 'enabled': True, 'action': action, 'protocol': protocol,
-            'bidirectional': protocol == 'all', 'sources': [src], 'destinations': [dst]}
+            'bidirectional': protocol in ('all', 'icmp'), 'sources': [src], 'destinations': [dst]}
     if ports:
         rule['ports'] = [str(p) for p in ports]
     return api('/api/policies', 'POST', {'name': name, 'enabled': True, 'rules': [rule]})['id']
@@ -156,19 +156,33 @@ def replace_lab_policy(state, lan, rules):
     pid = state['policies'][lan]
     body = {'name': 'lab-allow-' + lan, 'enabled': True, 'rules': rules}
     api('/api/policies/' + pid, 'PUT', body)
+    verify_lab_policy(pid, rules)
+    return {'controller_policy_changed': True, 'controller_kernel_ack': False}
+
+
+def verify_lab_policy(pid, rules):
     actual = api('/api/policies/' + pid)
-    fields = ('action', 'protocol', 'bidirectional', 'sources', 'destinations', 'ports')
+    if actual.get('enabled') is not True:
+        raise RuntimeError('lab_policy_readback_mismatch')
+    fields = ('enabled', 'action', 'protocol', 'bidirectional', 'sources', 'destinations', 'ports')
     def selectors(items):
         result = []
         for rule in items:
             value = {k: (rule.get(k) or []) if k == 'ports' else rule.get(k) for k in fields}
             for key in ('sources', 'destinations'):
+                if not isinstance(value[key], list):
+                    raise RuntimeError('lab_policy_readback_mismatch')
                 value[key] = [g['id'] if isinstance(g, dict) else g for g in value[key]]
             result.append(value)
         return result
     if selectors(actual.get('rules', [])) != selectors(rules):
         raise RuntimeError('lab_policy_readback_mismatch')
-    return {'controller_policy_changed': True, 'controller_kernel_ack': False}
+
+
+def save_objects(state):
+    temporary = '/lab/objects.' + secrets.token_hex(8)
+    write(temporary, json.dumps(state))
+    os.replace(temporary, '/lab/objects')
 
 
 def keys():
@@ -226,13 +240,32 @@ def configure():
 
 def mutate(req):
     state = json.loads(Path('/lab/objects').read_text())
+    if req['operation'] in ('extra_udp', 'extra_icmp', 'remove_udp', 'remove_icmp'):
+        op = req['operation']
+        protocol = op.split('_')[1]
+        extra = state.setdefault('protocol_policies', {})
+        if op.startswith('extra_'):
+            if protocol in extra:
+                raise RuntimeError('lab_policy_stage_repeated')
+            ports = [8081] if protocol == 'udp' else None
+            pid = policy('lab-extra-' + protocol, state['allowed'], state['dest']['a'], protocol=protocol, ports=ports)
+            rule = {'enabled': True, 'action': 'accept', 'protocol': protocol, 'bidirectional': protocol == 'icmp',
+                    'sources': [state['allowed']], 'destinations': [state['dest']['a']],
+                    **({'ports': ['8081']} if ports else {})}
+            verify_lab_policy(pid, [rule])
+            extra[protocol] = pid
+        else:
+            pid = extra.pop(protocol)
+            api('/api/policies/' + pid, 'DELETE')
+            if any(p['id'] == pid for p in api('/api/policies')):
+                raise RuntimeError('lab_policy_readback_mismatch')
+        save_objects(state)
+        return {'controller_policy_changed': True, 'controller_kernel_ack': False}
     if req['operation'] in ('split_sources', 'restore_b', 'restrict_a', 'restore_a'):
         op = req['operation']
         lan = 'b' if op in ('split_sources', 'restore_b') else 'a'
         source = state['excluded'] if op == 'split_sources' else state['allowed']
-        protocols = [('tcp', ['8080']), ('udp', ['8081'])] if op == 'restrict_a' else [('all', [])]
-        if op == 'restrict_a' and req.get('icmp') is True:
-            protocols.append(('icmp', []))
+        protocols = [('tcp', ['8080'])] if op == 'restrict_a' else [('all', [])]
         rules = [{'name': 'lab-' + protocol, 'enabled': True, 'action': 'accept',
                   'protocol': protocol, 'bidirectional': protocol in ('all', 'icmp'),
                   'sources': [source], 'destinations': [state['dest'][lan]],
@@ -359,6 +392,8 @@ def lan():
     cmd('ip', 'addr', 'add', '192.168.88.100/24', 'dev', dev)
     from related import record
     threading.Thread(target=record, daemon=True).start()
+    from passive import capture
+    threading.Thread(target=capture, args=(dev,), daemon=True).start()
     def serve_tcp(port):
         with socket.socket() as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -375,7 +410,7 @@ def lan():
     def stream(conn, peer=None):
         # Real server-originated data after one initial client handshake.
         try:
-            for _ in range(1200):
+            while True:  # lifetime is the disposable LAN container, not 60 s
                 payload = ('openmain-passive:%d\n' % time.monotonic_ns()).encode()
                 if peer is None:
                     conn.sendall(payload)
@@ -399,8 +434,8 @@ def lan():
             while True:
                 _, peer = s.recvfrom(2048)
                 threading.Thread(target=stream, args=(s, peer), daemon=True).start()
-    for function, args in [(serve_tcp, (8080,)), (serve_tcp, (8082,)),
-                           (serve_udp, (8081,)), (serve_udp, (8083,)),
+    for function, args in [(serve_tcp, (8080,)), (serve_tcp, (8081,)), (serve_tcp, (8082,)),
+                           (serve_udp, (8080,)), (serve_udp, (8081,)), (serve_udp, (8083,)),
                            (passive_tcp, ()), (passive_udp, ())]:
         threading.Thread(target=function, args=args, daemon=True).start()
     threading.Event().wait()

@@ -23,21 +23,86 @@ packets = load('packets')
 container = load('container')
 traffic = load('traffic')
 related = load('related')
+passive = load('passive')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_crossed_protocol_denials_are_required_before_marking_case_passed(self):
+        for protocols, port in ((('tcp',), 8081), (('udp',), 8080)):
+            def deny_failure(*args, **kwargs):
+                if kwargs.get('protocols') == protocols and kwargs.get('port') == port and kwargs.get('allowed') is False:
+                    raise RuntimeError('lab_unauthorized_crossed_pair')
+            result = {}
+            with patch.object(packets, 'observe', return_value={}), patch.object(packets, 'wait_publication'), \
+                 patch.object(packets, 'ping'), patch.object(packets, 'probe', side_effect=deny_failure):
+                with self.assertRaisesRegex(RuntimeError, '^lab_unauthorized_crossed_pair$'):
+                    packets.extended_policy_cases(Mock(), result)
+            self.assertNotIn('icmp_port_protocol_restrictions', result)
+
+    def test_passive_silence_cannot_pass_without_post_barrier_wire_emission(self):
+        instance = Mock()
+        for proof in ({'tcp': 101, 'udp': 99}, {'tcp': 101}, {'tcp': True, 'udp': 101}):
+            instance.exec.return_value = json.dumps(proof)
+            with self.assertRaisesRegex(RuntimeError, '^lab_passive_sender_unproven$'):
+                packets.prove_passive_sender(instance, 100)
+        instance.exec.return_value = '{"tcp":101,"udp":102}'
+        packets.prove_passive_sender(instance, 100)
+
+    def test_wire_proof_requires_the_sender_protocol_and_framed_timestamp(self):
+        import socket
+        import struct
+        ip = bytearray(20); ip[0] = 0x45; ip[9] = 17
+        ip[12:16] = socket.inet_aton('192.168.88.100')
+        ethernet = b'\0' * 12 + b'\x08\x00'
+        udp = struct.pack('!HHHH', 8085, 50000, 40, 0)
+        payload = b'openmain-passive:12345\n'
+        self.assertEqual(passive.timestamp(ethernet + ip + udp + payload), ('udp', 12345))
+        self.assertIsNone(passive.timestamp(ethernet + ip + udp + payload[:-1]))
+        wrong_port = struct.pack('!HHHH', 8081, 50000, 40, 0)
+        self.assertIsNone(passive.timestamp(ethernet + ip + wrong_port + payload))
+
+    def test_exec_lookup_and_command_share_a_remaining_budget(self):
+        instance = lab.Lab.__new__(lab.Lab)
+        instance.compose = Mock(return_value=Mock(stdout='synthetic-container'))
+        with patch.object(lab.time, 'monotonic', side_effect=[0, 0, 24.9]), \
+             patch.object(lab, 'docker', return_value=Mock(returncode=0, stdout='{}')) as command:
+            instance.exec('peer', 'synthetic-command', timeout=25)
+        self.assertEqual(instance.compose.call_args.kwargs['timeout'], 25)
+        self.assertAlmostEqual(command.call_args.kwargs['timeout'], 0.1)
+        with patch.object(lab.time, 'monotonic', side_effect=[0, 0, 25]), patch.object(lab, 'docker') as command:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                instance.exec('peer', 'synthetic-command', timeout=25)
+        command.assert_not_called()
+
+    def test_policy_sources_omitted_by_controller_formatter_remain_a_failure(self):
+        rule = {'sources': ['source'], 'destinations': ['target']}
+        with patch.object(container, 'api', return_value={'enabled': True, 'rules': [dict(rule, sources=None)]}):
+            with self.assertRaisesRegex(RuntimeError, '^lab_policy_readback_mismatch$'):
+                container.verify_lab_policy('synthetic', [rule])
     def test_policy_readback_normalizes_group_objects_and_refuses_mismatch(self):
         state = {'policies': {'a': 'lab-policy'}}
         rule = {'action': 'accept', 'protocol': 'tcp', 'bidirectional': False,
                 'sources': ['source'], 'destinations': ['target'], 'ports': ['8080']}
         observed = dict(rule, sources=[{'id': 'source', 'name': 'synthetic'}],
                         destinations=[{'id': 'target'}])
-        with patch.object(container, 'api', side_effect=[{}, {'rules': [observed]}]) as api:
+        with patch.object(container, 'api', side_effect=[{}, {'enabled': True, 'rules': [observed]}]) as api:
             container.replace_lab_policy(state, 'a', [rule])
         self.assertEqual(api.call_args_list[0].args[:2], ('/api/policies/lab-policy', 'PUT'))
-        with patch.object(container, 'api', side_effect=[{}, {'rules': [dict(observed, ports=['8082'])]}]):
+        with patch.object(container, 'api', side_effect=[{}, {'enabled': True, 'rules': [dict(observed, ports=['8082'])]}]):
             with self.assertRaisesRegex(RuntimeError, '^lab_policy_readback_mismatch$'):
                 container.replace_lab_policy(state, 'a', [rule])
+
+    def test_extra_icmp_policy_has_one_mutation_and_strict_enabled_readback(self):
+        state = {'allowed': 'source', 'dest': {'a': 'target'}}
+        actual = {'enabled': True, 'rules': [{'enabled': True, 'action': 'accept', 'protocol': 'icmp',
+            'bidirectional': True, 'sources': [{'id': 'source'}], 'destinations': [{'id': 'target'}]}]}
+        with patch.object(container.Path, 'read_text', return_value=json.dumps(state)), \
+             patch.object(container, 'policy', return_value='new-lab-id') as create, \
+             patch.object(container, 'api', return_value=actual) as api, patch.object(container, 'save_objects') as save:
+            container.mutate({'operation': 'extra_icmp'})
+        self.assertEqual(create.call_args.kwargs['protocol'], 'icmp')
+        api.assert_called_once_with('/api/policies/new-lab-id')  # GET, no second PUT
+        self.assertEqual(save.call_args.args[0]['protocol_policies'], {'icmp': 'new-lab-id'})
 
     def test_related_denial_requires_kernel_related_classification(self):
         session = Mock()

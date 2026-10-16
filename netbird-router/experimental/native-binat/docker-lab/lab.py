@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 
 CONTROLLER = ('netbirdio/netbird-server:0.80.0@sha256:'
               '05b3d8d6d056e5062a2965d4d6e5d6d83f09f2bf9133947a8e5972e0e0e7a261')
@@ -45,7 +46,7 @@ def safe_summary(report, status):
                    'lab_authorized_tcp_reply_missing', 'lab_authorized_udp_reply_missing',
                    'lab_unauthorized_tcp_reply_observed', 'lab_unauthorized_udp_reply_observed', 'lab_established_connection_missing',
                    'lab_existing_permission_survived_local_withdrawal', 'lab_existing_permission_survived_drop',
-                   'lab_passive_baseline_missing', 'lab_reply_only_withdrawal_failed',
+                   'lab_passive_baseline_missing', 'lab_reply_only_withdrawal_failed', 'lab_passive_sender_unproven',
                    'lab_icmp_permission_mismatch', 'lab_icmp_probe_failed', 'lab_policy_readback_mismatch',
                    'lab_related_delivery_mismatch', 'lab_related_classification_missing', 'lab_related_parent_missing',
                    'lab_controller_loss_gate_remained_open', 'lab_controller_loss_existing_flow_allowed',
@@ -66,6 +67,9 @@ def safe_summary(report, status):
                 'userspace_tun_owner_death', 'no_optin_orphan_restart',
                 'stale_accept_restart_refused', 'engine_restart_same_identity',
                 'primary_backup_failover_100_200')},
+            'additional_gates_passed': {name: cases.get(name) == 'pass' for name in (
+                'related_icmp', 'icmp_port_protocol_restrictions',
+                'multiple_independent_acl_sources', 'established_reply_only_tcp_udp')},
             'passed_cases': sum(v == 'pass' for v in cases.values()),
             'failed_or_blocked_cases': sum(v != 'pass' for v in cases.values())}
 
@@ -146,11 +150,17 @@ class Lab:
     def compose(self, *args, check=True, timeout=600):
         return docker('compose', '-p', self.project, '-f', str(self.file), *args, check=check, timeout=timeout)
 
-    def exec(self, name, *args, data=None):
-        cid = self.compose('ps', '-q', name).stdout.strip()
+    def exec(self, name, *args, data=None, timeout=600):
+        deadline = time.monotonic() + timeout
+        def remaining():
+            value = deadline - time.monotonic()
+            if value <= 0:
+                raise subprocess.TimeoutExpired('isolated-lab-exec', timeout)
+            return value
+        cid = self.compose('ps', '-q', name, timeout=remaining()).stdout.strip()
         if not cid or '\n' in cid:
             raise RuntimeError('missing_lab_container:' + name)
-        r = docker('exec', '-i', cid, *args, data=data, check=False)
+        r = docker('exec', '-i', cid, *args, data=data, check=False, timeout=remaining())
         if r.returncode:
             try:
                 error = json.loads(r.stdout)['error_class']

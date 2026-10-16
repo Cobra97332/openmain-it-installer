@@ -185,3 +185,24 @@ source case completed: it incorrectly waited for A's unchanged native policy
 after editing only B. Unaffected routers need not republish. Barriers now track
 only the edited customer's PRIMARY AND BACKUP, still one mutation at a time.
 The aborted run (16 passing entries, 22 failed/blocked) is not new case proof.
+
+The f0c4991 actual run proved A, E and F (RELATED-ICMP, protocol/port restrictions,
+independent customer sources). H correctly refused to pass with
+lab_passive_sender_unproven: absence of client replies did not prove that both
+senders emitted after the barrier. This is incomplete test evidence, not an
+observed unauthorized reply. The subsequent fixture pauses application sends
+BEFORE withdrawal, confirms TCP SIOCOUTQ=0 and both pause markers, retains the
+same sockets, then resumes SERVER-ONLY writes AFTER the local-publication
+barrier. Wire timestamps and client denial are still mandatory. There are no
+new client application requests or permission/conntrack changes in this pause.
+This specifically tests established-socket reply revocation, not uninterrupted
+stream throughput during controller-to-kernel propagation. That stronger
+concurrent/reset acceptance remains separately BLOCKED. No grace-period or
+sender-silence pass is introduced. Only boolean per-protocol missing-proof
+flags are exported if emission is still unproven.
+
+Additional local diagnostics: strict single-rule selector API readback passed
+on the actual isolated pinned controller. A separate three-container plain-NAT
+helper experiment failed its initial TCP baseline with a socket timeout, before
+NetBird was involved. That experiment is NOT a policy proof and its standalone
+network baseline remains unverified. Real-client CI is the authoritative run.

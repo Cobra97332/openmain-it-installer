@@ -249,7 +249,9 @@ def related_error(lab, session, allowed):
 def prove_passive_sender(lab, barrier):
     emitted = json.loads(lab.exec('lan-a', 'python3', '/opt/lab/traffic.py', 'passive-proof'))
     if any(type(emitted.get(p)) is not int or emitted[p] <= barrier for p in ('tcp', 'udp')):
-        raise RuntimeError('lab_passive_sender_unproven')
+        error = RuntimeError('lab_passive_sender_unproven')
+        error.sender_failure = {p: type(emitted.get(p)) is int and emitted[p] > barrier for p in ('tcp', 'udp')}
+        raise error
 
 
 def acceptance(lab):
@@ -277,6 +279,7 @@ def acceptance(lab):
             passive.append(session)
             if not session.exchange():
                 raise RuntimeError('lab_passive_baseline_missing')
+        lab.exec('lan-a', 'python3', '/opt/lab/traffic.py', 'passive-pause')
         related = Session(lab, 'peer', '198.18.10.100', 'udp', mode='related')
         deadline = time.monotonic() + 15
         while True:
@@ -294,6 +297,7 @@ def acceptance(lab):
         lab.control('membership', allow=False)
         withdrawn = wait_publication(lab, initial)
         barrier = time.monotonic_ns()
+        lab.exec('lan-a', 'python3', '/opt/lab/traffic.py', 'passive-resume')
         related_error(lab, related, False)
         result['related_icmp'] = 'pass'
         if any(s.exchange({'after_ns': barrier}) for s in passive):
@@ -415,6 +419,8 @@ def acceptance(lab):
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as e:
         if hasattr(e, 'publication_failure'):
             result['publication_failure'] = e.publication_failure
+        if hasattr(e, 'sender_failure'):
+            result['sender_failure'] = e.sender_failure
         result['real_client_gate_failure'] = type(e).__name__
         if isinstance(e, RuntimeError) and str(e).startswith('lab_'):
             result['real_client_gate_failure'] = str(e)

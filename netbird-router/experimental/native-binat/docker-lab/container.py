@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Container-side laboratory operations; API bodies and keys never reach logs."""
 import base64
+import fcntl
 import ipaddress
 import json
 import os
@@ -9,6 +10,7 @@ from pathlib import Path
 import secrets
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import threading
@@ -411,6 +413,26 @@ def lan():
         # Real server-originated data after one initial client handshake.
         try:
             while True:  # lifetime is the disposable LAN container, not 60 s
+                pause = Path('/run/lab-passive-pause')
+                try:
+                    stamp = pause.read_text()
+                except FileNotFoundError:
+                    stamp = None
+                if stamp is not None:
+                    # Preserve the existing socket but leave TCP send-window
+                    # capacity for an actual AFTER-publication packet. A quiet
+                    # congested sender is never a successful revocation proof.
+                    # Linux SIOCOUTQ includes unsent AND unacknowledged bytes.
+                    if peer is None and struct.unpack('I', fcntl.ioctl(conn.fileno(), 0x5411, struct.pack('I', 0)))[0]:
+                        time.sleep(0.01)
+                        continue
+                    protocol = 'tcp' if peer is None else 'udp'
+                    marker = Path('/run/lab-passive-paused-' + protocol)
+                    fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+                    with os.fdopen(fd, 'w') as output:
+                        output.write(stamp)
+                    time.sleep(0.01)
+                    continue
                 payload = ('openmain-passive:%d\n' % time.monotonic_ns()).encode()
                 if peer is None:
                     conn.sendall(payload)

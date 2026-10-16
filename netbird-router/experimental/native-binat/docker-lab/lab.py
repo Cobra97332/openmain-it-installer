@@ -46,7 +46,7 @@ def safe_summary(report, status):
                    'lab_authorized_tcp_reply_missing', 'lab_authorized_udp_reply_missing',
                    'lab_unauthorized_tcp_reply_observed', 'lab_unauthorized_udp_reply_observed', 'lab_established_connection_missing',
                    'lab_existing_permission_survived_local_withdrawal', 'lab_existing_permission_survived_drop',
-                   'lab_passive_baseline_missing', 'lab_reply_only_withdrawal_failed', 'lab_passive_sender_unproven',
+                   'lab_passive_baseline_missing', 'lab_reply_only_withdrawal_failed', 'lab_passive_sender_unproven', 'lab_passive_pause_unconfirmed',
                    'lab_icmp_permission_mismatch', 'lab_icmp_probe_failed', 'lab_policy_readback_mismatch',
                    'lab_related_delivery_mismatch', 'lab_related_classification_missing', 'lab_related_parent_missing',
                    'lab_controller_loss_gate_remained_open', 'lab_controller_loss_existing_flow_allowed',
@@ -73,6 +73,8 @@ def safe_summary(report, status):
             'publication_failure': {r: {key: value.get(key) is True for key in ('open', 'newer', 'tun_exists')}
                 for r, value in report.get('observations', {}).get('publication_failure', {}).items()
                 if r in ROUTERS and isinstance(value, dict)},
+            'sender_failure': {p: report.get('observations', {}).get('sender_failure', {}).get(p) is True
+                for p in ('tcp', 'udp')} if 'sender_failure' in report.get('observations', {}) else {},
             'passed_cases': sum(v == 'pass' for v in cases.values()),
             'failed_or_blocked_cases': sum(v != 'pass' for v in cases.values())}
 
@@ -273,7 +275,7 @@ def main():
             report['stage'] = 'packet_gates'
             packet_cases = json.loads(run_packets(lab))
             report['observations'] = {key: packet_cases.pop(key) for key in
-                ('backup_observed_after_seconds', 'primary_return_observed_after_seconds', 'publication_failure') if key in packet_cases}
+                ('backup_observed_after_seconds', 'primary_return_observed_after_seconds', 'publication_failure', 'sender_failure') if key in packet_cases}
             report['cases'].update(packet_cases)
             # No success override: unimplemented required adversarial gates fail.
             status = 0 if all(v == 'pass' for v in report['cases'].values()) else 1

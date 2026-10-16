@@ -208,7 +208,30 @@ def socket_session(host, protocol, port=None, passive=False):
 
 
 def main():
-    if sys.argv[1] == 'passive-proof':
+    if sys.argv[1] in ('passive-pause', 'passive-resume'):
+        import time
+        if os.environ.get('OPENMAIN_ISOLATED_TEST') != '1':
+            raise RuntimeError('lab_operation_refused')
+        flag = Path('/run/lab-passive-pause')
+        if sys.argv[1] == 'passive-resume':
+            flag.unlink()  # own disposable fixture only
+        else:
+            stamp = str(time.monotonic_ns())
+            fd = os.open(flag, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'w') as output:
+                output.write(stamp)
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    if all(Path('/run/lab-passive-paused-' + p).read_text() == stamp for p in ('tcp', 'udp')):
+                        break
+                except FileNotFoundError:
+                    pass
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('lab_passive_pause_unconfirmed')
+                time.sleep(0.01)
+        print('{}')
+    elif sys.argv[1] == 'passive-proof':
         from passive import read
         print(json.dumps(read()))
     elif sys.argv[1] == 'related':
@@ -256,4 +279,9 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as error:
+        reason = str(error) if isinstance(error, RuntimeError) and re.fullmatch(r'lab_[a-z_0-9]+', str(error)) else type(error).__name__
+        print(json.dumps({'error_class': reason}))
+        sys.exit(1)

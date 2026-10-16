@@ -70,6 +70,9 @@ def safe_summary(report, status):
             'additional_gates_passed': {name: cases.get(name) == 'pass' for name in (
                 'related_icmp', 'icmp_port_protocol_restrictions',
                 'multiple_independent_acl_sources', 'established_reply_only_tcp_udp')},
+            'publication_failure': {r: {key: value.get(key) is True for key in ('open', 'newer', 'tun_exists')}
+                for r, value in report.get('observations', {}).get('publication_failure', {}).items()
+                if r in ROUTERS and isinstance(value, dict)},
             'passed_cases': sum(v == 'pass' for v in cases.values()),
             'failed_or_blocked_cases': sum(v != 'pass' for v in cases.values())}
 
@@ -270,7 +273,7 @@ def main():
             report['stage'] = 'packet_gates'
             packet_cases = json.loads(run_packets(lab))
             report['observations'] = {key: packet_cases.pop(key) for key in
-                ('backup_observed_after_seconds', 'primary_return_observed_after_seconds') if key in packet_cases}
+                ('backup_observed_after_seconds', 'primary_return_observed_after_seconds', 'publication_failure') if key in packet_cases}
             report['cases'].update(packet_cases)
             # No success override: unimplemented required adversarial gates fail.
             status = 0 if all(v == 'pass' for v in report['cases'].values()) else 1

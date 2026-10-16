@@ -42,12 +42,17 @@ def observe(lab, router):
 
 def wait_publication(lab, previous, timeout=90):
     deadline = time.monotonic() + timeout
+    now = {}
     while time.monotonic() < deadline:
         now = {r: observe(lab, r) for r in previous}
         if all(now[r]['open'] and now[r]['serial'] > previous[r]['serial'] for r in previous):
             return now
         time.sleep(0.3)
-    raise RuntimeError('lab_fresh_local_publication_missing')
+    error = RuntimeError('lab_fresh_local_publication_missing')
+    error.publication_failure = {r: {'open': now.get(r, {}).get('open') is True,
+        'newer': now.get(r, {}).get('serial', -1) > previous[r]['serial'],
+        'tun_exists': now.get(r, {}).get('tun_exists') is True} for r in previous}
+    raise error
 
 
 class Session:
@@ -408,6 +413,8 @@ def acceptance(lab):
         if not all(observe(lab, r)['foreign_matches_initial'] for r in routers):
             raise RuntimeError('lab_foreign_rules_changed')
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as e:
+        if hasattr(e, 'publication_failure'):
+            result['publication_failure'] = e.publication_failure
         result['real_client_gate_failure'] = type(e).__name__
         if isinstance(e, RuntimeError) and str(e).startswith('lab_'):
             result['real_client_gate_failure'] = str(e)

@@ -175,7 +175,7 @@ class NativeDockerLabTests(unittest.TestCase):
         process.stdout.readline.return_value = '{"reply":true}\n'
         instance = Mock()
         instance.compose.return_value.stdout = 'synthetic-container'
-        with patch.object(packets.time, 'monotonic', side_effect=[24, 24.8]), \
+        with patch.object(packets.time, 'monotonic', side_effect=[24, 24.5, 24.8]), \
              patch.object(packets.subprocess, 'Popen', return_value=process), \
              patch.object(select, 'select', return_value=([process.stdout], [], [])) as wait:
             session = packets.Session(instance, 'peer', '198.18.10.100', 'tcp', deadline=25)
@@ -193,6 +193,15 @@ class NativeDockerLabTests(unittest.TestCase):
         with patch.object(packets.time, 'monotonic', return_value=24):
             with self.assertRaisesRegex(RuntimeError, '^lab_packet_probe_timeout$'):
                 packets.Session(instance, 'peer', '198.18.10.100', 'tcp', deadline=25)
+
+    def test_lookup_returning_at_deadline_cannot_launch_packet_helper(self):
+        instance = Mock()
+        instance.compose.return_value.stdout = 'synthetic-container'
+        with patch.object(packets.time, 'monotonic', side_effect=[24, 25]), \
+             patch.object(packets.subprocess, 'Popen') as launch:
+            with self.assertRaisesRegex(RuntimeError, '^lab_packet_probe_timeout$'):
+                packets.Session(instance, 'peer', '198.18.10.100', 'tcp', deadline=25)
+        launch.assert_not_called()
 
     def test_foreign_reference_detects_startup_changes_not_only_later_changes(self):
         initial = {'nftables': [{'table': {'name': 'lab_foreign', 'family': 'inet'}}]}

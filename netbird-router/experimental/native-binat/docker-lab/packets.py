@@ -57,6 +57,9 @@ class Session:
             cid = lab.compose('ps', '-q', peer, timeout=self.remaining(600)).stdout.strip()
         except subprocess.TimeoutExpired:
             raise RuntimeError('lab_packet_probe_timeout') from None
+        # The lookup itself may have consumed the remaining budget. Do not
+        # start docker exec after expiry, even if lookup returned normally.
+        self.remaining(5)
         env = dict(os.environ)
         for k in ('DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'):
             env.pop(k, None)

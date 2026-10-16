@@ -1092,7 +1092,7 @@ diff --git a/client/firewall/binat/stale_linux.go b/client/firewall/binat/stale_
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/stale_linux.go
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,145 @@
 +//go:build linux
 +
 +package binat
@@ -1185,8 +1185,14 @@ new file mode 100644
 +func stalePassthrough(items []expr.Any, scopes []Scope) bool {
 +	permitting := false
 +	for _, item := range items {
-+		if v, ok := item.(*expr.Verdict); ok && (v.Kind == expr.VerdictAccept || v.Kind == expr.VerdictJump || v.Kind == expr.VerdictGoto) {
-+			permitting = true
++		switch v := item.(type) {
++		case *expr.Verdict:
++			// RETURN can also skip a later DROP in an accepting base chain.
++			permitting = permitting || v.Kind == expr.VerdictAccept || v.Kind == expr.VerdictJump || v.Kind == expr.VerdictGoto || v.Kind == expr.VerdictReturn
++		case *expr.Lookup:
++			// A verdict map can grant without an explicit Verdict. Data maps
++			// (including prefix DNAT) use a non-verdict destination register.
++			permitting = permitting || (v.IsDestRegSet && v.DestRegister == 0)
 +		}
 +	}
 +	for i, item := range items {
@@ -1194,53 +1200,39 @@ new file mode 100644
 +		if !ok || meta.SourceRegister || (meta.Key != expr.MetaKeyIIFNAME && meta.Key != expr.MetaKeyOIFNAME) {
 +			continue
 +		}
-+	following:
-+		for _, next := range items[i+1:] {
-+			switch v := next.(type) {
-+			case *expr.Payload:
-+				if v.OperationType == expr.PayloadLoad && v.DestRegister == meta.Register {
-+					break following
-+				}
-+			case *expr.Meta:
-+				if !v.SourceRegister && v.Register == meta.Register {
-+					break following
-+				}
-+			case *expr.Ct:
-+				if !v.SourceRegister && v.Register == meta.Register {
-+					break following
-+				}
-+			case *expr.Immediate:
-+				if v.Register == meta.Register {
-+					break following
-+				}
-+			case *expr.Bitwise:
-+				if v.SourceRegister == meta.Register {
-+					return true
-+				}
-+			case *expr.Lookup:
-+				// Verdict maps can carry the permission themselves, without VerdictAccept.
-+				if v.SourceRegister == meta.Register {
-+					return true
-+				}
-+			case *expr.Cmp:
-+				if v.Register != meta.Register || !permitting {
-+					continue
-+				}
-+				// Inverted/unknown comparisons can admit the target without
-+				// naming it. Refuse rather than treating them as equality.
-+				if v.Op != expr.CmpOpEq {
-+					return true
-+				}
-+				name := string(bytes.TrimRight(v.Data, "\x00"))
-+				if name == "" {
-+					return true
-+				}
-+				for _, scope := range scopes {
-+					// nft prefix interface matches can be encoded without a trailing '*'.
-+					if strings.HasPrefix(scope.Overlay, strings.TrimSuffix(name, "*")) {
-+						return true
-+					}
-+				}
++		if i+1 == len(items) {
++			return true
++		}
++		// Do not try to evaluate a foreign ACL or track reused nft registers.
++		// Only a direct exact equality is an understood interface constraint.
++		// Named interface sets/maps and transforms remain unsupported even
++		// when they do not expose an inline verdict.
++		cmp, direct := items[i+1].(*expr.Cmp)
++		if !direct {
++			return true
++		}
++		if !permitting {
++			continue
++		}
++		if cmp.Register != meta.Register || cmp.Op != expr.CmpOpEq {
++			return true
++		}
++		end := bytes.IndexByte(cmp.Data, 0)
++		if end <= 0 || len(cmp.Data) > 16 {
++			return true
++		}
++		name := string(cmp.Data[:end])
++		if !names.MatchString(name) {
++			return true
++		}
++		for _, tail := range cmp.Data[end:] {
++			if tail != 0 {
++				return true
++			}
++		}
++		for _, scope := range scopes {
++			if name == scope.Overlay {
++				return true
 +			}
 +		}
 +	}
@@ -1250,7 +1242,7 @@ diff --git a/client/firewall/binat/stale_linux_test.go b/client/firewall/binat/s
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/stale_linux_test.go
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,72 @@
 +//go:build linux
 +
 +package binat
@@ -1266,7 +1258,7 @@ new file mode 100644
 +func TestBINATSmallStalePassthroughs(t *testing.T) {
 +	scopes := []Scope{{"10.80.1.0/24", "192.168.80.0/24", "nb0", "lan0"}}
 +	for _, key := range []expr.MetaKey{expr.MetaKeyIIFNAME, expr.MetaKeyOIFNAME} {
-+		for _, verdict := range []expr.VerdictKind{expr.VerdictAccept, expr.VerdictJump, expr.VerdictGoto} {
++		for _, verdict := range []expr.VerdictKind{expr.VerdictAccept, expr.VerdictJump, expr.VerdictGoto, expr.VerdictReturn} {
 +			for _, name := range []string{"nb0\x00", "nb", "nb*", ""} {
 +				items := []expr.Any{&expr.Meta{Key: key, Register: 1}, &expr.Cmp{Register: 1, Data: []byte(name)}, &expr.Verdict{Kind: verdict}}
 +				if !stalePassthrough(items, scopes) {
@@ -1289,7 +1281,11 @@ new file mode 100644
 +	if stalePassthrough(drop, scopes) {
 +		t.Fatal("administrator drop refused")
 +	}
-+	translation := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Register: 1, Data: []byte("nb0\x00")}, &expr.Payload{DestRegister: 1}, &expr.Lookup{SourceRegister: 1, SetName: "prefix-translation"}}
++	verdictMap := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte("lo\x00")}, &expr.Payload{DestRegister: 1}, &expr.Lookup{SourceRegister: 1, IsDestRegSet: true, DestRegister: 0, SetName: "decisions"}}
++	if !stalePassthrough(verdictMap, scopes) {
++		t.Fatal("verdict map after overwritten interface register accepted")
++	}
++	translation := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Register: 1, Data: []byte("nb0\x00")}, &expr.Payload{DestRegister: 1}, &expr.Lookup{SourceRegister: 1, DestRegister: 1, IsDestRegSet: true, SetName: "prefix-translation"}}
 +	if stalePassthrough(translation, scopes) {
 +		t.Fatal("IP lookup after register overwrite mistaken for interface map")
 +	}

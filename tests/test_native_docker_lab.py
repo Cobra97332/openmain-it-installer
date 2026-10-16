@@ -260,6 +260,9 @@ class NativeDockerLabTests(unittest.TestCase):
         self.assertEqual(result['stage'], 'start_primary-a')
         self.assertEqual(result['error_class'], 'lab_local_nft_failed')
         self.assertEqual(result['passed_cases'], 1)
+        self.assertFalse(any(result['lifecycle_gates_passed'].values()))
+        completed = lab.safe_summary({'cases': {'engine_restart_same_identity': 'pass'}}, 1)
+        self.assertTrue(completed['lifecycle_gates_passed']['engine_restart_same_identity'])
 
     def test_failed_preparation_before_compose_still_removes_credentials(self):
         with tempfile.TemporaryDirectory() as d:

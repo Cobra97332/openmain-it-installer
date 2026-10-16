@@ -58,6 +58,10 @@ def safe_summary(report, status):
             'stage': report.get('stage') if report.get('stage') in stages else 'unknown',
             'error_class': error, 'packet_error_class': packet_error if packet_error in errors else None,
             'real_clients_executed': report.get('real_clients_executed') is True,
+            'lifecycle_gates_passed': {name: cases.get(name) == 'pass' for name in (
+                'userspace_tun_owner_death', 'no_optin_orphan_restart',
+                'stale_accept_restart_refused', 'engine_restart_same_identity',
+                'primary_backup_failover_100_200')},
             'passed_cases': sum(v == 'pass' for v in cases.values()),
             'failed_or_blocked_cases': sum(v != 'pass' for v in cases.values())}
 

@@ -34,7 +34,7 @@ try:
     rules = ['iifname "nb0" accept', 'iifname != "lo" accept',
              'oifname != "lo" ct state established,related accept', 'oifname "nb0" ct state established,related accept',
              'iifname "nb0" counter accept comment "frwacceptiif"',
-             'iifname "nb*" accept', 'iifname "nb0" jump bypass']
+             'iifname "nb*" accept', 'iifname "nb0" jump bypass', 'iifname "nb0" return']
     for family, table, chain in [('ip', 'filter', 'FORWARD'), ('ip', 'filter', 'INPUT'), ('inet', 'stale', 'forward')]:
         hook = 'input' if chain == 'INPUT' else 'forward'
         for rule in rules:
@@ -43,6 +43,9 @@ try:
             batch(f'delete table {family} {table}\n')  # only our synthetic fixture
             check(True)
     batch('table inet stale { set interfaces { type ifname; elements = { "nb0" }; }\n chain forward { type filter hook forward priority 0; policy drop; iifname @interfaces accept; }\n }\n')
+    check(False)
+    batch('delete table inet stale\n')
+    batch('table inet stale { map decisions { type ipv4_addr : verdict; elements = { 100.64.0.10 : accept }; }\n chain forward { type filter hook forward priority 0; policy drop; iifname != "lo" ip saddr vmap @decisions; }\n }\n')
     check(False)
     batch('delete table inet stale\n')
     batch('table inet firewalld { chain forward { type filter hook forward priority 0; policy accept; }\n }\n')

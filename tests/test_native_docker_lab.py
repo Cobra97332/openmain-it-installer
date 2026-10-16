@@ -22,9 +22,46 @@ lab = load('lab')
 packets = load('packets')
 container = load('container')
 traffic = load('traffic')
+related = load('related')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_policy_readback_normalizes_group_objects_and_refuses_mismatch(self):
+        state = {'policies': {'a': 'lab-policy'}}
+        rule = {'action': 'accept', 'protocol': 'tcp', 'bidirectional': False,
+                'sources': ['source'], 'destinations': ['target'], 'ports': ['8080']}
+        observed = dict(rule, sources=[{'id': 'source', 'name': 'synthetic'}],
+                        destinations=[{'id': 'target'}])
+        with patch.object(container, 'api', side_effect=[{}, {'rules': [observed]}]) as api:
+            container.replace_lab_policy(state, 'a', [rule])
+        self.assertEqual(api.call_args_list[0].args[:2], ('/api/policies/lab-policy', 'PUT'))
+        with patch.object(container, 'api', side_effect=[{}, {'rules': [dict(observed, ports=['8082'])]}]):
+            with self.assertRaisesRegex(RuntimeError, '^lab_policy_readback_mismatch$'):
+                container.replace_lab_policy(state, 'a', [rule])
+
+    def test_related_denial_requires_kernel_related_classification(self):
+        session = Mock()
+        session.exchange.return_value = False
+        with patch.object(packets, 'observe', return_value={'related_packets': 0}):
+            with self.assertRaisesRegex(RuntimeError, '^lab_related_classification_missing$'):
+                packets.related_error(Mock(), session, False)
+        session.exchange.return_value = True
+        with patch.object(packets, 'observe', return_value={'related_packets': 0}):
+            with self.assertRaisesRegex(RuntimeError, '^lab_related_delivery_mismatch$'):
+                packets.related_error(Mock(), session, False)
+
+    def test_related_capture_checks_parent_original_tuple(self):
+        import socket
+        import struct
+        outer = bytearray(20); outer[0] = 0x45; outer[9] = 1
+        quote = bytearray(20); quote[0] = 0x45; quote[9] = 17
+        quote[16:20] = socket.inet_aton('198.18.10.100')
+        packet = bytes(outer) + b'\x03\x03' + b'\0' * 6 + bytes(quote) + struct.pack('!HHHH', 49152, 8086, 32, 0)
+        self.assertTrue(related.matches(packet, '198.18.10.100', 49152))
+        self.assertFalse(related.matches(packet, '198.18.20.100', 49152))
+        self.assertFalse(related.matches(packet, '198.18.10.100', 49153))
+        self.assertFalse(related.matches(packet[:55], '198.18.10.100', 49152))
+
     def test_same_identity_resume_never_adds_a_setup_key(self):
         def read_public(path):
             if str(path) == '/opt/native/patch.sha256':
@@ -175,10 +212,12 @@ class NativeDockerLabTests(unittest.TestCase):
         process.stdout.readline.return_value = '{"reply":true}\n'
         instance = Mock()
         instance.compose.return_value.stdout = 'synthetic-container'
-        with patch.object(packets.time, 'monotonic', side_effect=[24, 24.5, 24.8]), \
+        with patch.object(packets.time, 'monotonic', return_value=24) as clock, \
              patch.object(packets.subprocess, 'Popen', return_value=process), \
+             patch.object(packets.os, 'read', return_value=b'{"reply":true}\n'), \
              patch.object(select, 'select', return_value=([process.stdout], [], [])) as wait:
             session = packets.Session(instance, 'peer', '198.18.10.100', 'tcp', deadline=25)
+            clock.return_value = 24.8
             self.assertTrue(session.exchange())
         self.assertEqual(instance.compose.call_args.kwargs['timeout'], 1)
         self.assertAlmostEqual(wait.call_args.args[3], 0.2)

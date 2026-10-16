@@ -1,0 +1,158 @@
+PR #34: operating modes, counterexamples and executable acceptance cases
+======================================================================
+Starting head: 2a9c8970b20759a69c48e48800458735805c5fb2.
+No authorization architecture/native patch or production installer changes.
+The experimental AMD64 candidate is NOT a production-approved installation.
+
+Operating boundary and the owner-death finding
+---------------------------------------------
+Candidate path: actual pinned NetBird v0.80.0 Engine + selected small-native
+patch + native nft backend + explicit userspace WireGuard + NEW nonpersistent
+TUN. RequireFreshUserspaceOverlay runs before newWgIface; RequireEphemeralTUN
+checks the actual rtnetlink type/nonpersistent flag. Native ACL compiler is the
+only rights authority. Policy readiness is not a second ACL. Metrics stay 100/200.
+
+Unsupported: persistent veth/TUN, kernel WireGuard, existing overlay adoption,
+legacy iptables filter state, firewalld, old external ACL copier and research
+mark/proof publisher. No automatic migration. PVE LXC/VM needs separate host
+TUN/capability acceptance; ARM64/Pi is not this candidate's delivery target.
+
+P1_SMALL_NATIVE_OWNER_DEATH_NEW_FLOW is NOT a stock legacy-copier test. It kills
+our native gate TEST DRIVER while persistent veth nb0 and synthetic native ACLs
+remain. nft rules do not expire when a netlink writer exits. Old READY and the
+synthetic ACCEPT remain; a NEW tuple reaches lp. Thus this is a real process/
+dataplane-lifetime security failure for that fixture, not a fabricated pass or
+an incorrect nft verdict. It does not run the actual Engine admission/TUN checks.
+The test now records owner=false, overlay_kind=veth, overlay_survives=true,
+ready_rule_survives and unchanged foreign rules before the original assertion.
+
+The candidate prevents that specific continuing-dataplane model by refusing
+persistent interfaces. Actual-client SIGKILL and VM tests separately require
+TUN disappearance and denial of NEW traffic. This is relevant whenever the
+lifetime restriction is bypassed, regresses, or an interface is adopted. It is
+NOT a proof of a new bypass of the admitted nonpersistent-TUN Engine path.
+The counterexample remains mandatory and red. No claim of general owner-death
+safety, and no waiver/merge approval follows from this classification.
+
+Six legacy/rejected-design P1 gates — individually
+-------------------------------------------------
+1 P1_AFTER_FINAL_READ_STALE_GRANT:45707
+  Shipping common/binat_acl.py copied permission for peer .12 into its managed
+  rule. Native source group changes AFTER reconciliation returns. Old used UDP
+  tuple still forwards. Relevant to old copier; candidate has no copied grant
+  or independent policy writer. Candidate equivalent: actual group withdrawal
+  of live sessions after last observation; must stay mandatory.
+2 P1_AFTER_FINAL_READ_STALE_GRANT:45709
+  Same copier race, explicit NEW tuple. Relevant to any deployment still running
+  that helper; not removed/fixed by this experimental PR. Native equivalent:
+  new TCP/UDP denial after local publication and concurrent/reset cases.
+3 P1_REJECTED_PROOF_DESIGN_BYPASSES_NEW_NATIVE_DROP:47101
+  tests/nft_acl_research.py marks/replaces a permission in a research fixture.
+  A new ordinary destination-IP DROP misses the already DNATed real address;
+  old existing tuple passes. Candidate instead compiles ORIGINAL addresses in
+  the one native chain; no research compiler/proof mark is in its runtime.
+4 P1_REJECTED_PROOF_DESIGN_BYPASSES_NEW_NATIVE_DROP:47102
+  Same rejected prototype but NEW tuple. Its CAS/handle proof is not an access
+  proof. Relevant if this prototype were enabled; candidate must separately
+  prove a real controller DROP and port/protocol matrix (no test waiver).
+5 P1_ESTABLISHED_CONNTRACK_BYPASSES_WITHDRAWAL
+  Stock forward-chain established/related ACCEPT precedes re-evaluation of a
+  removed source. Established UDP survives despite new-tuple denial. Candidate
+  excludes scoped BINAT from that shortcut and checks ORIGINAL tuple in the
+  native postrouting boundary on every packet. Existing TCP/UDP tests and the
+  new reply-only case are the relevant native evidence; broad stock behavior
+  must never be claimed safe for unpatched/native-disabled clients.
+6 P1_REPLY_ALLOWED_VIA_NETBIRD_EXTERNAL_ESTABLISHED
+  Reply bypasses iif-overlay native dispatch through the separately simulated
+  external oif-overlay established ACCEPT. Candidate checks BOTH directions at
+  postrouting, suppresses external passthrough creation and refuses stale
+  foreign permits before TUN creation. Actual restart/stale-rule tests remain
+  relevant. Legacy external accept fixture is not the selected runtime.
+
+None of these six is dismissed as a flaky environment error. They are genuine
+failed security assertions of their stated paths. All remain unchanged/red in
+CI/QEMU. Equivalence of native replacements needs their own completed evidence.
+
+Eight concrete acceptance cases
+-------------------------------
+Common: fresh isolated real controller and six real patched clients; two equal
+192.168.88/24 LANs; distinct virtual /24s; no host networking; synthetic keys.
+Each case needs baseline positive traffic, a causal local publication barrier,
+negative packets and recovery. API success is NOT local kernel/controller ACK.
+
+A related_icmp — executable: packets.related_error + related.py
+  Send ONE UDP parent to LAN recorder 8086; retain actual client socket. Emit
+  ICMP destination-unreachable quoting the LAN-observed NAT tuple. Require raw
+  client capture matching original virtual destination/source port, and an
+  increment in the routers' ct state RELATED observation counters. Withdraw
+  membership, await newer local publications, emit the SAME parent's ICMP again:
+  counter must increment but client must receive no matching error. No new UDP
+  request after withdrawal. Missing parent/RELATED classification is a failed
+  proof, never accepted as successful denial. Counters grant no permission.
+B concurrent_policy_reset — actual Engine injector still absent, BLOCKED
+  Barrier inside actual ACL update after close/before publication. Send map N,
+  pause it there, Reset actual firewall/epoch; send newer map N+1 with DROP,
+  release N. Continuously inject fresh TCP/UDP and established replies. Require
+  no READY from stale completion, denial, then recovery ONLY from current full
+  map. Repeat at each publication boundary, foreign rules unchanged. Existing
+  Go ResetInvalidatesPendingOpenBeforeIO/race tests are partial evidence only.
+C unknown_stale_networkmap — management stream injector absent, BLOCKED
+  On a fresh actual Sync stream inject N complete allow; inject N-1, then N+1
+  with unknown field/invalid port/incomplete route selectors. Require CLOSED,
+  no new or existing scoped packets, no locally applied marker for invalid map.
+  Replay valid old N: still CLOSED. Send complete N+2: recover. Existing native
+  map validator/rejected-serial Go tests execute but are not daemon proof.
+D kernel_ack_failure — targeted actual-daemon netlink injector absent, BLOCKED
+  At publication transaction fail ACK with EPERM/ENOENT; independently lose a
+  readback reply after a successful write. Require no local-publication event,
+  CLOSED, old/new request/reply denial; unconfirmed closure must stop owner and
+  remove TUN. Recover with fresh map, same identity. Controller stop, deleting
+  a table as an unrelated privileged writer, or replacing callbacks is NOT the
+  requested actual ACK-loss test. Core fake-I/O and VM fail-stop are partial.
+E icmp_port_protocol_restrictions — executable: extended_policy_cases
+  First prove TCP 8082/UDP 8083 services and ping work under all-protocol policy.
+  Replace A policy with TCP8080 + UDP8081 + ICMP. Require exact allowed services,
+  ping positive, alternate live services denied. Remove ICMP alone, await native
+  publication, ping denied while allowed TCP/UDP still work. Restore all; prove
+  alternates/ping recover. Service absence cannot masquerade as policy denial.
+F multiple_independent_acl_sources — executable: extended_policy_cases
+  Keep A source=peer; change B source=probe, with independent destination/router
+  groups. Require peer->A yes/B no and probe->A no/B yes through equal real LANs.
+  Restore B to peer, await newer B publications and prove both reverse outcomes.
+G fresh_map_after_native_firewall_rebuild — live Reset fixture absent, BLOCKED
+  Begin valid actual Engine allow. Invoke ITS native firewall Reset without
+  restarting process or reenrolling. Keep management full-map response paused.
+  Require CLOSED/no new traffic across table removal/recreation. Cached serial
+  or handles must NOT reopen. Deliver current complete map, require fresh local
+  publication + recovery, same peer ID. Same-identity process restart is tested
+  separately and does not replace this live-reset case.
+H established_reply_only_tcp_udp — executable: real autonomous LAN streams
+  Establish TCP8084 and UDP8085; prove server-originated data arrives. Only the
+  initial connect/handshake writes client data. Withdraw group and wait for all
+  routers' new local publication; take a monotonic_ns barrier. Query existing
+  sockets without any new application request. Reject any server frame SENT
+  after that barrier. Frames sent before it cannot prove post-publication
+  leakage. No time namespaces: containers/runner share kernel monotonic clock.
+  No drain/grace period hides post-barrier frames; kernel TCP ACKs are allowed.
+
+The four executable cases are marked passed ONLY if the actual-client run
+completes their assertions. Others keep explicit blocking prerequisite reasons;
+no skips/xfails or fabricated pass. Unknown/malformed/failure packet responses
+must fail, including helper timeout on a negative probe.
+
+P2 realistic-delay verification
+-------------------------------
+tests/test_probe_realtime.py uses real subprocess pipes and wall time (no clock
+mock): delayed successful JSON; silence past a 200ms remaining budget; partial
+JSON prefix followed by 1.5s delay; EOF and nonboolean reply. These expose the
+remaining select-then-blocking-readline defect. Session.exchange now bounds all
+chunks and validates a complete boolean reply. These are OS I/O timing tests,
+NOT NetBird traffic proofs. Existing deadline-boundary and negative-probe tests
+remain. Exact-head CI/client/VM results are recorded in the PR comment.
+
+Release limits
+--------------
+No production/merge approval. The failed veth and six old-path gates remain red,
+four actual-daemon fault/reset scenarios lack their injectors, and any new packet
+case failure is investigated as failure or missing proof rather than waived.
+No shipping runtime change, customers/identities migrated, or PR #33 change.

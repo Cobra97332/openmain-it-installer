@@ -41,6 +41,11 @@ research, not an alternative suggested for internal operation.
 
 ## Current limits
 
+Mode-specific owner-death analysis, all six legacy counterexamples and the
+eight concrete native acceptance cases are in OPERATING-MODE-ACCEPTANCE.txt.
+Added executable cases count as proven only after actual-client execution;
+remaining Engine fault/reset prerequisites stay blocking, not skipped.
+
 New connections must obey locally applied NetBird policy. Brief continuation of
 existing connections after withdrawal is accepted; the current implementation
 has stronger original/reply checks, which are preserved. No distributed zero

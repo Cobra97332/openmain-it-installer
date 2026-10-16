@@ -150,17 +150,51 @@ def inspect():
         'foreign_matches_initial': foreign_matches_reference(foreign),
         'dnat_packets': sum(expr['counter']['packets'] for obj in (nat or {}).get('nftables', [])
                             for expr in obj.get('rule', {}).get('expr', []) if 'counter' in expr
-                            and obj.get('rule', {}).get('chain') == 'dn')}
+                            and obj.get('rule', {}).get('chain') == 'dn'),
+        'related_packets': sum(expr['counter']['packets'] for obj in (nat or {}).get('nftables', [])
+                            for expr in obj.get('rule', {}).get('expr', []) if 'counter' in expr
+                            and obj.get('rule', {}).get('chain') == 'related_observe')}
 
 
-def socket_session(host, protocol):
-    port = 8080 if protocol == 'tcp' else 8081
+def socket_session(host, protocol, port=None, passive=False):
+    port = port or ((8084 if protocol == 'tcp' else 8085) if passive else (8080 if protocol == 'tcp' else 8081))
+    if port not in (8080, 8081, 8082, 8083, 8084, 8085):
+        raise ValueError('lab_target_refused')
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM if protocol == 'tcp' else socket.SOCK_DGRAM) as sock:
         sock.settimeout(0.6)
         connected = False
+        buffered = b''
+        if passive:
+            sock.connect((host, port))
+            sock.sendall(b'openmain-passive-start')  # only client write
+            connected = True
         for line in sys.stdin:
             req = json.loads(line)
             reply = False
+            if passive:
+                # Docker clients/server/runner share the kernel monotonic clock
+                # (no time namespaces). Exclude frames sent BEFORE the caller's
+                # confirmed-publication barrier, without a grace-period waiver.
+                # Collection sends NO request; TCP ACKs are kernel-generated.
+                import time
+                until = time.monotonic() + 0.8
+                while time.monotonic() < until:
+                    sock.settimeout(max(0.001, until - time.monotonic()))
+                    try:
+                        data = sock.recv(4096)
+                        if not data:
+                            break
+                        buffered += data
+                        while b'\n' in buffered:
+                            line, buffered = buffered.split(b'\n', 1)
+                            if not line.startswith(b'openmain-passive:'):
+                                raise ValueError('lab_passive_frame_invalid')
+                            sent = int(line.split(b':', 1)[1])
+                            reply = reply or sent >= req.get('after_ns', 0)
+                    except (OSError, TimeoutError):
+                        break
+                print(json.dumps({'reply': reply, 'connected': connected}), flush=True)
+                continue
             try:
                 if not connected:
                     sock.connect((host, port))
@@ -174,18 +208,30 @@ def socket_session(host, protocol):
 
 
 def main():
-    if sys.argv[1] == 'foreign-reference':
+    if sys.argv[1] == 'related':
+        from related import client
+        client(sys.argv[2])
+    elif sys.argv[1] == 'foreign-reference':
         record_foreign_reference()
         print('{}')
     elif sys.argv[1] == 'diagnostics':
         print(json.dumps(client_diagnostics()))
     elif sys.argv[1] == 'inspect':
         print(json.dumps(inspect()))
-    elif sys.argv[1] == 'session':
+    elif sys.argv[1] in ('session', 'passive'):
         # Only the two exact synthetic BINAT destinations, never arbitrary URLs.
         if sys.argv[2] not in ('198.18.10.100', '198.18.20.100') or sys.argv[3] not in ('tcp', 'udp'):
             raise ValueError('lab_target_refused')
-        socket_session(sys.argv[2], sys.argv[3])
+        socket_session(sys.argv[2], sys.argv[3], int(sys.argv[4]) if len(sys.argv) > 4 else None,
+                       passive=sys.argv[1] == 'passive')
+    elif sys.argv[1] == 'ping':
+        if sys.argv[2] not in ('198.18.10.100', '198.18.20.100'):
+            raise ValueError('lab_target_refused')
+        code = subprocess.run(['ping', '-n', '-c', '1', '-W', '1', sys.argv[2]],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3).returncode
+        if code not in (0, 1):
+            raise RuntimeError('lab_icmp_probe_failed')
+        print(json.dumps({'reply': code == 0}))
     elif sys.argv[1] in ('stale-seed', 'stale-clear'):
         if os.environ.get('OPENMAIN_ISOLATED_TEST') != '1':
             raise ValueError('lab_operation_refused')

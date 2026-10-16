@@ -71,7 +71,7 @@ def main():
     # Offline lab-contract tests need these public source/build fixtures too.
     # They do NOT start Docker/controller/clients inside the platform guest.
     lab_fixture='netbird-router/experimental/native-binat/docker-lab/'
-    names.update(lab_fixture+n for n in ('lab.py','container.py','packets.py','traffic.py','Dockerfile.client'))
+    names.update(lab_fixture+n for n in ('lab.py','container.py','packets.py','traffic.py','related.py','Dockerfile.client'))
     names.update(['build-iso.sh','preseed.cfg','tests/Dockerfile.router','netbird-prometheus/sync-client-targets.py'])
     names.update(str(p.relative_to(source)) for p in (source/'tests').glob('*.py'))
     for name in sorted(names):

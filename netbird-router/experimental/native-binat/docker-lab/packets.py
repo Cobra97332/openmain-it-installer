@@ -51,7 +51,7 @@ def wait_publication(lab, previous, timeout=90):
 
 
 class Session:
-    def __init__(self, lab, peer, destination, protocol, deadline=None):
+    def __init__(self, lab, peer, destination, protocol, deadline=None, port=None, mode='session'):
         self.deadline = deadline
         try:
             cid = lab.compose('ps', '-q', peer, timeout=self.remaining(600)).stdout.strip()
@@ -64,7 +64,8 @@ class Session:
         for k in ('DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'):
             env.pop(k, None)
         self.proc = subprocess.Popen(['docker', '--host=unix:///var/run/docker.sock',
-            'exec', '-i', cid, 'python3', '/opt/lab/traffic.py', 'session', destination, protocol],
+            'exec', '-i', cid, 'python3', '/opt/lab/traffic.py', mode, destination, protocol,
+            *([str(port)] if port is not None else [])],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env)
 
     def remaining(self, limit):
@@ -75,14 +76,30 @@ class Session:
             raise RuntimeError('lab_packet_probe_timeout')
         return min(limit, remaining)
 
-    def exchange(self):
+    def exchange(self, request=None):
         import select
         timeout = self.remaining(5)
-        self.proc.stdin.write('{}\n')
+        deadline = time.monotonic() + timeout
+        self.proc.stdin.write(json.dumps(request or {}) + '\n')
         self.proc.stdin.flush()
-        if not select.select([self.proc.stdout], [], [], timeout)[0]:
+        response = b''
+        while b'\n' not in response:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([self.proc.stdout], [], [], remaining)[0]:
+                raise RuntimeError('lab_packet_probe_timeout')
+            chunk = os.read(self.proc.stdout.fileno(), 4096)
+            if not chunk or len(response) + len(chunk) > 4096:
+                raise RuntimeError('lab_packet_probe_incomplete')
+            response += chunk
+        if time.monotonic() >= deadline:
             raise RuntimeError('lab_packet_probe_timeout')
-        return json.loads(self.proc.stdout.readline())['reply']
+        try:
+            value = json.loads(response)
+            if type(value.get('reply')) is not bool:
+                raise ValueError
+        except (ValueError, AttributeError):
+            raise RuntimeError('lab_packet_probe_incomplete') from None
+        return value['reply']
 
     def close(self):
         self.proc.stdin.close()
@@ -94,10 +111,10 @@ class Session:
         self.proc.stdout.close()
 
 
-def probe(lab, peer='peer', destination='198.18.10.100', allowed=True):
+def probe(lab, peer='peer', destination='198.18.10.100', allowed=True, protocols=('tcp', 'udp'), port=None):
     if peer not in ('peer', 'probe') or destination not in ('198.18.10.100', '198.18.20.100'):
         raise RuntimeError('lab_packet_target_refused')
-    for proto in ('tcp', 'udp'):
+    for proto in protocols:
         # Kernel publication is not a WireGuard/ICE transport-ready ACK.
         # Only positive setup/restoration may wait for transport. A single
         # unauthorized reply fails immediately; never retry until denial.
@@ -107,7 +124,7 @@ def probe(lab, peer='peer', destination='198.18.10.100', allowed=True):
                 raise RuntimeError('lab_authorized_' + proto + '_reply_missing')
             session = None
             try:
-                session = Session(lab, peer, destination, proto, deadline=deadline if allowed else None)
+                session = Session(lab, peer, destination, proto, deadline=deadline if allowed else None, port=port)
                 reply = session.exchange()
             except RuntimeError as error:
                 if not allowed or str(error) != 'lab_packet_probe_timeout':
@@ -142,10 +159,81 @@ def establish_sessions(lab, sessions):
             raise RuntimeError('lab_established_connection_missing')
 
 
+def ping(lab, allowed):
+    deadline = time.monotonic() + 25
+    while True:
+        reply = json.loads(lab.exec('peer', 'python3', '/opt/lab/traffic.py', 'ping', '198.18.10.100'))['reply']
+        if reply == allowed:
+            return
+        if not allowed or time.monotonic() >= deadline:
+            raise RuntimeError('lab_icmp_permission_mismatch')
+        time.sleep(0.3)
+
+
+def extended_policy_cases(lab, result):
+    b_routers = ('primary-b', 'backup-b')
+    previous = {r: observe(lab, r) for r in b_routers}
+    lab.control('split_sources')
+    wait_publication(lab, previous)
+    # A-only and B-only clients; same real LAN, different virtual destinations.
+    probe(lab)
+    probe(lab, destination='198.18.20.100', allowed=False)
+    probe(lab, peer='probe', allowed=False)
+    probe(lab, peer='probe', destination='198.18.20.100')
+    previous = {r: observe(lab, r) for r in b_routers}
+    lab.control('restore_b')
+    wait_publication(lab, previous)
+    probe(lab, destination='198.18.20.100')
+    probe(lab, peer='probe', destination='198.18.20.100', allowed=False)
+    result['multiple_independent_acl_sources'] = 'pass'
+
+    # Prove the alternate services and ICMP work before testing their denial.
+    for proto, port in (('tcp', 8082), ('udp', 8083)):
+        probe(lab, protocols=(proto,), port=port)
+    ping(lab, True)
+    a_routers = ('primary-a', 'backup-a')
+    previous = {r: observe(lab, r) for r in a_routers}
+    lab.control('restrict_a', icmp=True)
+    wait_publication(lab, previous)
+    probe(lab)
+    for proto, port in (('tcp', 8082), ('udp', 8083)):
+        probe(lab, protocols=(proto,), port=port, allowed=False)
+    ping(lab, True)
+    previous = {r: observe(lab, r) for r in a_routers}
+    lab.control('restrict_a', icmp=False)
+    wait_publication(lab, previous)
+    ping(lab, False)
+    probe(lab)
+    previous = {r: observe(lab, r) for r in a_routers}
+    lab.control('restore_a')
+    wait_publication(lab, previous)
+    ping(lab, True)
+    for proto, port in (('tcp', 8082), ('udp', 8083)):
+        probe(lab, protocols=(proto,), port=port)
+    result['icmp_port_protocol_restrictions'] = 'pass'
+
+
+def related_error(lab, session, allowed):
+    routers = ('primary-a', 'backup-a')
+    before = sum(observe(lab, r)['related_packets'] for r in routers)
+    lab.exec('lan-a', 'python3', '/opt/lab/related.py', 'emit')
+    if session.exchange() != allowed:
+        raise RuntimeError('lab_related_delivery_mismatch')
+    after = sum(observe(lab, r)['related_packets'] for r in routers)
+    if after <= before:
+        raise RuntimeError('lab_related_classification_missing')
+
+
 def acceptance(lab):
     result = {name: 'blocked:mandatory_gate_not_implemented' for name in REQUIRED}
+    result.update(concurrent_policy_reset='blocked:engine_reset_barrier_injector_missing',
+                  unknown_stale_networkmap='blocked:management_map_injector_missing',
+                  kernel_ack_failure='blocked:daemon_netlink_fault_injector_missing',
+                  fresh_map_after_native_firewall_rebuild='blocked:live_engine_reset_fixture_missing')
     routers = ('primary-a', 'backup-a', 'primary-b', 'backup-b')
     sessions = []
+    passive = []
+    related = None
     try:
         initial = wait_publication(lab, {r: {'serial': -1} for r in routers})
         if not all(s['foreign_matches_initial'] for s in initial.values()):
@@ -154,11 +242,35 @@ def acceptance(lab):
             probe(lab, destination=dest)
             probe(lab, peer='probe', destination=dest, allowed=False)
         result.update(real_tcp_udp_binat='pass', overlapping_customer_lans='pass', unauthorized_new_tuples='pass')
+        extended_policy_cases(lab, result)
         establish_sessions(lab, sessions)
+        for proto in ('tcp', 'udp'):
+            session = Session(lab, 'peer', '198.18.10.100', proto, mode='passive')
+            passive.append(session)
+            if not session.exchange():
+                raise RuntimeError('lab_passive_baseline_missing')
+        related = Session(lab, 'peer', '198.18.10.100', 'udp', mode='related')
+        deadline = time.monotonic() + 15
+        while True:
+            try:
+                lab.exec('lan-a', 'python3', '/opt/lab/related.py', 'ready')
+                break
+            except RuntimeError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('lab_related_parent_missing') from None
+                time.sleep(0.1)
+        related_error(lab, related, True)
+        initial = {r: observe(lab, r) for r in routers}
         # Mutation occurs AFTER our last observation; there is no polling ACL
         # copier or favorable writer timing in this test.
         lab.control('membership', allow=False)
         withdrawn = wait_publication(lab, initial)
+        barrier = time.monotonic_ns()
+        related_error(lab, related, False)
+        result['related_icmp'] = 'pass'
+        if any(s.exchange({'after_ns': barrier}) for s in passive):
+            raise RuntimeError('lab_reply_only_withdrawal_failed')
+        result['established_reply_only_tcp_udp'] = 'pass'
         if any(s.exchange() for s in sessions):
             raise RuntimeError('lab_existing_permission_survived_local_withdrawal')
         result['group_withdrawal_tcp_udp_existing_request'] = 'pass'
@@ -276,6 +388,6 @@ def acceptance(lab):
         if isinstance(e, RuntimeError) and str(e).startswith('lab_'):
             result['real_client_gate_failure'] = str(e)
     finally:
-        for s in sessions:
+        for s in sessions + passive + ([related] if related is not None else []):
             s.close()
     return result

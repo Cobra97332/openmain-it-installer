@@ -180,6 +180,14 @@ try:
     print('PASS: small native gate, UDP/TCP original/reply withdrawal, new flows, direct late DROP, restart closed, multiple sources, synthetic backup/overlapping LAN, unknown-layout refusal, foreign tables',flush=True)
     if os.environ.get('OPENMAIN_SMALL_OWNER_DEATH_GATE')=='1':
         native_process.kill();assert native_process.wait(timeout=5)!=0
+        link=json.loads(run('ip','-j','-d','link','show','dev','nb0'))[0]
+        assert link['linkinfo']['info_kind']=='veth'
+        print(json.dumps({'owner_death_fixture': {
+            'owner_alive': native_process.poll() is None,
+            'overlay_kind': link['linkinfo']['info_kind'],
+            'overlay_survives': True,
+            'ready_rule_survives': 'native-policy-ready' in run('nft','list','chain','ip',table,'ready'),
+            'foreign_rules_preserved': run('nft','-s','-j','list','table','inet','unrelated')==foreign}}),flush=True)
         # Explicit NEW tuple, not merely the previously accepted established flow.
         print('RELEASE BLOCKED GATE: P1_SMALL_NATIVE_OWNER_DEATH_NEW_FLOW',flush=True)
         request(port=51999,allowed=False)

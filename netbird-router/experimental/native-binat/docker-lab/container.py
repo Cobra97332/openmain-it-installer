@@ -151,6 +151,26 @@ def policy(name, src, dst, protocol='all', action='accept', ports=None):
     return api('/api/policies', 'POST', {'name': name, 'enabled': True, 'rules': [rule]})['id']
 
 
+def replace_lab_policy(state, lan, rules):
+    # Only IDs from this disposable controller's protected bootstrap record.
+    pid = state['policies'][lan]
+    body = {'name': 'lab-allow-' + lan, 'enabled': True, 'rules': rules}
+    api('/api/policies/' + pid, 'PUT', body)
+    actual = api('/api/policies/' + pid)
+    fields = ('action', 'protocol', 'bidirectional', 'sources', 'destinations', 'ports')
+    def selectors(items):
+        result = []
+        for rule in items:
+            value = {k: (rule.get(k) or []) if k == 'ports' else rule.get(k) for k in fields}
+            for key in ('sources', 'destinations'):
+                value[key] = [g['id'] if isinstance(g, dict) else g for g in value[key]]
+            result.append(value)
+        return result
+    if selectors(actual.get('rules', [])) != selectors(rules):
+        raise RuntimeError('lab_policy_readback_mismatch')
+    return {'controller_policy_changed': True, 'controller_kernel_ack': False}
+
+
 def keys():
     for name in NAMES:
         k = api('/api/setup-keys', 'POST', {'name': name, 'type': 'one-off',
@@ -206,6 +226,18 @@ def configure():
 
 def mutate(req):
     state = json.loads(Path('/lab/objects').read_text())
+    if req['operation'] in ('split_sources', 'restore_b', 'restrict_a', 'restore_a'):
+        op = req['operation']
+        lan = 'b' if op in ('split_sources', 'restore_b') else 'a'
+        source = state['excluded'] if op == 'split_sources' else state['allowed']
+        protocols = [('tcp', ['8080']), ('udp', ['8081'])] if op == 'restrict_a' else [('all', [])]
+        if op == 'restrict_a' and req.get('icmp') is True:
+            protocols.append(('icmp', []))
+        rules = [{'name': 'lab-' + protocol, 'enabled': True, 'action': 'accept',
+                  'protocol': protocol, 'bidirectional': protocol in ('all', 'icmp'),
+                  'sources': [source], 'destinations': [state['dest'][lan]],
+                  **({'ports': ports} if ports else {})} for protocol, ports in protocols]
+        return replace_lab_policy(state, lan, rules)
     if req['operation'] == 'membership':
         members = [state['peers']['peer']] if req['allow'] else []
         api('/api/groups/' + state['allowed'], 'PUT', {'name': 'lab-authorized', 'peers': members})
@@ -247,6 +279,9 @@ def translation_script(virtual, dev):
     if virtual not in ('198.18.10.0/24', '198.18.20.0/24') or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_.-]{0,14}', dev):
         raise RuntimeError('lab_translation_scope_refused')
     return f'''table ip lab_translation {{
+ chain related_observe {{ type filter hook postrouting priority -202; policy accept;
+  iifname "{dev}" oifname "wt0" ct state related ct original ip daddr {virtual} counter
+ }}
  chain dn {{ type nat hook prerouting priority -101; policy accept;
   iifname "wt0" ip daddr {virtual} counter dnat ip prefix to ip daddr map {{ {virtual} : 192.168.88.0/24 }}
  }}
@@ -322,19 +357,53 @@ def echo_tcp(conn):
 def lan():
     dev = lan_dev()
     cmd('ip', 'addr', 'add', '192.168.88.100/24', 'dev', dev)
-    def serve_tcp():
+    from related import record
+    threading.Thread(target=record, daemon=True).start()
+    def serve_tcp(port):
         with socket.socket() as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(('192.168.88.100', 8080))
+            s.bind(('192.168.88.100', port))
             s.listen()
             while True:
                 threading.Thread(target=echo_tcp, args=(s.accept()[0],), daemon=True).start()
-    threading.Thread(target=serve_tcp, daemon=True).start()
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
-        udp.bind(('192.168.88.100', 8081))
-        while True:
-            data, peer = udp.recvfrom(2048)
-            udp.sendto(data, peer)
+    def serve_udp(port):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+            udp.bind(('192.168.88.100', port))
+            while True:
+                data, peer = udp.recvfrom(2048)
+                udp.sendto(data, peer)
+    def stream(conn, peer=None):
+        # Real server-originated data after one initial client handshake.
+        try:
+            for _ in range(1200):
+                payload = ('openmain-passive:%d\n' % time.monotonic_ns()).encode()
+                if peer is None:
+                    conn.sendall(payload)
+                else:
+                    conn.sendto(payload, peer)
+                time.sleep(0.05)
+        except OSError:
+            pass
+        finally:
+            if peer is None:
+                conn.close()
+    def passive_tcp():
+        with socket.socket() as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(('192.168.88.100', 8084)); s.listen()
+            while True:
+                threading.Thread(target=stream, args=(s.accept()[0],), daemon=True).start()
+    def passive_udp():
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.bind(('192.168.88.100', 8085))
+            while True:
+                _, peer = s.recvfrom(2048)
+                threading.Thread(target=stream, args=(s, peer), daemon=True).start()
+    for function, args in [(serve_tcp, (8080,)), (serve_tcp, (8082,)),
+                           (serve_udp, (8081,)), (serve_udp, (8083,)),
+                           (passive_tcp, ()), (passive_udp, ())]:
+        threading.Thread(target=function, args=args, daemon=True).start()
+    threading.Event().wait()
 
 
 def control(req):

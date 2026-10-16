@@ -41,9 +41,13 @@ def safe_summary(report, status):
                    'lab_controller_version_mismatch', 'lab_controller_policy_contract', 'lab_setup_not_confirmed',
                    'lab_controller_has_foreign_policy', 'lab_fresh_local_publication_missing',
                    'lab_packet_permission_mismatch', 'lab_packet_target_refused',
+                   'lab_packet_probe_timeout', 'lab_packet_probe_incomplete',
                    'lab_authorized_tcp_reply_missing', 'lab_authorized_udp_reply_missing',
                    'lab_unauthorized_tcp_reply_observed', 'lab_unauthorized_udp_reply_observed', 'lab_established_connection_missing',
                    'lab_existing_permission_survived_local_withdrawal', 'lab_existing_permission_survived_drop',
+                   'lab_passive_baseline_missing', 'lab_reply_only_withdrawal_failed',
+                   'lab_icmp_permission_mismatch', 'lab_icmp_probe_failed', 'lab_policy_readback_mismatch',
+                   'lab_related_delivery_mismatch', 'lab_related_classification_missing', 'lab_related_parent_missing',
                    'lab_controller_loss_gate_remained_open', 'lab_controller_loss_existing_flow_allowed',
                    'lab_controller_reconnect_missing', 'lab_restart_target_refused', 'lab_tun_survived_owner_death',
                    'lab_stale_resume_not_refused', 'lab_orphan_resume_not_refused', 'lab_restart_publication_missing',
@@ -113,7 +117,7 @@ def topology(work, project, tools=TOOLS):
             sysctls={'net.ipv4.ip_forward': '1' if router else '0'})
     for lan in ('a', 'b'):
         services['lan-' + lan] = dict(base, image=tools, hostname='lan-' + lan,
-            cap_add=['NET_ADMIN', 'NET_RAW'], environment=proxies,
+            cap_add=['NET_ADMIN', 'NET_RAW'], environment=dict(proxies, OPENMAIN_ISOLATED_TEST='1'),
             entrypoint=['python3', '/opt/lab/container.py', 'lan'],
             networks={'lan-' + lan: {}},
             volumes=[str(Path(__file__).parent) + ':/opt/lab:ro'])

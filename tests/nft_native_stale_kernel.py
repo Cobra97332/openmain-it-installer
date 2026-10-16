@@ -31,7 +31,8 @@ try:
     check(True)
     # Exact untagged iptables-nft patterns and tagged native external-chain
     # equivalents, including reply ESTABLISHED/RELATED and wildcard names.
-    rules = ['iifname "nb0" accept', 'oifname "nb0" ct state established,related accept',
+    rules = ['iifname "nb0" accept', 'iifname != "lo" accept',
+             'oifname != "lo" ct state established,related accept', 'oifname "nb0" ct state established,related accept',
              'iifname "nb0" counter accept comment "frwacceptiif"',
              'iifname "nb*" accept', 'iifname "nb0" jump bypass']
     for family, table, chain in [('ip', 'filter', 'FORWARD'), ('ip', 'filter', 'INPUT'), ('inet', 'stale', 'forward')]:
@@ -47,6 +48,11 @@ try:
     batch('table inet firewalld { chain forward { type filter hook forward priority 0; policy accept; }\n }\n')
     check(False)
     batch('delete table inet firewalld\n')
+    # Transparent prefix DNAT reuses the same nft register for an IP map.
+    # It must not be mistaken for an unknown interface permission map.
+    batch('table ip lab_translation { chain dn { type nat hook prerouting priority -101; policy accept; iifname "nb0" ip daddr 10.80.1.0/24 dnat ip prefix to ip daddr map { 10.80.1.0/24 : 192.168.80.0/24 }; }\n }\n')
+    check(True)
+    batch('delete table ip lab_translation\n')
     # Valid unrelated interface permits and administrator drops are untouched.
     batch('table inet administrator { chain forward { type filter hook forward priority 0; policy accept; iifname "eth9" accept; iifname "nb0" drop; }\n }\n')
     check(True)

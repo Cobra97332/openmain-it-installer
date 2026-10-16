@@ -1092,7 +1092,7 @@ diff --git a/client/firewall/binat/stale_linux.go b/client/firewall/binat/stale_
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/stale_linux.go
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,153 @@
 +//go:build linux
 +
 +package binat
@@ -1194,8 +1194,29 @@ new file mode 100644
 +		if !ok || meta.SourceRegister || (meta.Key != expr.MetaKeyIIFNAME && meta.Key != expr.MetaKeyOIFNAME) {
 +			continue
 +		}
++	following:
 +		for _, next := range items[i+1:] {
 +			switch v := next.(type) {
++			case *expr.Payload:
++				if v.OperationType == expr.PayloadLoad && v.DestRegister == meta.Register {
++					break following
++				}
++			case *expr.Meta:
++				if !v.SourceRegister && v.Register == meta.Register {
++					break following
++				}
++			case *expr.Ct:
++				if !v.SourceRegister && v.Register == meta.Register {
++					break following
++				}
++			case *expr.Immediate:
++				if v.Register == meta.Register {
++					break following
++				}
++			case *expr.Bitwise:
++				if v.SourceRegister == meta.Register {
++					return true
++				}
 +			case *expr.Lookup:
 +				// Verdict maps can carry the permission themselves, without VerdictAccept.
 +				if v.SourceRegister == meta.Register {
@@ -1204,6 +1225,11 @@ new file mode 100644
 +			case *expr.Cmp:
 +				if v.Register != meta.Register || !permitting {
 +					continue
++				}
++				// Inverted/unknown comparisons can admit the target without
++				// naming it. Refuse rather than treating them as equality.
++				if v.Op != expr.CmpOpEq {
++					return true
 +				}
 +				name := string(bytes.TrimRight(v.Data, "\x00"))
 +				if name == "" {
@@ -1224,7 +1250,7 @@ diff --git a/client/firewall/binat/stale_linux_test.go b/client/firewall/binat/s
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/stale_linux_test.go
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,68 @@
 +//go:build linux
 +
 +package binat
@@ -1249,6 +1275,12 @@ new file mode 100644
 +			}
 +		}
 +	}
++	for _, name := range []string{"lo\x00", "nb0\x00", "eth9\x00"} {
++		inverted := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Register: 1, Op: expr.CmpOpNeq, Data: []byte(name)}, &expr.Verdict{Kind: expr.VerdictAccept}}
++		if !stalePassthrough(inverted, scopes) {
++			t.Fatal("inverted interface permit not refused")
++		}
++	}
 +	unrelated := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Register: 1, Data: []byte("eth9\x00")}, &expr.Verdict{Kind: expr.VerdictAccept}}
 +	if stalePassthrough(unrelated, scopes) {
 +		t.Fatal("unrelated interface refused")
@@ -1256,6 +1288,14 @@ new file mode 100644
 +	drop := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Register: 1, Data: []byte("nb0\x00")}, &expr.Verdict{Kind: expr.VerdictDrop}}
 +	if stalePassthrough(drop, scopes) {
 +		t.Fatal("administrator drop refused")
++	}
++	translation := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Register: 1, Data: []byte("nb0\x00")}, &expr.Payload{DestRegister: 1}, &expr.Lookup{SourceRegister: 1, SetName: "prefix-translation"}}
++	if stalePassthrough(translation, scopes) {
++		t.Fatal("IP lookup after register overwrite mistaken for interface map")
++	}
++	unrelatedSet := append(append([]expr.Any{}, unrelated[:2]...), &expr.Payload{DestRegister: 1}, &expr.Lookup{SourceRegister: 1, SetName: "source-addresses"}, &expr.Verdict{Kind: expr.VerdictAccept})
++	if stalePassthrough(unrelatedSet, scopes) {
++		t.Fatal("unrelated IP set mistaken for interface map")
 +	}
 +	lookup := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Lookup{SourceRegister: 1, SetName: "unknown-interface-map"}}
 +	if !stalePassthrough(lookup, scopes) {

@@ -44,6 +44,10 @@ def main():
     source=Path('/src')
     names=set((source/'netbird-router/bundle.files').read_text().splitlines())
     names.add('netbird-router/experimental/native-binat/snapshot.py')
+    # Lab.main's negative startup tests bind the actual public patch digests.
+    # Copy the inputs too; no profiles/keys or compiled client are installed.
+    names.update('netbird-router/experimental/native-binat/' + name for name in
+                 ('netbird-v0.80.0-small-native.patch', 'google-nftables-v0.3.0-ct-direction.patch'))
     # Offline lab-contract tests need these public source/build fixtures too.
     # They do NOT start Docker/controller/clients inside the platform guest.
     lab_fixture='netbird-router/experimental/native-binat/docker-lab/'

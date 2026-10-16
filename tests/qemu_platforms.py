@@ -8,12 +8,32 @@ an independently bootstrapped Debian 13 root under /lab/amd64.
 """
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
 import socket
 import subprocess
 import sys
+
+
+def guest_evidence(output):
+    """Fixed proof flags only: never publish the guest console or test data."""
+    return {
+        'unit_failure': 'FAILED (' in output,
+        'qa_pass': 'OPENMAIN_QA_PASS' in output,
+        'qa_failure': 'OPENMAIN_QA_FAIL' in output,
+        'ct_readback_pass': 'PASS: actual kernel original/reply address/port readback, stable UserData and handles' in output,
+        'tun_sigkill_pass': 'SIGKILL removes interface and blocks NEW tuple; foreign rules preserved' in output,
+        'tun_failstop_pass': 'unconfirmed-closure fail-stop removes interface and blocks NEW tuple; foreign rules preserved' in output,
+        'legacy_p1_markers': {name: name in output for name in (
+            'P1_AFTER_FINAL_READ_STALE_GRANT:45707',
+            'P1_AFTER_FINAL_READ_STALE_GRANT:45709',
+            'P1_REJECTED_PROOF_DESIGN_BYPASSES_NEW_NATIVE_DROP:47101',
+            'P1_REJECTED_PROOF_DESIGN_BYPASSES_NEW_NATIVE_DROP:47102',
+            'P1_ESTABLISHED_CONNTRACK_BYPASSES_WITHDRAWAL',
+            'P1_REPLY_ALLOWED_VIA_NETBIRD_EXTERNAL_ESTABLISHED')},
+    }
 
 
 def run(command, log):
@@ -181,6 +201,7 @@ menuentry 'SYNTHETIC probe (not Debian Installer)' {
         with log.open('wb') as stream:
             subprocess.run(command,check=True,timeout=600,stdout=stream,stderr=subprocess.STDOUT)
         output=log.read_text(errors='replace')
+        print(json.dumps({'mode': mode, 'guest_evidence': guest_evidence(output)}), flush=True)
         if 'OPENMAIN_QA_PASS' not in output or 'OPENMAIN_QA_FAIL' in output:
             failures.append(mode)
             print(mode+': FAIL; inspect lab-only log',flush=True)

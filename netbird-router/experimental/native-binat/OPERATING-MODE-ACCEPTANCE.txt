@@ -112,7 +112,7 @@ D kernel_ack_failure — targeted actual-daemon netlink injector absent, BLOCKED
 E icmp_port_protocol_restrictions — executable: extended_policy_cases
   First prove TCP 8082/UDP 8083 services and ping work under all-protocol policy.
   Install separate native one-rule UDP8081 and ICMP policies, acknowledging
-  each single mutation on ALL routers, then replace the broad A policy with
+  each single mutation on the A primary/backup, then replace the broad A policy with
   TCP8080. Strict GET readback is required for every individual policy. Require exact allowed services,
   ping positive, alternate live services AND crossed UDP8080/TCP8081 services denied.
   Each crossed service must work before restriction and after restoration. Remove ICMP alone, await native
@@ -172,10 +172,16 @@ source loop). This is an upstream API formatter defect, not proof of native
 forwarding failure. Do NOT infer/restore missing fields or relax readback. The
 fixture now uses independent one-rule TCP, UDP and ICMP policies, with protected
 lab IDs, verified create/update/delete and ONE mutation per control operation.
-All routers must acknowledge a new map between operations. No controller patch.
+All AFFECTED primary/backup routers must acknowledge a new map between operations. No controller patch.
 
 Review P1s also added mandatory crossed-protocol negative probes and post-barrier
 LAN wire proof, so dead/finished senders cannot produce a false revocation pass.
 Review P2 caps ping lookup+exec with one remaining deadline (not 600 seconds).
 The first run's 17 passes / 21 failed-or-blocked entries do NOT constitute
 completion of the four new cases. The final-head rerun is authoritative.
+
+The next real run reached a fixture publication timeout before the independent-
+source case completed: it incorrectly waited for A's unchanged native policy
+after editing only B. Unaffected routers need not republish. Barriers now track
+only the edited customer's PRIMARY AND BACKUP, still one mutation at a time.
+The aborted run (16 passing entries, 22 failed/blocked) is not new case proof.

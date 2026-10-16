@@ -177,10 +177,11 @@ def ping(lab, allowed):
 
 
 def extended_policy_cases(lab, result):
-    # Each control call mutates ONE policy only. All routers acknowledge the
+    # Each control call mutates ONE policy only. Affected routers acknowledge the
     # intervening map before the next write, so a prior queued map cannot stand
     # in for the next operation's publication barrier.
-    b_routers = ('primary-a', 'backup-a', 'primary-b', 'backup-b')
+    # Unaffected peers need not receive a new Sync/publication for this edit.
+    b_routers = ('primary-b', 'backup-b')
     previous = {r: observe(lab, r) for r in b_routers}
     lab.control('split_sources')
     wait_publication(lab, previous)
@@ -200,7 +201,7 @@ def extended_policy_cases(lab, result):
     for proto, port in (('tcp', 8082), ('udp', 8083), ('tcp', 8081), ('udp', 8080)):
         probe(lab, protocols=(proto,), port=port)
     ping(lab, True)
-    a_routers = b_routers
+    a_routers = ('primary-a', 'backup-a')
     for operation in ('extra_udp', 'extra_icmp'):
         previous = {r: observe(lab, r) for r in a_routers}
         lab.control(operation)

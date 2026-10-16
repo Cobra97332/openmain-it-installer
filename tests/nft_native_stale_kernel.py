@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import socket
 import subprocess
+import tempfile
 
 if (os.environ.get('OPENMAIN_ISOLATED_TEST') != '1' or not Path('/.dockerenv').exists()
         or {n for _, n in socket.if_nameindex()} != {'lo'}):
@@ -62,6 +63,45 @@ try:
     # A stale-rule restart check does not authorize creating/reusing a TUN.
     assert {n for _, n in socket.if_nameindex()} == {'lo'}
     print('PASS: real kernel stale INPUT/FORWARD and reply ACCEPT, tags, wildcard, interface set, firewalld state refused; no rule mutation or admission; foreign DROP preserved')
+finally:
+    owner.stdin.close()
+    assert owner.wait(timeout=15) == 0
+
+# Installed firewalld tools must refuse before any command runs. Their mere
+# presence is unsupported even without an active firewalld nft table.
+for binary in ('firewall-cmd', 'firewalld'):
+    with tempfile.TemporaryDirectory() as directory:
+        marker = Path(directory) / 'executed'
+        executable = Path(directory) / binary
+        executable.write_text('#!/bin/sh\n: > ' + str(marker) + '\n')
+        executable.chmod(0o700)
+        owner = subprocess.Popen(['/native/small-native-lab'], stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, text=True, env=dict(os.environ, PATH=directory))
+        try:
+            assert json.loads(owner.stdout.readline()).get('Ready')
+            check(False)
+            assert not marker.exists(), 'firewalld command executed'
+            assert {n for _, n in socket.if_nameindex()} == {'lo'}
+        finally:
+            owner.stdin.close()
+            assert owner.wait(timeout=15) == 0
+print('PASS: both installed firewalld binaries refused without execution or firewall mutation')
+
+# This MUST run last: creating an xtables filter table persists for this fresh
+# network namespace even after its rules are flushed. Never touch host rules.
+subprocess.run(['iptables-legacy', '-A', 'FORWARD', '-i', 'nb0', '-j', 'ACCEPT'], check=True)
+assert 'filter' in Path('/proc/net/ip_tables_names').read_text().split()
+legacy = subprocess.check_output(['iptables-legacy-save'], text=True)
+owner = subprocess.Popen(['/native/small-native-lab'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+try:
+    assert json.loads(owner.stdout.readline()).get('Ready')
+    check(False)
+    # iptables-save prints timestamps, so compare only the actual rule data.
+    def rules(text):
+        return '\n'.join(line for line in text.splitlines() if not line.startswith('#'))
+    assert rules(subprocess.check_output(['iptables-legacy-save'], text=True)) == rules(legacy)
+    assert {n for _, n in socket.if_nameindex()} == {'lo'}
+    print('PASS: real legacy iptables filter refused; nft/xtables rules unchanged, gate CLOSED, no TUN')
 finally:
     owner.stdin.close()
     assert owner.wait(timeout=15) == 0

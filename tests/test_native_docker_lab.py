@@ -145,6 +145,55 @@ class NativeDockerLabTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, '^lab_authorized_tcp_reply_missing$'):
                 packets.probe('isolated-lab')
 
+    def test_positive_deadline_is_checked_before_another_helper_after_sleep(self):
+        session = Mock()
+        session.exchange.side_effect = RuntimeError('lab_packet_probe_timeout')
+        # First exchange finishes just before the deadline. The capped sleep
+        # reaches it; a second Docker exec must never be started.
+        with patch.object(packets, 'Session', return_value=session) as factory, \
+             patch.object(packets.time, 'monotonic', side_effect=[0, 0, 24.9, 25]), \
+             patch.object(packets.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(RuntimeError, '^lab_authorized_tcp_reply_missing$'):
+                packets.probe('isolated-lab')
+        factory.assert_called_once()
+        self.assertAlmostEqual(sleep.call_args.args[0], 0.1)
+        session.close.assert_called_once()
+
+    def test_positive_probe_cleanup_cannot_start_an_attempt_after_deadline(self):
+        session = Mock()
+        session.exchange.return_value = False
+        with patch.object(packets, 'Session', return_value=session) as factory, \
+             patch.object(packets.time, 'monotonic', side_effect=[0, 0, 26]):
+            with self.assertRaisesRegex(RuntimeError, '^lab_authorized_tcp_reply_missing$'):
+                packets.probe('isolated-lab')
+        factory.assert_called_once()
+        session.close.assert_called_once()
+
+    def test_session_io_and_docker_lookup_share_remaining_budget(self):
+        import select
+        process = Mock()
+        process.stdout.readline.return_value = '{"reply":true}\n'
+        instance = Mock()
+        instance.compose.return_value.stdout = 'synthetic-container'
+        with patch.object(packets.time, 'monotonic', side_effect=[24, 24.8]), \
+             patch.object(packets.subprocess, 'Popen', return_value=process), \
+             patch.object(select, 'select', return_value=([process.stdout], [], [])) as wait:
+            session = packets.Session(instance, 'peer', '198.18.10.100', 'tcp', deadline=25)
+            self.assertTrue(session.exchange())
+        self.assertEqual(instance.compose.call_args.kwargs['timeout'], 1)
+        self.assertAlmostEqual(wait.call_args.args[3], 0.2)
+        with patch.object(packets.time, 'monotonic', return_value=25):
+            with self.assertRaisesRegex(RuntimeError, '^lab_packet_probe_timeout$'):
+                session.exchange()
+        self.assertEqual(process.stdin.write.call_count, 1)
+
+    def test_docker_lookup_timeout_is_a_probe_failure(self):
+        instance = Mock()
+        instance.compose.side_effect = subprocess.TimeoutExpired('docker', 1)
+        with patch.object(packets.time, 'monotonic', return_value=24):
+            with self.assertRaisesRegex(RuntimeError, '^lab_packet_probe_timeout$'):
+                packets.Session(instance, 'peer', '198.18.10.100', 'tcp', deadline=25)
+
     def test_foreign_reference_detects_startup_changes_not_only_later_changes(self):
         initial = {'nftables': [{'table': {'name': 'lab_foreign', 'family': 'inet'}}]}
         changed = {'nftables': initial['nftables'] + [{'rule': {'chain': 'forward', 'expr': [{'accept': None}]}}]}

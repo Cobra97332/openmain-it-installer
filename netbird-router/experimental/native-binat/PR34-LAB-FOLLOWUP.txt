@@ -1,0 +1,113 @@
+PR #34 follow-up: blocked real-client cases, CI and probe deadline
+================================================================
+Baseline examined: 9ad14e7da54d2271f8dd0b37e73e93be760f241a.
+Scope: experimental lab/tests only. Native patch, production installer and
+PR #33 unchanged. No migration or additional authorizer.
+
+Eight blocked cases — individual diagnosis
+-----------------------------------------
+All eight names occur in packets.REQUIRED but have no case implementation that
+sets them to pass. The real client run returned no packet error, 29 passes and
+8 blockers. These are missing acceptance implementations/evidence, not observed
+native authorization failures. Nor does this establish that they would pass.
+
+1. related_icmp
+   Existing synthetic nft test creates ICMP errors for a tracked UDP parent and
+   checks before/after withdrawal. Missing: real-client ICMP error generator,
+   conntrack RELATED classification evidence and both-direction packet asserts.
+2. concurrent_policy_reset
+   Epoch invalidation Go tests and a concurrent synthetic kernel update exist.
+   Missing: controlled concurrent reset in the actual Engine while management
+   publishes policies; prove local publication order and resulting deny/restore.
+3. unknown_stale_networkmap
+   Native complete-map validation and rejected-serial tests exist. Normal REST
+   policy edits cannot inject a malformed protobuf or force an old serial.
+   Missing: isolated management-stream fault fixture for the actual daemon.
+4. kernel_ack_failure
+   Unknown readback/closure fail-stop tests exist; VM TUN fail-stop passes.
+   Missing: targeted nft/netlink publication/readback failure in the actual
+   client, tied to a specific local publication and packet denial. Controller
+   outage is NOT a kernel ACK failure and cannot substitute for this test.
+5. icmp_port_protocol_restrictions
+   Native selector validation/kernel tests exist. The real lab uses TCP 8080,
+   UDP 8081 and TCP DROP 8443 API-contract checks. It lacks a real packet matrix
+   proving allowed/disallowed protocol+port combinations including ICMP.
+6. multiple_independent_acl_sources
+   Native/synthetic multi-source tests exist. Both real authorized-client LAN
+   probes and exclusion of one unauthorized peer pass. Missing: A-only and B-only
+   identities with distinct memberships and cross-customer negative probes.
+   Equal real LANs reached through two virtual networks alone DO NOT prove
+   differentiated tenant authorization; that acceptance evidence remains open.
+7. fresh_map_after_native_firewall_rebuild
+   Actual same-identity Engine restart and a new publication event pass. Missing:
+   an actual native firewall rebuild/reset during a live Engine, plus proof that
+   cached readiness cannot reopen traffic before the current map is republished.
+8. established_reply_only_tcp_udp
+   Synthetic kernel reply-only denial exists. Real Session.exchange always
+   sends a request before receiving. Missing: independently generated ongoing
+   server-to-peer TCP/UDP packets after withdrawal, checked without new requests.
+
+No hardware/kernel-capability failure is recorded for these eight: the harness
+explicitly lacks their scenarios. They remain mandatory blockers, not skips or
+expected failures. A running real stack is necessary but not sufficient.
+
+CI logs for the exact baseline
+------------------------------
+https://github.com/Cobra97332/openmain-it-installer/actions/runs/38877864218/job/116897165663
+* Syntax/ShellCheck and 253 offline tests passed; no-jq bootstrap: 7 passed.
+* Six legacy nft P1 counterexamples failed. They cover the shipping external
+  ACL copier (final-read race, established/reply bypass) and rejected proof
+  prototype (new DROP bypass). These are real security defects of those paths;
+  they are not evidence of failure in the selected native path. No waiver,
+  test removal or production installer change is made here.
+* P1_SMALL_NATIVE_OWNER_DEATH_NEW_FLOW failed using a persistent veth dataplane.
+  That counterexample is valid for that model. The candidate explicitly refuses
+  persistent interfaces and requires an owned nonpersistent userspace TUN.
+  Actual-client SIGKILL/TUN disappearance and VM TUN fail-stop tests pass, but
+  do not turn the persistent-veth assertion green or certify arbitrary backends.
+* Actual native CLI, backend/Engine compile and stream-loss race tests passed.
+* Real controller/clients: 29 passed, 8 blocked; packet_error_class=null.
+https://github.com/Cobra97332/openmain-it-installer/actions/runs/38877864218/job/116900505142
+* VM unit_failure=false; ct_readback_pass=true; tun_sigkill_pass=true;
+  tun_failstop_pass=true; qa_failure=true and all six legacy markers=true.
+* Thus the QEMU overall failure is the same legacy security gate, not a failed
+  VM boot, missing guest fixture, native ABI readback or TUN SIGKILL proof.
+  Earlier missing-patch-fixture bug was already fixed before this baseline.
+* The unrelated validate check passed. Overall router CI remains red.
+
+Confirmed P2 lab-code defect and correction
+------------------------------------------
+Positive probes previously checked expiry only after an exchange, slept a full
+0.3 seconds, then could launch another helper and wait another 5 seconds.
+Now check before every attempt; cap sleep, Docker container lookup and socket
+reply wait to the SAME remaining 25-second per-protocol retry/I/O budget.
+An expired budget fails even if helper cleanup completed after it. Cleanup is
+separate bounded process reaping (up to 3+3 seconds, then a cleanup failure), never
+an additional probe. Established-session exchanges retain their 5-second limit.
+Negative probes never retry an unauthorized reply and NEVER treat helper timeout
+as proof of denial. Regression tests cover expiry before attempt, expiry during
+cleanup, near-deadline sleep, remaining select/lookup budget and lookup timeout.
+
+Safe startup refusal: legacy iptables / firewalld
+------------------------------------------------
+Existing native code refuses either installed firewalld executable, an IPv4/inet
+firewalld table, legacy iptables filter tables, and unreadable legacy state.
+It neither executes firewalld commands nor migrates/deletes existing firewall
+rules. The check runs before overlay creation with readiness CLOSED.
+New real-kernel refusal checks cover BOTH installed executable names without
+execution, and an actual iptables-legacy FORWARD ACCEPT in a fresh network-none
+namespace. Compare both nft and xtables rule state, check CLOSED and no TUN.
+The test image gains iptables only as a test dependency; no runtime dependency.
+Failure to load an xtables kernel backend is a test-environment blocker, not a
+pass or skip. Running all these tests does not certify active firewalld support.
+Late privileged external firewall changes remain outside the supported model.
+
+Verification and release boundary
+---------------------------------
+Exact new-head CI, local test results and any new findings are recorded in the
+PR follow-up comment. Real-client CI reruns the unchanged mandatory eight gates;
+missing proof remains a nonzero exit. No safety assertion is downgraded.
+PR #34 remains DRAFT, with no production or merge approval. Genuine legacy
+security defects, incomplete differentiated-tenant/daemon-fault acceptance and
+unsupported backends remain explicitly visible. No claim of a distributed
+controller ACK: local kernel publication and receipt of management state differ.

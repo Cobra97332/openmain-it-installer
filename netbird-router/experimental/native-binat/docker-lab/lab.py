@@ -66,13 +66,13 @@ def safe_summary(report, status):
             'failed_or_blocked_cases': sum(v != 'pass' for v in cases.values())}
 
 
-def docker(*args, data=None, check=True):
+def docker(*args, data=None, check=True, timeout=600):
     env = dict(os.environ)
     for k in ('DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'):
         env.pop(k, None)
     r = subprocess.run(['docker', '--host=unix:///var/run/docker.sock', *args],
                        input=data, text=True, stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE, env=env, timeout=600)
+                       stderr=subprocess.PIPE, env=env, timeout=timeout)
     if check and r.returncode:
         # Never return raw Docker output: logs/build errors can contain secrets/URLs.
         raise RuntimeError('docker_operation_failed:' + args[0])
@@ -139,8 +139,8 @@ class Lab:
         return self.exec(name, 'python3', '/opt/lab/container.py',
                          'resume' if opt_in else 'resume-no-binat', name, patchset_digest())
 
-    def compose(self, *args, check=True):
-        return docker('compose', '-p', self.project, '-f', str(self.file), *args, check=check)
+    def compose(self, *args, check=True, timeout=600):
+        return docker('compose', '-p', self.project, '-f', str(self.file), *args, check=check, timeout=timeout)
 
     def exec(self, name, *args, data=None):
         cid = self.compose('ps', '-q', name).stdout.strip()

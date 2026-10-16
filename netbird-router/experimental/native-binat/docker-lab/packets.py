@@ -51,8 +51,12 @@ def wait_publication(lab, previous, timeout=90):
 
 
 class Session:
-    def __init__(self, lab, peer, destination, protocol):
-        cid = lab.compose('ps', '-q', peer).stdout.strip()
+    def __init__(self, lab, peer, destination, protocol, deadline=None):
+        self.deadline = deadline
+        try:
+            cid = lab.compose('ps', '-q', peer, timeout=self.remaining(600)).stdout.strip()
+        except subprocess.TimeoutExpired:
+            raise RuntimeError('lab_packet_probe_timeout') from None
         env = dict(os.environ)
         for k in ('DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'):
             env.pop(k, None)
@@ -60,11 +64,20 @@ class Session:
             'exec', '-i', cid, 'python3', '/opt/lab/traffic.py', 'session', destination, protocol],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env)
 
+    def remaining(self, limit):
+        if self.deadline is None:
+            return limit
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError('lab_packet_probe_timeout')
+        return min(limit, remaining)
+
     def exchange(self):
         import select
+        timeout = self.remaining(5)
         self.proc.stdin.write('{}\n')
         self.proc.stdin.flush()
-        if not select.select([self.proc.stdout], [], [], 5)[0]:
+        if not select.select([self.proc.stdout], [], [], timeout)[0]:
             raise RuntimeError('lab_packet_probe_timeout')
         return json.loads(self.proc.stdout.readline())['reply']
 
@@ -87,22 +100,30 @@ def probe(lab, peer='peer', destination='198.18.10.100', allowed=True):
         # unauthorized reply fails immediately; never retry until denial.
         deadline = time.monotonic() + (25 if allowed else 0)
         while True:
-            session = Session(lab, peer, destination, proto)
+            if allowed and time.monotonic() >= deadline:
+                raise RuntimeError('lab_authorized_' + proto + '_reply_missing')
+            session = None
             try:
+                session = Session(lab, peer, destination, proto, deadline=deadline if allowed else None)
                 reply = session.exchange()
             except RuntimeError as error:
                 if not allowed or str(error) != 'lab_packet_probe_timeout':
                     raise
                 reply = False
             finally:
-                session.close()
+                if session is not None:
+                    session.close()
+            # No new positive attempt (including Docker lookup or select) may
+            # exceed the per-protocol budget. Reaping a helper is separate,
+            # bounded cleanup, never an extra packet attempt.
+            remaining = deadline - time.monotonic() if allowed else 0
+            if allowed and remaining <= 0:
+                raise RuntimeError('lab_authorized_' + proto + '_reply_missing')
             if reply == allowed:
                 break
             if not allowed:
                 raise RuntimeError('lab_unauthorized_' + proto + '_reply_observed')
-            if time.monotonic() >= deadline:
-                raise RuntimeError('lab_authorized_' + proto + '_reply_missing')
-            time.sleep(0.3)
+            time.sleep(min(0.3, remaining))
 
 
 def establish_sessions(lab, sessions):

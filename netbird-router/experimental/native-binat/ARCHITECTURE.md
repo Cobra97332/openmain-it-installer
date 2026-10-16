@@ -79,14 +79,11 @@ the selected small patch. See [RESEARCH-HISTORY.md](RESEARCH-HISTORY.md).
 
 Native compatibility tests and real controller/client packet cases exist, but
 this is **not a completed security approval**. The shipping external helper
-remains unsafe and is not replaced by this experiment. Two open candidate P1s
-concern firewalld trust and stale foreign ACCEPTs after opt-in:
-[firewalld](https://github.com/Cobra97332/openmain-it-installer/pull/34#discussion_r4261005972),
-[stale rules](https://github.com/Cobra97332/openmain-it-installer/pull/34#discussion_r4261005987).
-The smallest remediation is to suppress the trust call and refuse unverified
-stale interface passthrough state before tunnel creation; never erase foreign
-rules or introduce a second authorizer. This revision documents that requirement
-and does not claim those P1s fixed.
+remains unsafe and is not replaced by this experiment. The targeted firewalld-trust and stale-passthrough P1 paths now have native
+corrections and mandatory refusal tests; exact-head CI/review must confirm them.
+See [P1-FIREWALL-TESTS.md](P1-FIREWALL-TESTS.md). Firewalld hosts, legacy
+iptables filter state and custom native table names currently fail closed rather
+than being adopted. Foreign rules are never deleted to recover availability.
 
 Unsupported: ARM64 delivery, IPv6 BINAT, dynamic destinations, port remapping,
 netstack/kernel-WireGuard adoption and automatic customer migration. Independent

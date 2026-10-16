@@ -55,7 +55,7 @@ diff --git a/client/firewall/binat/cmd/small-lab/main.go b/client/firewall/binat
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/cmd/small-lab/main.go
-@@ -0,0 +1,190 @@
+@@ -0,0 +1,192 @@
 +//go:build linux
 +
 +package main
@@ -197,6 +197,8 @@ new file mode 100644
 +				candidate.Release()
 +			}
 +			os.Setenv("NB_EXPERIMENTAL_BINAT_CONFIG", previous)
++		case "foreign-preflight":
++			err = binat.RefuseStalePassthroughs(scopes)
 +		case "close":
 +			if g == nil {
 +				err = binat.ErrUnconfirmed
@@ -250,7 +252,7 @@ diff --git a/client/firewall/binat/gate_linux.go b/client/firewall/binat/gate_li
 new file mode 100644
 --- /dev/null
 +++ b/client/firewall/binat/gate_linux.go
-@@ -0,0 +1,581 @@
+@@ -0,0 +1,583 @@
 +//go:build linux
 +
 +// Package binat provides only a synchronous availability gate. Native NetBird
@@ -776,7 +778,9 @@ new file mode 100644
 +			}
 +		}
 +	}
-+	return nil
++	// The owned gate is already closed. Refuse foreign passthroughs before
++	// creating an interface whose name could reactivate a stale ACCEPT.
++	return RefuseStalePassthroughs(scopes)
 +}
 +func RequireEphemeralTUN(name string, userspace bool) error {
 +	if !userspace || !names.MatchString(name) {
@@ -1084,6 +1088,197 @@ new file mode 100644
 +func RequireEphemeralTUN(string, bool) error     { return ErrUnconfirmed }
 +
 +func (*Gate) BindFailStop(func()) {}
+diff --git a/client/firewall/binat/stale_linux.go b/client/firewall/binat/stale_linux.go
+new file mode 100644
+--- /dev/null
++++ b/client/firewall/binat/stale_linux.go
+@@ -0,0 +1,127 @@
++//go:build linux
++
++package binat
++
++import (
++	"bytes"
++	"errors"
++	"os"
++	"os/exec"
++	"strings"
++	"time"
++
++	nft "github.com/google/nftables"
++	"github.com/google/nftables/expr"
++	nl "github.com/mdlayher/netlink"
++)
++
++// RefuseStalePassthroughs is read-only. In particular it does not infer rule
++// ownership from an interface name or delete administrator/old-client rules.
++// Call before creating a fresh overlay; the owned readiness gate stays CLOSED.
++func RefuseStalePassthroughs(scopes []Scope) error {
++	if err := ValidateScopes(scopes); err != nil {
++		return err
++	}
++	// Avoid adopting a saved firewalld trusted-zone assignment which can outlive
++	// the TUN and be republished after this inspection. Supporting firewalld needs
++	// separate zone-state acceptance; never trust/untrust it as a shortcut.
++	for _, binary := range []string{"firewall-cmd", "firewalld"} {
++		if _, err := exec.LookPath(binary); err == nil || !errors.Is(err, exec.ErrNotFound) {
++			return errors.New("BINAT firewalld state unsupported; no trusted-zone adoption")
++		}
++	}
++	if custom := os.Getenv("NB_NFTABLES_TABLE"); custom != "" && custom != "netbird" {
++		return errors.New("BINAT requires default native table ownership")
++	}
++	// Legacy xtables rules are not visible through nftables netlink. Never
++	// claim their filter state was inspected or adopt a legacy passthrough.
++	legacy, legacyErr := os.ReadFile("/proc/net/ip_tables_names")
++	if legacyErr != nil && !errors.Is(legacyErr, os.ErrNotExist) {
++		return ErrUnconfirmed
++	}
++	for _, table := range strings.Fields(string(legacy)) {
++		if table == "filter" {
++			return errors.New("BINAT legacy iptables filter state unsupported")
++		}
++	}
++	conn, err := nft.New(nft.WithSockOptions(func(c *nl.Conn) error { return c.SetReadDeadline(time.Now().Add(10 * time.Second)) }))
++	if err != nil {
++		return ErrUnconfirmed
++	}
++	chains, err := conn.ListChains()
++	if err != nil {
++		return ErrUnconfirmed
++	}
++	for _, chain := range chains {
++		if chain == nil || chain.Table == nil {
++			return ErrUnconfirmed
++		}
++		table := chain.Table
++		if table.Family != nft.TableFamilyIPv4 && table.Family != nft.TableFamilyINet {
++			continue
++		}
++		if table.Name == "firewalld" {
++			return errors.New("BINAT foreign firewalld state refused")
++		}
++		// Only the native IPv4 work table is rebuilt by this Engine. Bootstrap
++		// independently verifies the private gate's layout before this function.
++		if table.Family == nft.TableFamilyIPv4 && (table.Name == "netbird" || table.Name == Table) {
++			continue
++		}
++		rules, err := conn.GetRules(table, chain)
++		if err != nil {
++			return ErrUnconfirmed
++		}
++		for _, rule := range rules {
++			if rule == nil {
++				return ErrUnconfirmed
++			}
++			if stalePassthrough(rule.Exprs, scopes) {
++				return errors.New("BINAT stale foreign interface passthrough; verified manual cleanup required")
++			}
++		}
++	}
++	return nil
++}
++
++// This is a refusal detector for native passthroughs, not a policy evaluator.
++// Unknown interface sets/maps are refused conservatively. Even a narrow foreign
++// ACCEPT for the target interface requires manual verification before adoption.
++func stalePassthrough(items []expr.Any, scopes []Scope) bool {
++	permitting := false
++	for _, item := range items {
++		if v, ok := item.(*expr.Verdict); ok && (v.Kind == expr.VerdictAccept || v.Kind == expr.VerdictJump || v.Kind == expr.VerdictGoto) {
++			permitting = true
++		}
++	}
++	for i, item := range items {
++		meta, ok := item.(*expr.Meta)
++		if !ok || meta.SourceRegister || (meta.Key != expr.MetaKeyIIFNAME && meta.Key != expr.MetaKeyOIFNAME) {
++			continue
++		}
++		for _, next := range items[i+1:] {
++			switch v := next.(type) {
++			case *expr.Lookup:
++				// Verdict maps can carry the permission themselves, without VerdictAccept.
++				if v.SourceRegister == meta.Register {
++					return true
++				}
++			case *expr.Cmp:
++				if v.Register != meta.Register || !permitting {
++					continue
++				}
++				name := string(bytes.TrimRight(v.Data, "\x00"))
++				if name == "" {
++					return true
++				}
++				for _, scope := range scopes {
++					// nft prefix interface matches can be encoded without a trailing '*'.
++					if strings.HasPrefix(scope.Overlay, strings.TrimSuffix(name, "*")) {
++						return true
++					}
++				}
++			}
++		}
++	}
++	return false
++}
+diff --git a/client/firewall/binat/stale_linux_test.go b/client/firewall/binat/stale_linux_test.go
+new file mode 100644
+--- /dev/null
++++ b/client/firewall/binat/stale_linux_test.go
+@@ -0,0 +1,54 @@
++//go:build linux
++
++package binat
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/google/nftables/expr"
++)
++
++func TestBINATSmallStalePassthroughs(t *testing.T) {
++	scopes := []Scope{{"10.80.1.0/24", "192.168.80.0/24", "nb0", "lan0"}}
++	for _, key := range []expr.MetaKey{expr.MetaKeyIIFNAME, expr.MetaKeyOIFNAME} {
++		for _, verdict := range []expr.VerdictKind{expr.VerdictAccept, expr.VerdictJump, expr.VerdictGoto} {
++			for _, name := range []string{"nb0\x00", "nb", "nb*", ""} {
++				items := []expr.Any{&expr.Meta{Key: key, Register: 1}, &expr.Cmp{Register: 1, Data: []byte(name)}, &expr.Verdict{Kind: verdict}}
++				if !stalePassthrough(items, scopes) {
++					t.Fatal("stale interface permit not refused")
++				}
++			}
++		}
++	}
++	unrelated := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Register: 1, Data: []byte("eth9\x00")}, &expr.Verdict{Kind: expr.VerdictAccept}}
++	if stalePassthrough(unrelated, scopes) {
++		t.Fatal("unrelated interface refused")
++	}
++	drop := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Register: 1, Data: []byte("nb0\x00")}, &expr.Verdict{Kind: expr.VerdictDrop}}
++	if stalePassthrough(drop, scopes) {
++		t.Fatal("administrator drop refused")
++	}
++	lookup := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Lookup{SourceRegister: 1, SetName: "unknown-interface-map"}}
++	if !stalePassthrough(lookup, scopes) {
++		t.Fatal("unknown interface set/map accepted")
++	}
++}
++
++func TestBINATSmallFirewalldRefusedBeforeKernelOrCommands(t *testing.T) {
++	dir := t.TempDir()
++	// If executed, this synthetic command would leave a marker. It must never run.
++	marker := filepath.Join(dir, "executed")
++	command := []byte("#!/bin/sh\ntouch " + marker + "\n")
++	if err := os.WriteFile(filepath.Join(dir, "firewall-cmd"), command, 0700); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("PATH", dir)
++	if RefuseStalePassthroughs([]Scope{{"10.80.1.0/24", "192.168.80.0/24", "nb0", "lan0"}}) == nil {
++		t.Fatal("firewalld state accepted")
++	}
++	if _, err := os.Stat(marker); !os.IsNotExist(err) {
++		t.Fatal("firewall command was executed")
++	}
++}
 diff --git a/client/firewall/nftables/binat_linux_test.go b/client/firewall/nftables/binat_linux_test.go
 new file mode 100644
 --- /dev/null
@@ -1158,7 +1353,20 @@ diff --git a/client/firewall/nftables/chains_linux.go b/client/firewall/nftables
  	r.addPostroutingRules()
  
  	if err := r.conn.Flush(); err != nil {
-@@ -195,6 +217,10 @@
+@@ -88,8 +110,10 @@
+ 		log.Errorf("failed to open interface in foreign chains: %s", err)
+ 	}
+ 
+-	if err := firewalld.TrustInterface(r.wgIface.Name()); err != nil {
+-		log.Warnf("failed to trust interface in firewalld: %v", err)
++	if !binat.Active() {
++		if err := firewalld.TrustInterface(r.wgIface.Name()); err != nil {
++			log.Warnf("failed to trust interface in firewalld: %v", err)
++		}
+ 	}
+ 
+ 	if err := r.refreshRulesMap(); err != nil {
+@@ -195,6 +219,10 @@
  }
  
  func (r *family) acceptFilterTableRules(includeForward bool) error {
@@ -1169,7 +1377,7 @@ diff --git a/client/firewall/nftables/chains_linux.go b/client/firewall/nftables
  	if r.filterTable == nil {
  		return nil
  	}
-@@ -289,6 +315,12 @@
+@@ -289,6 +317,12 @@
  // acceptExternalChainsRules adds accept rules to external chains (non-netbird, non-iptables tables).
  // It dynamically finds chains at call time to handle chains that may have been created after startup.
  func (r *family) acceptExternalChainsRules(includeForward bool) error {
@@ -1182,7 +1390,7 @@ diff --git a/client/firewall/nftables/chains_linux.go b/client/firewall/nftables
  	chains := r.findExternalChains()
  	if len(chains) == 0 {
  		return nil
-@@ -416,6 +448,11 @@
+@@ -416,6 +450,11 @@
  }
  
  func (r *family) removeAcceptFilterRules() error {
@@ -1194,6 +1402,30 @@ diff --git a/client/firewall/nftables/chains_linux.go b/client/firewall/nftables
  	var merr *multierror.Error
  
  	if err := r.removeFilterTableRules(); err != nil {
+diff --git a/client/firewall/nftables/family_linux.go b/client/firewall/nftables/family_linux.go
+--- a/client/firewall/nftables/family_linux.go
++++ b/client/firewall/nftables/family_linux.go
+@@ -12,6 +12,7 @@
+ 	log "github.com/sirupsen/logrus"
+ 
+ 	nberrors "github.com/netbirdio/netbird/client/errors"
++	"github.com/netbirdio/netbird/client/firewall/binat"
+ 	"github.com/netbirdio/netbird/client/firewall/firewalld"
+ 	firewall "github.com/netbirdio/netbird/client/firewall/manager"
+ 	"github.com/netbirdio/netbird/client/internal/routemanager/ipfwdstate"
+@@ -163,8 +164,10 @@
+ 		merr = multierror.Append(merr, fmt.Errorf("remove accept filter rules: %w", err))
+ 	}
+ 
+-	if err := firewalld.UntrustInterface(r.wgIface.Name()); err != nil {
+-		merr = multierror.Append(merr, err)
++	if !binat.Active() {
++		if err := firewalld.UntrustInterface(r.wgIface.Name()); err != nil {
++			merr = multierror.Append(merr, err)
++		}
+ 	}
+ 
+ 	if err := r.removeNatPreroutingRules(); err != nil {
 diff --git a/client/firewall/nftables/filter_linux.go b/client/firewall/nftables/filter_linux.go
 --- a/client/firewall/nftables/filter_linux.go
 +++ b/client/firewall/nftables/filter_linux.go

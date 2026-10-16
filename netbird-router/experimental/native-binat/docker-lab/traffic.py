@@ -133,6 +133,9 @@ def inspect():
     nat = nft('ip lab_translation')
     # Only generic proof data. Never emit the client log or profile content.
     return {'serial': int(serials[-1]) if serials else -1,
+        'publication_count': len(serials),
+        'stale_refusals': text.count('BINAT stale foreign interface passthrough'),
+        'orphan_refusals': text.count('BINAT orphaned boundary'),
         'ready_packets': sum(e['counter']['packets'] for r in ready for e in r.get('expr', []) if 'counter' in e),
         'gate_table_present': gate is not None, 'ready_rule_present': bool(ready),
         'open': len(ready) == 1 and ready[0].get('comment') == 'native-policy-ready',
@@ -179,8 +182,21 @@ def main():
         if sys.argv[2] not in ('198.18.10.100', '198.18.20.100') or sys.argv[3] not in ('tcp', 'udp'):
             raise ValueError('lab_target_refused')
         socket_session(sys.argv[2], sys.argv[3])
+    elif sys.argv[1] in ('stale-seed', 'stale-clear'):
+        if os.environ.get('OPENMAIN_ISOLATED_TEST') != '1':
+            raise ValueError('lab_operation_refused')
+        script = ('create table inet lab_stale_resume\n'
+                  'add chain inet lab_stale_resume forward { type filter hook forward priority 0; policy accept; }\n'
+                  'add rule inet lab_stale_resume forward iifname "wt0" counter accept\n')
+        if sys.argv[1] == 'stale-clear':
+            script = 'delete table inet lab_stale_resume\n'  # only this synthetic test table
+        subprocess.run(['nft', '-f', '-'], input=script, text=True, check=True, capture_output=True)
+        print('{}')
     elif sys.argv[1] == 'kill':
-        os.kill(int(Path('/run/lab-client.pid').read_text()), signal.SIGKILL)
+        try:
+            os.kill(int(Path('/run/lab-client.pid').read_text()), signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # Our failed test client may already have exited.
         print('{}')
     else:
         raise ValueError('lab_operation_refused')

@@ -71,6 +71,11 @@ if [[ $variant == small && -n ${OPENMAIN_NATIVE_DRIVER_EXPORT:-} ]]; then
   install -m 0755 "$lab/$binary" "$OPENMAIN_NATIVE_DRIVER_EXPORT"
 fi
 native_status=0
+if [[ $variant == small ]]; then
+  docker_local run --rm --network none --cap-add NET_ADMIN -e OPENMAIN_ISOLATED_TEST=1 \
+    -v "$repo:/src:ro" -v "$lab/$binary:/native/$binary:ro" \
+    openmain-router-test:debian13 python3 tests/nft_native_stale_kernel.py || native_status=1
+fi
 docker_local run --rm --network none --cap-add NET_ADMIN \
   --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1 \
   -v "$repo:/src:ro" -v "$lab/$binary:/native/$binary:ro" \

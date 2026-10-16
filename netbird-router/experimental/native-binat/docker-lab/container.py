@@ -270,7 +270,7 @@ table ip filter {{
 '''
 
 
-def start(name, patch_hash, resume=False):
+def start(name, patch_hash, resume=False, opt_in=True):
     os.umask(0o077)
     if name not in NAMES or Path('/opt/native/patch.sha256').read_text().split()[0] != patch_hash:
         raise RuntimeError('lab_client_build_mismatch')
@@ -294,7 +294,10 @@ def start(name, patch_hash, resume=False):
             cmd('nft', '-f', '-', data=translation_script(virtual, dev))
             # Capture BEFORE the native Engine can alter any foreign chain.
             cmd('python3', '/opt/lab/traffic.py', 'foreign-reference')
-        env['NB_EXPERIMENTAL_BINAT_CONFIG'] = '/run/netbird-binat-small-lab/config.json'
+        if opt_in:
+            env['NB_EXPERIMENTAL_BINAT_CONFIG'] = '/run/netbird-binat-small-lab/config.json'
+        else:
+            env.pop('NB_EXPERIMENTAL_BINAT_CONFIG', None)
     args = ['/opt/native/netbird', 'up', '--foreground-mode', '--management-url', BASE,
             '--interface-name', 'wt0', '--disable-dns', '--hostname', name,
             '--log-level', 'info', '--log-file', 'console']
@@ -347,8 +350,8 @@ def main():
             return
         if sys.argv[1] == 'control':
             result = control(json.load(sys.stdin))
-        elif sys.argv[1] in ('start', 'resume'):
-            result = start(sys.argv[2], sys.argv[3], sys.argv[1] == 'resume')
+        elif sys.argv[1] in ('start', 'resume', 'resume-no-binat'):
+            result = start(sys.argv[2], sys.argv[3], sys.argv[1] != 'start', sys.argv[1] != 'resume-no-binat')
         elif sys.argv[1] == 'lan':
             lan()
             return

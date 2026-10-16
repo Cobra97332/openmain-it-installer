@@ -109,3 +109,12 @@ not claims about this new commit. New run links/results are recorded in the PR.
 **Production approval remains blocked.** Fewer duplicated tests do not resolve
 policy or customer-isolation vulnerabilities. No production migration, stock
 client rollback over old guards, or installer integration is authorized here.
+
+## Native P1 follow-up
+
+P1-FIREWALL-TESTS.md records the targeted corrections and support restrictions.
+Four of the twelve missing actual-client cases now have executable mandatory
+assertions (owner death, orphan opt-out, same-identity restart, full failover/return).
+They are not considered passed until the exact-head client CI proves them.
+The baseline review findings and results above remain historical, not a current
+claim that the corrected paths were already accepted.

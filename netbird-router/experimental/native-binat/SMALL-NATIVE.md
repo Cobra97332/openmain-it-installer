@@ -46,8 +46,10 @@ existing connections after withdrawal is accepted; the current implementation
 has stronger original/reply checks, which are preserved. No distributed zero
 latency or controller-to-kernel acknowledgement is claimed.
 
-Native firewalld trust and stale foreign passthrough findings remain open P1s.
-They prevent approval; being private/internal does not make them irrelevant.
+Native firewalld trust/untrust is suppressed. Startup refuses stale foreign
+interface permissions before creating the overlay. Firewalld hosts and legacy
+iptables filter state remain unsupported and fail closed. These corrections
+require exact-head review and real-client acceptance; see P1-FIREWALL-TESTS.md.
 The selected supported target is Debian 13 AMD64. Proxmox VM/LXC still require
 local TUN/capability acceptance. ARM64/Pi is not an experimental delivery target.
 Existing customers, kernel-WireGuard installations, identities and mappings are

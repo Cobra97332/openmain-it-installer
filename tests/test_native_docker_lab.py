@@ -25,6 +25,39 @@ traffic = load('traffic')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_same_identity_resume_never_adds_a_setup_key(self):
+        def read_public(path):
+            if str(path) == '/opt/native/patch.sha256':
+                return 'test-patch'
+            if str(path) == '/opt/native/upstream.sha':
+                return 'fca64287cf51a85552a41b022013abbfdb335452'
+            return ''
+        for opt_in in (True, False):
+            with tempfile.TemporaryDirectory() as d:
+                log = Path(d) / 'private.log'
+                real_open = container.os.open
+                def open_log(path, flags, mode=0o777):
+                    return real_open(log, flags, mode)
+                with patch.object(container.Path, 'read_text', read_public), \
+                     patch.object(container.Path, 'exists', return_value=True), \
+                     patch.object(container.Path, 'write_text'), patch.object(container, 'lan_dev', return_value='eth1'), \
+                     patch.object(container.os, 'open', side_effect=open_log), patch.object(container.subprocess, 'Popen') as launch, \
+                     patch.object(container, 'cmd') as command:
+                    container.start('primary-b', 'test-patch', resume=True, opt_in=opt_in)
+                args = launch.call_args
+                self.assertNotIn('--setup-key-file', args.args[0])
+                env = args.kwargs['env']
+                self.assertEqual('NB_EXPERIMENTAL_BINAT_CONFIG' in env, opt_in)
+                command.assert_not_called()  # no address or firewall reinitialization
+
+    def test_failed_restart_cannot_be_reported_as_kernel_publication(self):
+        stale = {'tun_exists': False, 'open': False, 'publication_count': 3}
+        with patch.object(packets, 'observe', return_value=stale), \
+             patch.object(packets.time, 'monotonic', side_effect=[0, 0, 31]), patch.object(packets.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, '^lab_restart_publication_missing$'):
+                packets.wait_router('lab', 'primary-b', lambda s: s['tun_exists'] and s['open']
+                                    and s['publication_count'] > 3, 'lab_restart_publication_missing')
+
     def test_full_client_contract_failure_stops_before_enrollment(self):
         from contextlib import redirect_stdout
         import io

@@ -9,7 +9,7 @@ import time
 REQUIRED = ('real_tcp_udp_binat', 'overlapping_customer_lans', 'unauthorized_new_tuples',
     'group_withdrawal_tcp_udp_existing_request', 'group_withdrawal_tcp_udp_new', 'restoration',
     'policy_change_after_last_observation', 'new_drop', 'foreign_rules_preserved',
-    'userspace_tun_owner_death', 'primary_backup_failover_100_200', 'engine_restart_same_identity',
+    'userspace_tun_owner_death', 'stale_accept_restart_refused', 'primary_backup_failover_100_200', 'engine_restart_same_identity',
     'related_icmp', 'concurrent_policy_reset', 'unknown_stale_networkmap',
     'kernel_ack_failure', 'no_optin_orphan_restart', 'icmp_port_protocol_restrictions',
     'multiple_independent_acl_sources', 'fresh_map_after_native_firewall_rebuild',
@@ -24,6 +24,16 @@ def wait_closed(lab, routers, timeout=90):
             return states
         time.sleep(0.3)
     raise RuntimeError('lab_controller_loss_gate_remained_open')
+
+
+def wait_router(lab, router, predicate, error, timeout=30):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = observe(lab, router)
+        if predicate(state):
+            return state
+        time.sleep(0.3)
+    raise RuntimeError(error)
 
 
 def observe(lab, router):
@@ -176,7 +186,11 @@ def acceptance(lab):
         probe(lab, destination='198.18.20.100')
         if observe(lab, 'primary-b')['dnat_packets'] <= before:
             raise RuntimeError('lab_primary_not_selected')
+        prior = observe(lab, 'primary-b')
+        if not prior['tun_exists']:
+            raise RuntimeError('lab_tun_survived_owner_death')
         lab.exec('primary-b', 'python3', '/opt/lab/traffic.py', 'kill')
+        dead = wait_router(lab, 'primary-b', lambda s: not s['tun_exists'], 'lab_tun_survived_owner_death')
         start = time.monotonic()
         backup_before = observe(lab, 'backup-b')['dnat_packets']
         while True:
@@ -191,8 +205,48 @@ def acceptance(lab):
             time.sleep(0.3)
         # No precise zero loss claim: wall time includes both TCP/UDP probes.
         result['backup_observed_after_seconds'] = round(time.monotonic() - start, 3)
-        # Return/re-enrollment/orphan and malformed-map injection are still
-        # mandatory blockers; failover alone is not declared a full PASS.
+        probe(lab, peer='probe', destination='198.18.20.100', allowed=False)
+        result['userspace_tun_owner_death'] = 'pass'
+        # Actual same-identity CLI restart WITHOUT BINAT opt-in must refuse the
+        # orphan before recreating wt0; never reuse a setup key or profile.
+        lab.resume_router('primary-b', opt_in=False)
+        refused = wait_router(lab, 'primary-b', lambda s: s['orphan_refusals'] > dead['orphan_refusals']
+                              and not s['tun_exists'], 'lab_orphan_resume_not_refused')
+        lab.exec('primary-b', 'python3', '/opt/lab/traffic.py', 'kill')
+        result['no_optin_orphan_restart'] = 'pass'
+        # A real stale untagged foreign ACCEPT must also prevent a configured
+        # restart. This fixture alone is removed after the negative assertion.
+        lab.exec('primary-b', 'python3', '/opt/lab/traffic.py', 'stale-seed')
+        lab.resume_router('primary-b')
+        wait_router(lab, 'primary-b', lambda s: s['stale_refusals'] > refused['stale_refusals']
+                    and not s['tun_exists'] and not s['open'], 'lab_stale_resume_not_refused')
+        lab.exec('primary-b', 'python3', '/opt/lab/traffic.py', 'kill')
+        result['stale_accept_restart_refused'] = 'pass'
+        lab.exec('primary-b', 'python3', '/opt/lab/traffic.py', 'stale-clear')
+        lab.resume_router('primary-b')
+        current = wait_router(lab, 'primary-b', lambda s: s['tun_exists'] and s['open']
+                              and s['publication_count'] > prior['publication_count'],
+                              'lab_restart_publication_missing', timeout=90)
+        lab.control('same_identity')
+        if not current['foreign_matches_initial']:
+            raise RuntimeError('lab_foreign_rules_changed')
+        before_return = current['dnat_packets']
+        start_return = time.monotonic()
+        while True:
+            probe(lab, destination='198.18.20.100')
+            if observe(lab, 'primary-b')['dnat_packets'] > before_return:
+                break
+            if time.monotonic() - start_return > 90:
+                raise RuntimeError('lab_primary_return_missing')
+            time.sleep(0.3)
+        probe(lab, peer='probe', destination='198.18.20.100', allowed=False)
+        result['primary_return_observed_after_seconds'] = round(time.monotonic() - start_return, 3)
+        result['engine_restart_same_identity'] = 'pass'
+        result['primary_backup_failover_100_200'] = 'pass'
+        # The A DROP must still hold after independent B failover/restart.
+        probe(lab, destination='198.18.10.100', allowed=False)
+        if not all(observe(lab, r)['foreign_matches_initial'] for r in routers):
+            raise RuntimeError('lab_foreign_rules_changed')
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as e:
         result['real_client_gate_failure'] = type(e).__name__
         if isinstance(e, RuntimeError) and str(e).startswith('lab_'):

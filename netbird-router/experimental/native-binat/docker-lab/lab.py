@@ -45,7 +45,9 @@ def safe_summary(report, status):
                    'lab_unauthorized_tcp_reply_observed', 'lab_unauthorized_udp_reply_observed', 'lab_established_connection_missing',
                    'lab_existing_permission_survived_local_withdrawal', 'lab_existing_permission_survived_drop',
                    'lab_controller_loss_gate_remained_open', 'lab_controller_loss_existing_flow_allowed',
-                   'lab_controller_reconnect_missing', 'lab_foreign_reference_missing', 'lab_foreign_rules_changed', 'lab_primary_not_selected', 'lab_automatic_backup_failover_missing'})
+                   'lab_controller_reconnect_missing', 'lab_restart_target_refused', 'lab_tun_survived_owner_death',
+                   'lab_stale_resume_not_refused', 'lab_orphan_resume_not_refused', 'lab_restart_publication_missing',
+                   'lab_primary_return_missing', 'lab_foreign_reference_missing', 'lab_foreign_rules_changed', 'lab_primary_not_selected', 'lab_automatic_backup_failover_missing'})
     error = report.get('error_class')
     if error is not None and error not in errors and not re.fullmatch(
             r'(?:lab_api_http_[1-5][0-9]{2}|docker_operation_failed:(?:run|exec|compose|image))', str(error)):
@@ -126,6 +128,12 @@ class Lab:
         self.project = 'om-binat-' + work.name.rsplit('-', 1)[-1]
         self.tools = tools
         self.file = work / 'compose.json'
+
+    def resume_router(self, name, opt_in=True):
+        if name not in ROUTERS:
+            raise RuntimeError('lab_restart_target_refused')
+        return self.exec(name, 'python3', '/opt/lab/container.py',
+                         'resume' if opt_in else 'resume-no-binat', name, patchset_digest())
 
     def compose(self, *args, check=True):
         return docker('compose', '-p', self.project, '-f', str(self.file), *args, check=check)
@@ -243,8 +251,8 @@ def main():
             report['real_clients_executed'] = True
             report['stage'] = 'packet_gates'
             packet_cases = json.loads(run_packets(lab))
-            if 'backup_observed_after_seconds' in packet_cases:
-                report['observations'] = {'backup_observed_after_seconds': packet_cases.pop('backup_observed_after_seconds')}
+            report['observations'] = {key: packet_cases.pop(key) for key in
+                ('backup_observed_after_seconds', 'primary_return_observed_after_seconds') if key in packet_cases}
             report['cases'].update(packet_cases)
             # No success override: unimplemented required adversarial gates fail.
             status = 0 if all(v == 'pass' for v in report['cases'].values()) else 1

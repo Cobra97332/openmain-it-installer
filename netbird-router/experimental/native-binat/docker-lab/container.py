@@ -313,7 +313,7 @@ def translation_script(virtual, dev):
         raise RuntimeError('lab_translation_scope_refused')
     return f'''table ip lab_translation {{
  chain related_observe {{ type filter hook postrouting priority -202; policy accept;
-  iifname "{dev}" oifname "wt0" ct state related ct original ip daddr {virtual} counter
+  iifname "{dev}" oifname "wt0" ip protocol icmp ct state related ct original ip daddr {virtual} ct original proto-dst 8086 counter
  }}
  chain dn {{ type nat hook prerouting priority -101; policy accept;
   iifname "wt0" ip daddr {virtual} counter dnat ip prefix to ip daddr map {{ {virtual} : 192.168.88.0/24 }}

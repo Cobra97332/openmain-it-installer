@@ -69,6 +69,7 @@ jobs:
           docker run --rm --cap-drop ALL \
             -v "$PWD/tests/docker_router/package_probe.py:/probe.py:ro" \
             --entrypoint python3 openmain-router:test /probe.py > armhf-packages.txt
+          cat armhf-packages.txt  # fixed package/version JSON only; no credentials
       - name: Real stock-controller and nftables gateway gates
         run: |
           sudo modprobe tun

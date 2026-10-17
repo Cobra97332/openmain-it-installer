@@ -60,8 +60,8 @@ Betriebsmodell und Grenzen
   braucht echte Paketnachweise, keine Annahme aus erfolgreichem Enrollment.
 
 Architekturen: Freigabestatus
-  amd64: NetBird-Manifest vorhanden; Gesamtimage/Gateway noch nicht bestätigt.
-  arm64: NetBird-Manifest vorhanden; Gesamtimage/Gateway noch nicht bestätigt.
+  amd64: Gesamtimage, Binary-Starts und echter Gateway-Pakettest bestanden.
+  arm64: dieselben Prüfungen auf nativem ARM64-Runner bestanden.
   arm/v7: NICHT freigegeben, Dockerfile verweigert diesen Build derzeit.
 NetBird 0.80.0 Multiarch-Index geprüft:
  sha256:4976692ea44bb93871743d0b742b4a8f97f6425bfc458ca2d78e28fdb8bdf4ad
@@ -113,7 +113,9 @@ Vorbereitung ausschließlich in isoliertem Labor
 8. Nur nach erfolgreicher Paket-/Gatewayprüfung bewusst im Labor starten:
      docker compose --env-file /private/demo/.env -f docker/router/compose.yaml up -d
    Dies kann synthetische Controllerobjekte erzeugen. Keine echten Tokens!
-   Primary zuerst. Vorhandene Gruppenmitglieder/Ressourcen bleiben erhalten.
+   Primary zuerst. VIRTUAL_NETWORK muss pro Kunde eindeutig sein; Primary
+   und Backup desselben Kunden teilen den Prefix. Vorhandene
+   Gruppenmitglieder/Ressourcen bleiben erhalten.
    Widersprüche/fremde Registrierungsnachweise führen zum Abbruch.
 
 Backup
@@ -123,7 +125,7 @@ Primary muss das gemeinsame Mapping bereits reserviert haben. Zugriff wird
 vom selben NetBird-Policy-Modell geprüft; ein Metrikwechsel erteilt keine
 Berechtigungen. SQLite/Conntrack sind routerlokal; kein verlustfreier Erhalt
 laufender TCP-/UDP-Sessions beim Routerwechsel behauptet.
-Rollouts pro Kunde serialisieren: NetBird-Gruppen-API bietet hier kein CAS;
+Ersteinrichtungen accountweit serialisieren (gemeinsame Gruppe Kunden): NetBird-Gruppen-API bietet hier kein CAS;
 Read-before-write/Readback ist kein globaler Lock gegen fremde API-Schreiber.
 
 Prüfung und Veröffentlichungsablauf
@@ -149,25 +151,34 @@ Prüfung und Veröffentlichungsablauf
   echter Compose-/Zabbix-Serverstart, Backup-Passiv-Agent, Warm-/Kaltneustart,
   Controllerverlust und physische ARM64-NICs sind zusätzlich abzunehmen.
 
-Tatsächlich lokal ausgeführt (Stand des ersten Entwurfs)
-- Offizielles NetBird-Manifest abgefragt: amd64/arm64/arm/v6 vorhanden.
-- 10 neue reine Adaptertests bestanden; der zusätzliche Test schützt zentrale
-  Policy-Verschärfung bei Wiederaufnahme. Zuvor insgesamt 220 bestehende/neue
-  Debian-13-Offline-Tests sowie bisherige Bash-/ShellCheck-Prüfungen bestanden.
-- Neue NAT- und Gateway-Grenzregeln im echten isolierten nftables-Kernel geladen.
-  Das beweist Syntax/Kernelakzeptanz, NICHT Paketberechtigungen.
-- Compose config --quiet: bestanden.
-- Gesamtimage: BLOCKIERT bei HTTP403 des Zabbix-Releasepakets.
-- CI a901200: Gesamtimages und Binary-Starts beider Architekturen bestanden,
-  Zabbix Proxy/Agent2 7.4.15 tatsächlich verfügbar. AMD64-Netzwerkvertrag mit
-  Legacy-Routen bestand; ARM64-Gatewaytest fehlgeschlagen, Ursache noch offen.
-  ARMHF-Paketkandidaten werden zusätzlich per APT im AMD64-Probecontainer
-  abgefragt; ältere Debian-Pakete sind kein Zabbix-7.4-Nachweis.
-  Nach Umstellung auf das tatsächliche Networks-/Ressourcenmodell sind beide
-  Nachweise erneut erforderlich. Keine Architektur bereits freigegeben.
-- Lokaler zusätzlicher Netzwerkvertrag: durch erschöpften Docker-VFS-
-  Testdatenträger blockiert. Nur eigene Laborcontainer/temporäre Image-/
-  Cacheeinträge bereinigt, kein globales Prune. Kein lokaler Paketerfolg behauptet.
+Nachgewiesener Stand / noch offene Abnahme
+Runtime-Commit ef2ab99b7d9eca2712e1860604b8d02c69060918:
+  https://github.com/Cobra97332/openmain-it-installer/actions/runs/39070352538
+- Syntax, ShellCheck, 223 Debian-13-Offline-Tests bestanden.
+- AMD64 und natives ARM64: Image-/Paketbuild, NetBird/Zabbix-Binary-Start,
+  Profilformat, unveränderte Networks-/Ressourcen-Abgleiche bestanden.
+- Echte Kernelpakete: TCP/UDP, Portbegrenzung, Kundentrennung zweier gleicher
+  realer LANs, Gruppenentzug neuer Flows, 100/200-Backup, fehlender Tunnel,
+  eigener passiver Zabbix-LAN-Hairpin und Backup-Monitoringtransport bestanden.
+- Unverändertes NetBird 0.80.0, Proxy und Agent2 tatsächlich 7.4.15, beide CPUs.
+- GHCR-Kandidat aus GENAU den getesteten Image-Tars veröffentlicht:
+  ghcr.io/cobra97332/openmain-it-installer/customer-router:candidate-ef2ab99b7d9eca2712e1860604b8d02c69060918
+  Multiarch-Index sha256:c1618425d6530f589908a7230527fa41609df0c3f5d3a47a9bc3b3b92ebdd6ff
+- Nicht behauptet: vollständiger Compose-Neustart mit echtem Zabbix-Server,
+  dessen TLS-PSK-Handshake, physischer Host-Neustart und Raspberry-Pi-Hardware.
+  Der Pakettest emuliert lediglich Zabbix-Porttransport, NICHT dessen TLS/API.
+  Vor Kundenbetrieb sind diese Abnahmen verpflichtend; PR bleibt Draft.
+- Keine Sofortentzugs-/Controller-ACK-Garantie für bestehende Sessions.
+- ARMHF-APT-Ergebnis ist ein eigener Paketnachweis im jeweiligen CI-Artefakt;
+  ohne tatsächlichen ARMv7-Image-/Gatewaytest keine ARMv7-Freigabe.
+- Ein früherer emulierter ARM64-Lauf scheiterte bei der Netzwerkvorbereitung.
+  Native ARM64-Tests bestehen; daraus wird keine emulierte Prüfung gemacht.
+- Lokal zusätzlich 10 reine Adaptertests, Compose-Validierung und echtes
+  nftables-Kernelladen bestanden. Kompletter lokaler Build: HTTP403 am
+  Zabbix-Repository (Cloud-Egress); weiterer lokaler Netzwerkversuch durch
+  vollen Docker-VFS-Testdatenträger blockiert. Nur eigene Testobjekte bereinigt.
+- Änderungen nach diesem Runtime-Commit an Dokumentation/Logausgabe benötigen
+  weiterhin ihren eigenen CI-Lauf; "latest" wird nicht verwendet.
 
 Rollback
 Nur dieses Projekt docker compose ... down, ohne -v! Identität/SQLite bleiben.

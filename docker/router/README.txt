@@ -65,14 +65,17 @@ Betriebsmodell und Grenzen
 Architekturen: Freigabestatus
   amd64: Gesamtimage, Binary-Starts und echter Gateway-Pakettest bestanden.
   arm64: dieselben Prüfungen auf nativem ARM64-Runner bestanden.
-  arm/v7: NICHT freigegeben, Dockerfile verweigert diesen Build derzeit.
+  arm/v7: NICHT unterstützt: offizielles APT bietet hier nur Zabbix 7.0.22,
+  keine geforderte 7.4-Version. Dockerfile verweigert diesen Build.
 NetBird 0.80.0 Multiarch-Index geprüft:
  sha256:4976692ea44bb93871743d0b742b4a8f97f6425bfc458ca2d78e28fdb8bdf4ad
  enthält amd64, arm64 und arm/v6, keinen arm/v7-Eintrag. Ein ARMv6-Binary
  könnte auf ARMv7 laufen; Debian-armhf-, Zabbix- und Gateway-Kompatibilität
  sind damit nicht nachgewiesen. Deshalb kein bloßes Plattform-Relabeling.
 Zabbix 7.4 Debian13-Pakete werden im Zielarchitektur-Build wirklich mit apt
-installiert. Versions-/Architekturliste und Starttests sind CI-Nachweise.
+installiert. Proxy, Agent2 und SQL-Schema müssen tatsächlich Version 7.4.x
+haben; ein erfolgreicher Fallback auf Debians 7.0.x wird als Buildfehler
+abgelehnt. Versions-/Architekturliste und Starttests sind CI-Nachweise.
 Lokal stoppt der Build beim Zabbix-Releasepaket mit curl HTTP 403; die
 Cloud-Netzpolicy erlaubt repo.zabbix.com nicht. Kein Mirror- oder TLS-Bypass.
 Solange Build UND Gateway-Nachweis fehlen: keine Plattform als unterstützt
@@ -177,7 +180,8 @@ Historischer Netzwerk-Nachweis ef2ab99b7d9eca2712e1860604b8d02c69060918:
   Vor Kundenbetrieb sind diese Abnahmen verpflichtend; PR bleibt Draft.
 - Keine Sofortentzugs-/Controller-ACK-Garantie für bestehende Sessions.
 - ARMHF-APT-Ergebnis ist ein eigener Paketnachweis im jeweiligen CI-Artefakt;
-  ohne tatsächlichen ARMv7-Image-/Gatewaytest keine ARMv7-Freigabe.
+  Kandidaten: Agent2 und Proxy jeweils 1:7.0.22+dfsg-1~deb13u1, nicht 7.4.
+  Ein ARMv7-Image-/Gatewaytest ist damit nicht erfolgt; keine ARMv7-Freigabe.
 - Ein früherer emulierter ARM64-Lauf scheiterte bei der Netzwerkvorbereitung.
   Native ARM64-Tests bestehen; daraus wird keine emulierte Prüfung gemacht.
 - Lokal zusätzlich 13 reine Adaptertests, Compose-Validierung und echtes

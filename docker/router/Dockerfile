@@ -19,6 +19,10 @@ RUN --mount=type=secret,id=ca,required=false \
     && dpkg -i /tmp/zabbix-release.deb && rm /tmp/zabbix-release.deb \
     && apt-get update && apt-get install -y --no-install-recommends \
       zabbix-proxy-sqlite3 zabbix-agent2 zabbix-sql-scripts \
+    && for package in zabbix-proxy-sqlite3 zabbix-agent2 zabbix-sql-scripts; do \
+         version=$(dpkg-query -W -f='${Version}' "$package"); \
+         case "${version#*:}" in 7.4.*) ;; *) exit 65;; esac; \
+       done \
     && dpkg-query -W -f='${Package}=${Version}\n' > /usr/share/openmain-packages.txt \
     && rm -rf /var/lib/apt/lists/* && rm -f /etc/apt/apt.conf.d/99build-ca /usr/sbin/policy-rc.d
 COPY --from=netbird /usr/local/bin/netbird /usr/local/bin/netbird

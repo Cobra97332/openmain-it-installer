@@ -71,6 +71,10 @@ def configuration(env=None):
         raise Invalid('CUSTOMER_INVALID')
     if e['ROUTER_ROLE'] not in ('primary', 'backup'):
         raise Invalid('ROLE_INVALID')
+    names = ('Kunden', e['CUSTOMER'], 'Kunde:' + e['CUSTOMER'],
+             e.get('NB_ZABBIX_PROXY_GROUP','Zabbix-Kunden-Proxies'))
+    if len(set(names)) != 4 or any(not n or len(n)>128 or any(c in n for c in '\r\n\x00') for n in names):
+        raise Invalid('CUSTOMER_GLOBAL_GROUP_COLLISION')
     for k in ('NB_MANAGEMENT_URL', 'NB_ZABBIX_API_URL'):
         u = urlsplit(e[k])
         if u.scheme != 'https' or not u.hostname or u.username or u.password or u.query or u.fragment:
@@ -175,18 +179,24 @@ def secret(name, optional=False):
     return value
 
 
-def member(api, name, peer):
+def member(api, name, peer, allow_write=True, expected=None):
     # Same preservation/read-before-write/readback contract as router-install.sh.
     current = one(api('GET', '/groups'), 'name', name)
     if current is None:
+        if not allow_write:
+            raise Invalid('GROUP_MISSING_NO_REGRANT')
         created = api('POST', '/groups', {'name': name, 'peers': []})
         current = one(api('GET', '/groups'), 'name', name)
         if not current or current['id'] != created.get('id'):
             raise Invalid('GROUP_CREATE_UNCONFIRMED')
     gid = current['id']
+    if expected is not None and gid != expected:
+        raise Invalid('GROUP_BINDING_CHANGED')
     current = api('GET', '/groups/' + gid)
     peers = group_members(current, gid)
     if peer not in peers:
+        if not allow_write:
+            raise Invalid('GROUP_MEMBERSHIP_REVOKED_NO_REGRANT')
         before = api('GET', '/groups/' + gid)
         group_members(before, gid)
         if before != current:
@@ -425,9 +435,18 @@ def gateway(e):
     if len(peers) != 1:
         raise Invalid('NETBIRD_PEER_AMBIGUOUS')
     pid = peers[0]['id']
-    customer_group = member(api, e['CUSTOMER'], pid)
-    for name in ('Kunden', 'Kunde:' + e['CUSTOMER'], e.get('NB_ZABBIX_PROXY_GROUP', 'Zabbix-Kunden-Proxies')):
-        member(api, name, pid)
+    group_file = PRIVATE / 'groups.json'
+    group_names = (e['CUSTOMER'], 'Kunden', 'Kunde:' + e['CUSTOMER'],
+                   e.get('NB_ZABBIX_PROXY_GROUP','Zabbix-Kunden-Proxies'))
+    known = json.loads(group_file.read_text()) if group_file.exists() else None
+    if known is not None and set(known) != set(group_names):
+        raise Invalid('GROUP_CONTEXT_CHANGED')
+    initial = known is None and not (PRIVATE / 'network.json').exists()
+    groups = {name:member(api, name, pid, allow_write=initial,
+                         expected=known[name] if known is not None else None)
+              for name in group_names}
+    atomic(group_file, json.dumps(groups))
+    customer_group = groups[e['CUSTOMER']]
     # LAN/transit are legitimate local routes; only the NAT destination's real
     # LAN is excluded from allocation collision checks, as in the VM mapping.
     routes = json.loads(command('ip', '-j', '-4', 'route'))

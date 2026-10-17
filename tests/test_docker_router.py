@@ -155,4 +155,21 @@ class RedirectTests(unittest.TestCase):
             server.shutdown();server.server_close();thread.join()
 
 
+class CentralAuthorityTests(unittest.TestCase):
+    def test_customer_cannot_be_shared_access_group(self):
+        for name in ('Kunden','Zabbix-Kunden-Proxies'):
+            with self.assertRaisesRegex(r.Invalid,'GROUP_COLLISION'):
+                r.configuration(dict(ENV,CUSTOMER=name))
+
+    def test_revoked_membership_never_regranted_on_resume(self):
+        calls=[]
+        def api(method,path,data=None):
+            calls.append(method)
+            g=dict(id='g1',name='lab',peers=None,peers_count=0,resources=None,resources_count=0)
+            return [g] if path=='/groups' else g
+        with self.assertRaisesRegex(r.Invalid,'REVOKED_NO_REGRANT'):
+            r.member(api,'lab','old-peer',allow_write=False,expected='g1')
+        self.assertTrue(all(x=='GET' for x in calls))
+
+
 if __name__ == '__main__': unittest.main()

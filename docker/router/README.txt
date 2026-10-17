@@ -11,6 +11,9 @@ Wiederverwendung
   Primary-/Backup-Router mit Metriken 100/200, masquerade=false.
 - zabbix-api-register.sh, zabbix_registration.py und register_host():
   Proxy-Gruppe, Zabbix 7.4 TLS-PSK, private Schreibnachweise, Host-/Agent-Abgleich.
+  Nach erfolgreicher Gruppeneinrichtung prüft ein Neustart Mitgliedschaften
+  nur lesend; entzogene Rechte werden nicht automatisch wieder vergeben.
+  Kundennamen dürfen keine gemeinsam genutzten Zugriffsgruppen bezeichnen.
   Nach erfolgreicher Ressourcenzuordnung bestätigt der Adapter gespeicherte
   Ressourcen-/Router-IDs rein lesend. Manuell eingeschränkte oder entfernte
   zentrale Policies werden beim Neustart nicht durch Defaults ersetzt.
@@ -99,7 +102,10 @@ Vorbereitung ausschließlich in isoliertem Labor
    Bei Wiederaufnahme ist der Setup-Key unnötig: Datei kann leer sein, muss
    wegen Compose-Secretbindung weiter existieren. Tokens bleiben erforderlich.
 5. NB_MANAGEMENT_URL, NB_ZABBIX_API_URL und NB_ZABBIX_SERVER ausdrücklich
-   setzen. Beispiele .lab.test sind keine produktiven Defaults. Eigene Lab-CA
+   setzen. Zentrale NetBird-Policies für TCP10051 zum echten Zabbix-Server
+   und HTTPS443 zum tatsächlichen API-Zugriffsweg müssen bereits bestehen;
+   sie werden geprüft, nicht pauschal erweitert. Beispiele .lab.test sind
+   keine produktiven Defaults. Eigene Lab-CA
    über CA_BUNDLE_FILE als öffentlichen root-lesbaren PEM-Bundle bereitstellen;
    kein curl -k, kein Abschalten von APT-/TLS-Signaturprüfung.
 6. Netz-/IPv4-Adressen, Transit-Kollisionen und Secretrechte prüfen:
@@ -152,7 +158,7 @@ Prüfung und Veröffentlichungsablauf
   Controllerverlust und physische ARM64-NICs sind zusätzlich abzunehmen.
 
 Nachgewiesener Stand / noch offene Abnahme
-Runtime-Commit ef2ab99b7d9eca2712e1860604b8d02c69060918:
+Historischer Netzwerk-Nachweis ef2ab99b7d9eca2712e1860604b8d02c69060918:
   https://github.com/Cobra97332/openmain-it-installer/actions/runs/39070352538
 - Syntax, ShellCheck, 223 Debian-13-Offline-Tests bestanden.
 - AMD64 und natives ARM64: Image-/Paketbuild, NetBird/Zabbix-Binary-Start,
@@ -161,7 +167,8 @@ Runtime-Commit ef2ab99b7d9eca2712e1860604b8d02c69060918:
   realer LANs, Gruppenentzug neuer Flows, 100/200-Backup, fehlender Tunnel,
   eigener passiver Zabbix-LAN-Hairpin und Backup-Monitoringtransport bestanden.
 - Unverändertes NetBird 0.80.0, Proxy und Agent2 tatsächlich 7.4.15, beide CPUs.
-- GHCR-Kandidat aus GENAU den getesteten Image-Tars veröffentlicht:
+- Historischer GHCR-Kandidat aus GENAU den getesteten Image-Tars veröffentlicht
+  (kein Bereitstellungsziel: spätere Kontext-/Redirect-Absicherungen verwenden):
   ghcr.io/cobra97332/openmain-it-installer/customer-router:candidate-ef2ab99b7d9eca2712e1860604b8d02c69060918
   Multiarch-Index sha256:c1618425d6530f589908a7230527fa41609df0c3f5d3a47a9bc3b3b92ebdd6ff
 - Nicht behauptet: vollständiger Compose-Neustart mit echtem Zabbix-Server,
@@ -173,7 +180,7 @@ Runtime-Commit ef2ab99b7d9eca2712e1860604b8d02c69060918:
   ohne tatsächlichen ARMv7-Image-/Gatewaytest keine ARMv7-Freigabe.
 - Ein früherer emulierter ARM64-Lauf scheiterte bei der Netzwerkvorbereitung.
   Native ARM64-Tests bestehen; daraus wird keine emulierte Prüfung gemacht.
-- Lokal zusätzlich 11 reine Adaptertests, Compose-Validierung und echtes
+- Lokal zusätzlich 13 reine Adaptertests, Compose-Validierung und echtes
   nftables-Kernelladen bestanden. Kompletter lokaler Build: HTTP403 am
   Zabbix-Repository (Cloud-Egress); weiterer lokaler Netzwerkversuch durch
   vollen Docker-VFS-Testdatenträger blockiert. Nur eigene Testobjekte bereinigt.

@@ -93,7 +93,7 @@ Vorbereitung ausschließlich in isoliertem Labor
    wegen Compose-Secretbindung weiter existieren. Tokens bleiben erforderlich.
 5. NB_MANAGEMENT_URL, NB_ZABBIX_API_URL und NB_ZABBIX_SERVER ausdrücklich
    setzen. Beispiele .lab.test sind keine produktiven Defaults. Eigene Lab-CA
-   vor Start über explizit vertrauenswürdiges Image/Truststore bereitstellen;
+   über CA_BUNDLE_FILE als öffentlichen root-lesbaren PEM-Bundle bereitstellen;
    kein curl -k, kein Abschalten von APT-/TLS-Signaturprüfung.
 6. Netz-/IPv4-Adressen, Transit-Kollisionen und Secretrechte prüfen:
      docker compose --env-file /private/demo/.env -f docker/router/compose.yaml config --quiet
@@ -140,7 +140,8 @@ Prüfung und Veröffentlichungsablauf
 
 Tatsächlich lokal ausgeführt (Stand des ersten Entwurfs)
 - Offizielles NetBird-Manifest abgefragt: amd64/arm64/arm/v6 vorhanden.
-- 7 neue reine Adaptertests: bestanden.
+- 7 neue reine Adaptertests: bestanden. Insgesamt 220 bestehende/neue
+  Debian-13-Offline-Tests sowie bisherige Bash-/ShellCheck-Prüfungen bestanden.
 - Neue NAT- und Gateway-Grenzregeln im echten isolierten nftables-Kernel geladen.
   Das beweist Syntax/Kernelakzeptanz, NICHT Paketberechtigungen.
 - Compose config --quiet: bestanden.

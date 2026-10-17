@@ -1,0 +1,15 @@
+**
+!docker/
+!docker/router/
+!docker/router/Dockerfile
+!docker/router/start.sh
+!docker/router/router.py
+!netbird-router/
+!netbird-router/common/
+!netbird-router/common/runtime.py
+!netbird-router/common/network.py
+!netbird-router/common/preflight.py
+!netbird-router/common/zabbix_access.py
+!netbird-router/common/zabbix_registration.py
+!netbird-router/common/zabbix_sync.py
+!zabbix-api-register.sh

@@ -145,9 +145,21 @@ e=json.loads(sys.argv[1]); dev=r.interface(sys.argv[2])
 r.command('ip','address','add',e['LAN_IP']+'/24','dev',dev)
 r.command('ip','route','replace','100.64.0.0/10','via',e['EDGE_IP'],'dev',r.interface(e['NAT_IP']))
 r.apply_rules(r.nat_rules(e,r.interface(e['NAT_IP']),dev),['openmain_binat','openmain_container_boundary'])
+# Observation only, no verdict or permission changes; omitted from runtime.
+r.command('nft','add','chain','ip','openmain_container_boundary','observed',
+          '{ type filter hook postrouting priority 150; policy accept; }')
+r.command('nft','add','rule','ip','openmain_container_boundary','observed',
+          'ip','daddr','192.168.178.100','tcp','dport','8080','ct','status','dnat','counter')
 '''
     execute('nat-'+name,'python3','-c',code,payload,address(nat,lan_net))
     return env
+
+
+def route_packets(router):
+    document=json.loads(execute('nat-'+router,'nft','-j','list','chain','ip',
+                               'openmain_container_boundary','observed').stdout)
+    return sum(expr.get('counter',{}).get('packets',0)
+               for row in document['nftables'] for expr in row.get('rule',{}).get('expr',[]))
 
 
 def enroll(name, resume=False):
@@ -250,9 +262,16 @@ s.sendall(b'OM-MONITOR');assert s.recv(100)==b'OM-MONITOR'
     RESULTS['withdrawal_new_flows']=True
     control('c.mutate({"operation":"membership","allow":True}); print("GROUP_RESTORED")')
     wait_for(lambda: probe('peer','a'))
-    # Capture counter selection via actual flow path, then stop Primary.
+    # Prove selected data paths, not just successful traffic after a stop.
+    primary_before,backup_before=route_packets('primary-a'),route_packets('backup-a')
+    probe('peer','a')
+    if not (route_packets('primary-a')>primary_before and route_packets('backup-a')==backup_before):
+        raise RuntimeError('primary_metric_not_selected')
+    RESULTS['primary_metric_100_selected']=True
     docker('stop',PREFIX+'-primary-a')
     wait_for(lambda: probe('peer','a'),seconds=90)
+    if route_packets('backup-a')<=backup_before:
+        raise RuntimeError('backup_data_path_not_observed')
     probe('probe','a','tcp',False)
     RESULTS['primary_backup_100_200']=True
     # Both gateway processes absent -> no alternate/Docker bridge access.

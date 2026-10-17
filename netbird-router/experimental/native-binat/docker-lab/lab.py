@@ -21,7 +21,9 @@ DEPENDENCY_PATCH = PATCH.parent / 'google-nftables-v0.3.0-ct-direction.patch'
 
 
 def patchset_digest():
-    hashes = ''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '\n' for p in (PATCH, DEPENDENCY_PATCH))
+    injectors = Path(__file__).parent / 'injectors'
+    files = (PATCH, DEPENDENCY_PATCH, *(injectors / n for n in ('apply.py', 'engine.go', 'netlink.go')))
+    hashes = ''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '\n' for p in files)
     return hashlib.sha256(hashes.encode('ascii')).hexdigest()
 
 
@@ -53,6 +55,9 @@ def safe_summary(report, status):
                    'lab_controller_reconnect_missing', 'lab_restart_target_refused', 'lab_tun_survived_owner_death',
                    'lab_stale_resume_not_refused', 'lab_orphan_resume_not_refused', 'lab_restart_publication_missing',
                    'lab_primary_return_missing', 'lab_foreign_reference_missing', 'lab_foreign_rules_changed', 'lab_primary_not_selected', 'lab_automatic_backup_failover_missing'})
+    errors.update({'lab_injector_barrier_missing', 'lab_fault_baseline_missing',
+                   'lab_fault_existing_flow_allowed', 'lab_fault_unconfirmed_publication',
+                   'lab_fault_owner_or_foreign_changed', 'lab_withheld_sync_missing'})
     error = report.get('error_class')
     if error is not None and error not in errors and not re.fullmatch(
             r'(?:lab_api_http_[1-5][0-9]{2}|docker_operation_failed:(?:run|exec|compose|image))', str(error)):
@@ -70,6 +75,9 @@ def safe_summary(report, status):
             'additional_gates_passed': {name: cases.get(name) == 'pass' for name in (
                 'related_icmp', 'icmp_port_protocol_restrictions',
                 'multiple_independent_acl_sources', 'established_reply_only_tcp_udp')},
+            'native_fault_gates_passed': {name: cases.get(name) == 'pass' for name in (
+                'concurrent_policy_reset', 'unknown_stale_networkmap', 'kernel_ack_failure',
+                'fresh_map_after_native_firewall_rebuild')},
             'publication_failure': {r: {key: value.get(key) is True for key in ('open', 'newer', 'tun_exists')}
                 for r, value in report.get('observations', {}).get('publication_failure', {}).items()
                 if r in ROUTERS and isinstance(value, dict)},

@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import shutil
 import subprocess
+import sys
 import unittest
 from unittest.mock import Mock, patch
 
@@ -24,9 +25,43 @@ container = load('container')
 traffic = load('traffic')
 related = load('related')
 passive = load('passive')
+with patch.dict(sys.modules, {'packets': packets}):
+    faults = load('faults')
 
 
 class NativeDockerLabTests(unittest.TestCase):
+    def test_fault_gate_rejects_existing_flow_before_any_pass(self):
+        session = Mock()
+        session.exchange.return_value = True
+        with patch.object(faults, 'wait_closed'):
+            with self.assertRaisesRegex(RuntimeError, 'lab_fault_existing_flow_allowed'):
+                faults.closed_packets(None, [session], {})
+
+    def test_fault_gate_rejects_publication_while_map_withheld(self):
+        before = {r: {'publication_count': 7} for r in faults.A}
+        now = {'open': False, 'publication_count': 8, 'tun_exists': True, 'foreign_matches_initial': True}
+        with patch.object(faults, 'wait_closed'), patch.object(faults, 'probe'), \
+             patch.object(faults, 'observe', return_value=now):
+            with self.assertRaisesRegex(RuntimeError, 'lab_fault_unconfirmed_publication'):
+                faults.closed_packets(None, [], before)
+
+    def test_fault_barrier_does_not_reuse_prior_rejection(self):
+        before = {r: {'rejected': 10} for r in faults.A}
+        state = {r: {'rejected': 10, 'hold': True} for r in faults.A}
+        with patch.object(faults, 'inject', return_value=state), \
+             patch.object(faults.time, 'monotonic', side_effect=[0, 0, 2]), patch.object(faults.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'lab_injector_barrier_missing'):
+                faults.wait_inject(None, lambda s: s['hold'], timeout=1, after=before)
+
+    def test_instrumentation_is_only_in_disposable_image(self):
+        runtime_patch = (DIR.parent / 'netbird-v0.80.0-small-native.patch').read_text()
+        builder = (DIR.parents[3] / 'tests/check-native-binat-patch.sh').read_text()
+        self.assertNotIn('startBINATLab', runtime_patch)
+        self.assertNotIn('injectors/apply.py', builder)
+        image = (DIR / 'Dockerfile.client').read_text()
+        self.assertIn('python3 /tmp/injectors/apply.py /src', image)
+        self.assertIn('/tmp/injectors/netlink.go', image)
+
     def test_crossed_protocol_denials_are_required_before_marking_case_passed(self):
         for protocols, port in ((('tcp',), 8081), (('udp',), 8080)):
             def deny_failure(*args, **kwargs):
@@ -338,6 +373,8 @@ class NativeDockerLabTests(unittest.TestCase):
             with patch.object(lab, 'PATCH', native), patch.object(lab, 'DEPENDENCY_PATCH', dependency):
                 first = lab.patchset_digest()
                 wire = hashlib.sha256(b'native').hexdigest() + '\n' + hashlib.sha256(b'ABI-u8').hexdigest() + '\n'
+                wire += ''.join(hashlib.sha256((DIR / 'injectors' / name).read_bytes()).hexdigest() + '\n'
+                                for name in ('apply.py', 'engine.go', 'netlink.go'))
                 self.assertEqual(first, hashlib.sha256(wire.encode()).hexdigest())
                 dependency.write_bytes(b'other ABI')
                 self.assertNotEqual(first, lab.patchset_digest())

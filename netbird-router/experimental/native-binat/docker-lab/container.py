@@ -349,7 +349,8 @@ def start(name, patch_hash, resume=False, opt_in=True):
     if not Path('/dev/net/tun').exists():
         Path('/dev/net').mkdir(exist_ok=True)
         os.mknod('/dev/net/tun', 0o20600, os.makedev(10, 200))
-    env = dict(os.environ, SSL_CERT_FILE='/lab-ca/cert.pem', NB_STATE_DIR='/var/lib/netbird')
+    env = dict(os.environ, SSL_CERT_FILE='/lab-ca/cert.pem', NB_STATE_DIR='/var/lib/netbird',
+               OPENMAIN_LAB_INJECTORS='1')
     router = name.startswith(('primary-', 'backup-'))
     if router:
         dev = lan_dev()

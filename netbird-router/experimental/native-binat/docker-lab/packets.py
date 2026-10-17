@@ -256,10 +256,6 @@ def prove_passive_sender(lab, barrier):
 
 def acceptance(lab):
     result = {name: 'blocked:mandatory_gate_not_implemented' for name in REQUIRED}
-    result.update(concurrent_policy_reset='blocked:engine_reset_barrier_injector_missing',
-                  unknown_stale_networkmap='blocked:management_map_injector_missing',
-                  kernel_ack_failure='blocked:daemon_netlink_fault_injector_missing',
-                  fresh_map_after_native_firewall_rebuild='blocked:live_engine_reset_fixture_missing')
     routers = ('primary-a', 'backup-a', 'primary-b', 'backup-b')
     sessions = []
     passive = []
@@ -272,6 +268,8 @@ def acceptance(lab):
             probe(lab, destination=dest)
             probe(lab, peer='probe', destination=dest, allowed=False)
         result.update(real_tcp_udp_binat='pass', overlapping_customer_lans='pass', unauthorized_new_tuples='pass')
+        from faults import acceptance as fault_acceptance
+        fault_acceptance(lab, result)
         extended_policy_cases(lab, result)
         establish_sessions(lab, sessions)
         for proto in ('tcp', 'udp'):

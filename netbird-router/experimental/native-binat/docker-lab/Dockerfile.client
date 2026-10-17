@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
 FROM golang:1.26.7-bookworm AS build
+RUN apt-get update && apt-get install --no-install-recommends -y python3 && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 RUN --mount=type=secret,id=ca,target=/run/build-ca,required=false \
     if test -f /run/build-ca; then export CURL_CA_BUNDLE=/run/build-ca; fi; \
@@ -11,6 +12,11 @@ COPY netbird-router/experimental/native-binat/netbird-v0.80.0-small-native.patch
 COPY netbird-router/experimental/native-binat/google-nftables-v0.3.0-ct-direction.patch /tmp/nftables.patch
 COPY netbird-router/experimental/native-binat/prepare-native-dependency.sh /tmp/prepare-native-dependency.sh
 RUN git apply --check /tmp/native.patch && git apply /tmp/native.patch
+# Deliberately separate TEST overlay; never part of the selected runtime patch.
+COPY netbird-router/experimental/native-binat/docker-lab/injectors /tmp/injectors
+RUN python3 /tmp/injectors/apply.py /src && gofmt -w \
+    client/internal/binat_lab_injector_linux.go client/internal/engine.go \
+    client/firewall/nftables/binat_lab_injector_linux.go client/firewall/nftables/manager_linux.go
 ARG TARGETARCH
 RUN --mount=type=secret,id=ca,target=/run/build-ca,required=false \
     --mount=type=cache,target=/go/pkg/mod \
@@ -20,7 +26,9 @@ RUN --mount=type=secret,id=ca,target=/run/build-ca,required=false \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -buildvcs=false \
       -ldflags='-X github.com/netbirdio/netbird/version.version=0.80.0' \
       -o /out/netbird ./client \
-    && sha256sum /tmp/native.patch /tmp/nftables.patch | cut -d ' ' -f1 | sha256sum >/out/patch.sha256 \
+    && sha256sum /tmp/native.patch /tmp/nftables.patch \
+        /tmp/injectors/apply.py /tmp/injectors/engine.go /tmp/injectors/netlink.go \
+        | cut -d ' ' -f1 | sha256sum >/out/patch.sha256 \
     && printf '%s\n' fca64287cf51a85552a41b022013abbfdb335452 >/out/upstream.sha
 FROM openmain-native-lab-tools:debian13
 COPY --from=build /out /opt/native

@@ -85,6 +85,7 @@ def nat_rules(e, transit, lan):
  chain forward {{ type filter hook forward priority -10; policy accept;
   iifname "{transit}" ip saddr != {{ 100.64.0.0/10, {e['EDGE_IP']} }} drop
   iifname "{transit}" oifname != "{lan}" drop
+  iifname "{lan}" oifname != "{transit}" drop
   iifname "{lan}" oifname "{transit}" ct state != {{ established, related }} ip daddr != {e['EDGE_IP']} drop
   iifname "{lan}" ip daddr {e['EDGE_IP']} meta l4proto != tcp drop
   iifname "{lan}" ip daddr {e['EDGE_IP']} tcp dport != {{ 10050, 10051 }} drop
@@ -235,6 +236,31 @@ def managed_configs(contents, owner):
     intent.unlink()
 
 
+def mapping_binding(api, e, peer, group, routes):
+    receipt = PRIVATE / 'network.json'
+    if not receipt.exists():
+        result = reconcile(api, e['CUSTOMER'], e['ROUTER_ROLE'], e['LAN_NETWORK_CIDR'],
+                           peer, group, routes, e['VIRTUAL_NETWORK'])
+        atomic(receipt, json.dumps(result))
+        return result
+    result = json.loads(receipt.read_text())
+    if any(not re.fullmatch(r'[A-Za-z0-9_-]+', result[k]) for k in ('network','resource','router')):
+        raise Invalid('NETWORK_RECEIPT_INVALID')
+    base = '/networks/' + result['network']
+    resource = [r for r in rows(api('GET', base+'/resources')) if r['id']==result['resource']]
+    router = [r for r in rows(api('GET', base+'/routers')) if r['id']==result['router']]
+    from network import ids
+    metric = {'primary':100,'backup':200}[e['ROUTER_ROLE']]
+    if (len(resource)!=1 or resource[0].get('enabled') is not True
+        or resource[0].get('address')!=e['VIRTUAL_NETWORK'] or group not in ids(resource[0].get('groups'))
+        or len(router)!=1 or any(router[0].get(k)!=v for k,v in
+            dict(peer=peer,metric=metric,masquerade=False,enabled=True).items())):
+        raise Invalid('NETWORK_ASSIGNMENT_CHANGED_NO_OVERWRITE')
+    # Centrally tightened/removed policies remain authoritative on restart.
+    # Do not recreate defaults or reinterpret their authorization rules here.
+    return result
+
+
 def monitoring(e, peer_ip):
     from zabbix_sync import API as ZAPI, register_host, context
     z = pwd.getpwnam('zabbix')
@@ -352,8 +378,7 @@ def gateway(e):
     # LAN is excluded from allocation collision checks, as in the VM mapping.
     routes = json.loads(command('ip', '-j', '-4', 'route'))
     routes = [r for r in routes if r.get('dst') not in (e['VIRTUAL_NETWORK'], e['LAN_NETWORK_CIDR'])]
-    result = reconcile(api, e['CUSTOMER'], e['ROUTER_ROLE'], e['LAN_NETWORK_CIDR'],
-                       pid, customer_group, routes, e['VIRTUAL_NETWORK'])
+    result = mapping_binding(api, e, pid, customer_group, routes)
     if result['virtual'] != e['VIRTUAL_NETWORK']:
         raise Invalid('VIRTUAL_MAPPING_CONFLICT')
     monitoring(e, peer_ip)

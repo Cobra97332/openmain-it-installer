@@ -138,37 +138,6 @@ def policy(name, src, dst, protocol='all', action='accept', ports=None):
         rule['ports'] = [str(p) for p in ports]
     return api('/api/policies', 'POST', {'name': name, 'enabled': True, 'rules': [rule]})['id']
 
-def replace_lab_policy(state, lan, rules):
-    # Only IDs from this disposable controller's protected bootstrap record.
-    pid = state['policies'][lan]
-    body = {'name': 'lab-allow-' + lan, 'enabled': True, 'rules': rules}
-    api('/api/policies/' + pid, 'PUT', body)
-    verify_lab_policy(pid, rules)
-    return {'controller_policy_changed': True, 'controller_kernel_ack': False}
-
-def verify_lab_policy(pid, rules):
-    actual = api('/api/policies/' + pid)
-    if actual.get('enabled') is not True:
-        raise RuntimeError('lab_policy_readback_mismatch')
-    fields = ('enabled', 'action', 'protocol', 'bidirectional', 'sources', 'destinations', 'ports')
-    def selectors(items):
-        result = []
-        for rule in items:
-            value = {k: (rule.get(k) or []) if k == 'ports' else rule.get(k) for k in fields}
-            for key in ('sources', 'destinations'):
-                if not isinstance(value[key], list):
-                    raise RuntimeError('lab_policy_readback_mismatch')
-                value[key] = [g['id'] if isinstance(g, dict) else g for g in value[key]]
-            result.append(value)
-        return result
-    if selectors(actual.get('rules', [])) != selectors(rules):
-        raise RuntimeError('lab_policy_readback_mismatch')
-
-def save_objects(state):
-    temporary = '/lab/objects.' + secrets.token_hex(8)
-    write(temporary, json.dumps(state))
-    os.replace(temporary, '/lab/objects')
-
 def keys():
     for name in NAMES:
         k = api('/api/setup-keys', 'POST', {'name': name, 'type': 'one-off',
@@ -192,85 +161,57 @@ def api_contract():
     return {'real_controller_accepts_drop_ports': 'pass'}
 
 def configure():
+    # Exercise the SAME Networks/resources/routers helper as the actual startup,
+    # not the different legacy /routes-only model.
+    sys.path.insert(0, '/opt/openmain/netbird-router/common')
+    from network import reconcile
     def connected():
         peers = api('/api/peers')
         names = {p.get('name'): p for p in peers}
-        return names if set(names) == set(NAMES) and all(p.get('connected') for p in peers) else None
+        return names if len(peers) == len(names) == len(NAMES) and set(names) == set(NAMES) and all(p.get('connected') for p in peers) else None
     peers = wait(connected)
-    peer_ids = {n: peers[n]['id'] for n in NAMES}
-    clients = group('lab-route-distribution', [peer_ids['peer'], peer_ids['probe']])
-    allowed = group('lab-authorized', [peer_ids['peer']])
-    excluded = group('lab-excluded', [peer_ids['probe']])
-    # Distinct destination groups isolate authorization of the two overlapping LANs.
-    dest = {lan: group('lab-customer-' + lan, [peer_ids['primary-' + lan], peer_ids['backup-' + lan]])
-            for lan in ('a', 'b')}
-    # Peer connectivity also controls real routed ACL generation. Route policy
-    # destination group is bound via access_control_groups, never an All fallback.
-    policies = {}
-    for lan, virtual in (('a', '10.30.1.0/24'), ('b', '10.30.2.0/24')):
-        policies[lan] = policy('lab-allow-' + lan, allowed, dest[lan])
-        for role, metric in (('primary', 100), ('backup', 200)):
-            api('/api/routes', 'POST', {'description': 'lab-' + lan, 'network': virtual,
-                 'network_id': 'lab-customer-' + lan, 'peer': peer_ids[role + '-' + lan],
-                 'metric': metric, 'masquerade': False, 'enabled': True,
-                 'keep_route': False, 'groups': [clients], 'access_control_groups': [dest[lan]]})
-    state = {'peers': peer_ids, 'allowed': allowed, 'excluded': excluded, 'dest': dest,
-             'policies': policies}
-    write('/lab/objects', json.dumps(state))
-    return {'real_six_clients_connected': 'pass', 'controller_routes_100_200': 'pass'}
+    ids = {n: p['id'] for n,p in peers.items()}
+    dest, policies = {}, {}
+    def shared_api(method,path,data=None):
+        return api('/api'+path,method,data)
+    for lan,virtual in (('a','10.30.1.0/24'),('b','10.30.2.0/24')):
+        members = [ids['primary-'+lan],ids['backup-'+lan],ids['peer']]
+        dest[lan] = group('lab-customer-'+lan,members)
+        for role in ('primary','backup'):
+            reconcile(shared_api,'lab-'+lan,role,'192.168.178.0/24',ids[role+'-'+lan],dest[lan],[],virtual)
+        found = [p for p in api('/api/policies') if p['name']=='OpenMain customer lab-'+lan]
+        if len(found)!=1: raise RuntimeError('lab_policy_not_unique')
+        policies[lan]=found[0]['id']
+    write('/lab/objects',json.dumps(dict(peers=ids,dest=dest,policies=policies)))
+    return {'actual_installer_network_resources':True,'controller_kernel_ack':False}
+
 
 def mutate(req):
-    state = json.loads(Path('/lab/objects').read_text())
-    if req['operation'] in ('extra_udp', 'extra_icmp', 'remove_udp', 'remove_icmp'):
-        op = req['operation']
-        protocol = op.split('_')[1]
-        extra = state.setdefault('protocol_policies', {})
-        if op.startswith('extra_'):
-            if protocol in extra:
-                raise RuntimeError('lab_policy_stage_repeated')
-            ports = [8081] if protocol == 'udp' else None
-            pid = policy('lab-extra-' + protocol, state['allowed'], state['dest']['a'], protocol=protocol, ports=ports)
-            rule = {'enabled': True, 'action': 'accept', 'protocol': protocol, 'bidirectional': protocol == 'icmp',
-                    'sources': [state['allowed']], 'destinations': [state['dest']['a']],
-                    **({'ports': ['8081']} if ports else {})}
-            verify_lab_policy(pid, [rule])
-            extra[protocol] = pid
-        else:
-            pid = extra.pop(protocol)
-            api('/api/policies/' + pid, 'DELETE')
-            if any(p['id'] == pid for p in api('/api/policies')):
-                raise RuntimeError('lab_policy_readback_mismatch')
-        save_objects(state)
-        return {'controller_policy_changed': True, 'controller_kernel_ack': False}
-    if req['operation'] in ('split_sources', 'restore_b', 'restrict_a', 'restore_a'):
-        op = req['operation']
-        lan = 'b' if op in ('split_sources', 'restore_b') else 'a'
-        source = state['excluded'] if op == 'split_sources' else state['allowed']
-        protocols = [('tcp', ['8080'])] if op == 'restrict_a' else [('all', [])]
-        rules = [{'name': 'lab-' + protocol, 'enabled': True, 'action': 'accept',
-                  'protocol': protocol, 'bidirectional': protocol in ('all', 'icmp'),
-                  'sources': [source], 'destinations': [state['dest'][lan]],
-                  **({'ports': ports} if ports else {})} for protocol, ports in protocols]
-        return replace_lab_policy(state, lan, rules)
-    if req['operation'] == 'membership':
-        members = [state['peers']['peer']] if req['allow'] else []
-        api('/api/groups/' + state['allowed'], 'PUT', {'name': 'lab-authorized', 'peers': members})
-        response = api('/api/groups/' + state['allowed'])
-        observed = response.get('peers')
-        if observed is None and type(response.get('peers_count')) is int and response['peers_count'] == 0:
-            observed = []
-        if not isinstance(observed, list):
-            raise RuntimeError('lab_membership_reply_incomplete')
-        if sorted(p['id'] for p in observed) != sorted(members):
-            raise RuntimeError('lab_membership_not_confirmed')
-        return {'controller_membership_changed': True, 'controller_kernel_ack': False}
-    if req['operation'] == 'drop':
-        pid = policy('lab-drop', state['allowed'], state['dest']['a'], action='drop')
-        return {'policy_id': pid, 'controller_kernel_ack': False}
-    if req['operation'] == 'same_identity':
-        peers = api('/api/peers')
-        now = {p.get('name'): p['id'] for p in peers}
-        if now != state['peers']:
-            raise RuntimeError('lab_peer_identity_changed')
-        return {'unchanged_real_peer_ids': True}
-    raise RuntimeError('lab_operation_refused')
+    sys.path.insert(0, '/opt/openmain/netbird-router/common')
+    from zabbix_access import group_members
+    state=json.loads(Path('/lab/objects').read_text())
+    op=req['operation']
+    if op in ('membership','split_sources'):
+        lan='b' if op=='split_sources' else 'a'
+        gid=state['dest'][lan]
+        before=api('/api/groups/'+gid)
+        existing=group_members(before,gid)
+        desired={state['peers']['primary-'+lan],state['peers']['backup-'+lan]}
+        if op=='split_sources': desired.add(state['peers']['probe'])
+        elif req['allow']: desired.add(state['peers']['peer'])
+        resources=before['resources'] or []
+        api('/api/groups/'+gid,'PUT',dict(name=before['name'],peers=sorted(desired),
+            resources=[dict(id=x['id'],type=x['type']) for x in resources]))
+        after=api('/api/groups/'+gid)
+        if group_members(after,gid)!=desired or {(x['id'],x['type']) for x in resources}!={(x['id'],x['type']) for x in after['resources'] or []}:
+            raise RuntimeError('lab_group_preservation_failed')
+    elif op in ('restrict_a','restore_a'):
+        rule=dict(name='lab-rule',enabled=True,action='accept',
+            protocol='tcp' if op=='restrict_a' else 'all',bidirectional=op!='restrict_a',
+            sources=[state['dest']['a']],destinations=[state['dest']['a']])
+        if op=='restrict_a': rule['ports']=['8080']
+        api('/api/policies/'+state['policies']['a'],'PUT',dict(
+            name='OpenMain customer lab-a',enabled=True,rules=[rule]))
+    else:
+        raise RuntimeError('lab_unknown_mutation')
+    return {'controller_changed':True,'controller_kernel_ack':False}

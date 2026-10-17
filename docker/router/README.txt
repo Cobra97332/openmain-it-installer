@@ -11,6 +11,9 @@ Wiederverwendung
   Primary-/Backup-Router mit Metriken 100/200, masquerade=false.
 - zabbix-api-register.sh, zabbix_registration.py und register_host():
   Proxy-Gruppe, Zabbix 7.4 TLS-PSK, private Schreibnachweise, Host-/Agent-Abgleich.
+  Nach erfolgreicher Ressourcenzuordnung bestätigt der Adapter gespeicherte
+  Ressourcen-/Router-IDs rein lesend. Manuell eingeschränkte oder entfernte
+  zentrale Policies werden beim Neustart nicht durch Defaults ersetzt.
 Die systemd-/APT-Installer laufen NICHT beim Containerstart. Kein binat_acl.py,
 kein eigener NetBird-Build, keine Testinjektoren im Runtime-Image.
 
@@ -123,14 +126,17 @@ Prüfung und Veröffentlichungsablauf
 - tests/test_docker_router.py: reine Validierung/Mock-Gruppenbestand/NAT-Reuse.
 - tests/docker_router/gateway.py: echter isolierter 0.80.0 Controller, sechs
   unveränderte NetBird-Clients, vier Router-/NAT-Paare, zwei überlappende LANs,
-  TCP/UDP, Kundentrennung, Gruppenentzug neuer Flows, Backup und TUN-Ausfall.
+  TCP/UDP/Portregeln, Kundentrennung, Gruppenentzug neuer Flows, Backup und
+  TUN-Ausfall. Konfiguration über denselben Networks-/Ressourcen-Helper wie
+  Runtime; ein bloßer Nachweis des älteren /routes-Modells reicht nicht.
   Synthetische Credentials/CA nur lokal; keine externen API-Ziele.
   Das ist ein Netzwerkvertragstest. Er ersetzt NICHT den vollständigen
   Compose-Start mit echter Zabbix-7.4-Serverregistrierung/Rebootabnahme.
 - Bestehende Offline-/Legacy-Sicherheitstests werden nicht verändert/entfernt.
 - GitHub docker-router.yml: Buildx je amd64/arm64, Paketarchitektur und echte
   Binary-Starts, dann Gatewayvertrag. Jeder Fehler sperrt die Veröffentlichung.
-- GHCR nur bei bewusstem workflow_dispatch publish=true auf diesem Branch.
+- GHCR nach erfolgreichen Gates bei Push auf diesem Arbeitsbranch, zusätzlich
+  optional workflow_dispatch publish=true (sobald Workflow verfügbar ist).
   Es werden die exakt getesteten Image-Tars gepusht, nicht neu gebaute Pakete.
   Tag candidate-<voller Commit-SHA>, kein latest/production. Beide Architekturen
   müssen bestehen; arm/v7 wird nicht in den Index geschmuggelt.
@@ -140,13 +146,21 @@ Prüfung und Veröffentlichungsablauf
 
 Tatsächlich lokal ausgeführt (Stand des ersten Entwurfs)
 - Offizielles NetBird-Manifest abgefragt: amd64/arm64/arm/v6 vorhanden.
-- 7 neue reine Adaptertests: bestanden. Insgesamt 220 bestehende/neue
+- 8 neue reine Adaptertests bestanden; der zusätzliche Test schützt zentrale
+  Policy-Verschärfung bei Wiederaufnahme. Zuvor insgesamt 220 bestehende/neue
   Debian-13-Offline-Tests sowie bisherige Bash-/ShellCheck-Prüfungen bestanden.
 - Neue NAT- und Gateway-Grenzregeln im echten isolierten nftables-Kernel geladen.
   Das beweist Syntax/Kernelakzeptanz, NICHT Paketberechtigungen.
 - Compose config --quiet: bestanden.
 - Gesamtimage: BLOCKIERT bei HTTP403 des Zabbix-Releasepakets.
-- Reale Docker-Gateway-/ARM64-Pakettests: noch kein Erfolgsnachweis.
+- CI a901200: Gesamtimages und Binary-Starts beider Architekturen bestanden,
+  Zabbix Proxy/Agent2 7.4.15 tatsächlich verfügbar. AMD64-Netzwerkvertrag mit
+  Legacy-Routen bestand; ARM64-Gatewaytest fehlgeschlagen, Ursache noch offen.
+  Nach Umstellung auf das tatsächliche Networks-/Ressourcenmodell sind beide
+  Nachweise erneut erforderlich. Keine Architektur bereits freigegeben.
+- Lokaler zusätzlicher Netzwerkvertrag: durch erschöpften Docker-VFS-
+  Testdatenträger blockiert. Nur eigene Laborcontainer/temporäre Image-/
+  Cacheeinträge bereinigt, kein globales Prune. Kein lokaler Paketerfolg behauptet.
 
 Rollback
 Nur dieses Projekt docker compose ... down, ohne -v! Identität/SQLite bleiben.

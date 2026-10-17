@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import re
 import subprocess
 import sys
 import tempfile
@@ -27,7 +28,25 @@ def docker(*args, data=None, check=True, timeout=120):
     r = subprocess.run(['docker','--host=unix:///var/run/docker.sock',*args], input=data,
                        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        env=env, timeout=timeout)
-    if check and r.returncode: raise RuntimeError('docker_'+args[0]+'_failed')
+    if check and r.returncode:
+        error = 'docker_'+args[0]+'_failed'
+        if 'executable file not found' in r.stderr:
+            error = 'test_image_entrypoint_missing'
+        elif 'pull access denied' in r.stderr.lower() or 'failed to resolve reference' in r.stderr.lower():
+            error = 'test_image_unavailable'
+        elif 'permission denied' in r.stderr.lower():
+            error = 'test_bind_or_socket_permission_denied'
+        elif 'no space left on device' in r.stderr.lower():
+            error = 'test_host_storage_exhausted'
+        elif '/dev/net/tun' in r.stderr and ('no such file' in r.stderr.lower() or 'not exist' in r.stderr.lower()):
+            error = 'test_host_tun_missing'
+        elif 'overlaps' in r.stderr.lower():
+            error = 'test_subnet_overlap'
+        else:
+            classified = re.search(r'RuntimeError: (lab_[a-z_0-9]+)\s*$', r.stderr)
+            if classified:
+                error = classified.group(1)
+        raise RuntimeError(error)
     return r
 
 
@@ -41,7 +60,8 @@ def run(name, image=IMAGE, networks=(), caps=(), volumes=(), env=(), devices=(),
     for e in env: cmd+=['-e',e]
     for d in devices: cmd+=['--device',d]
     cmd+=['--network',networks[0], '--entrypoint', args[0],image,*args[1:]]
-    docker(*cmd); CONTAINERS.append(actual)
+    CONTAINERS.append(actual)  # also remove a container created before run failed
+    docker(*cmd)
     for n in networks[1:]: docker('network','connect',n,actual)
     return actual
 
@@ -136,12 +156,14 @@ def enroll(name, resume=False):
 def main():
     global LAN_A, LAN_B
     os.chmod(WORK,0o700)
+    RESULTS['stage']='networks'
     control_net=network('control','172.30.240.0/24')
     LAN_A=network('lan-a','172.30.241.0/24'); LAN_B=network('lan-b','172.30.242.0/24')
     run('init',networks=(control_net,),caps=('DAC_OVERRIDE',),volumes=(str(WORK)+':/lab',str(HERE)+':/fixtures:ro'),
         args=('python3','-c','import sys;sys.path.insert(0,"/fixtures");import controller;c=controller;c.initialize()'))
     if docker('wait',PREFIX+'-init').stdout.strip() != '0':
         raise RuntimeError('private_fixture_initialization_failed')
+    RESULTS['stage']='controller_bootstrap'
     run('controller',SERVER,networks=(control_net,),env=('NB_SETUP_PAT_ENABLED=true','NB_DISABLE_GEOLOCATION=true'),
         volumes=(str(WORK/'runtime/controller')+':/etc/netbird:ro',str(WORK/'runtime/server-state')+':/var/lib/netbird'),
         args=('/go/bin/netbird-server','--config','/etc/netbird/config.yaml'))
@@ -151,11 +173,13 @@ def main():
     run('tools',networks=(control_net,),volumes=(str(WORK/'runtime')+':/lab',str(HERE)+':/fixtures:ro'),
         env=('HTTPS_PROXY=','HTTP_PROXY=','ALL_PROXY='))
     control('c.bootstrap(); c.api_contract(); c.keys(); print("CONTROLLER_READY")')
+    RESULTS['stage']='client_creation'
     for name in NAMES:
         run(name,networks=(control_net,),caps=('NET_ADMIN','NET_RAW'),devices=('/dev/net/tun:/dev/net/tun',),
             env=('NB_WG_KERNEL_DISABLED=true','SSL_CERT_FILE=/lab-ca.crt','HTTP_PROXY=','HTTPS_PROXY=','ALL_PROXY='),
             volumes=(str(WORK/'runtime/ca/cert.pem')+':/lab-ca.crt:ro',str(WORK/'runtime/keys'/name)+':/lab-key:ro'))
     for i,name in enumerate(n for n in NAMES if n not in ('peer','probe')): setup_root(name,i)
+    RESULTS['stage']='lan_and_enrollment'
     # Two different LAN namespaces, identical real addresses, no default-LAN route.
     for suffix,net in (('a',LAN_A),('b',LAN_B)):
         n=run('lan-'+suffix,networks=(net,),caps=('NET_ADMIN',))
@@ -174,10 +198,16 @@ while True:
         docker('exec','-d',n,'python3','-c',code,suffix.upper())
     for name in NAMES: enroll(name)
     control('c.configure(); print("NATIVE_MAP_CONFIGURED")')
+    RESULTS['stage']='packet_gates'
     for lan in ('a','b'):
         for proto in ('tcp','udp'):
             wait_for(lambda: probe('peer',lan,proto)); probe('probe',lan,proto,False)
     RESULTS['native_policy_and_prefix_nat']=True
+    control('c.mutate({"operation":"restrict_a"}); print("PORT_POLICY_CHANGED")')
+    wait_for(lambda: probe('peer','a','udp',False)); probe('peer','a','tcp')
+    RESULTS['native_port_policy']=True
+    control('c.mutate({"operation":"restore_a"}); print("PORT_POLICY_RESTORED")')
+    wait_for(lambda: probe('peer','a','udp'))
     # Force different source permissions across equal real LANs.
     control('c.mutate({"operation":"split_sources"}); print("B_POLICY_SPLIT")')
     wait_for(lambda: probe('peer','b','tcp',False)); wait_for(lambda: probe('probe','b','tcp'))
@@ -207,7 +237,7 @@ if __name__=='__main__':
     try:
         main(); status=0
     except Exception as e:
-        RESULTS['error_class']=type(e).__name__
+        RESULTS['error_class']=str(e) if isinstance(e,RuntimeError) and re.fullmatch(r'[a-z_0-9]+',str(e)) else type(e).__name__
     finally:
         for c in reversed(CONTAINERS): docker('rm','-f',c,check=False)
         for n in reversed(NETWORKS): docker('network','rm',n,check=False)

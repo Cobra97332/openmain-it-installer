@@ -81,4 +81,24 @@ class ContainerTests(unittest.TestCase):
         self.assertNotIn('injectors/',docker)
 
 
+class RestartPolicyTests(unittest.TestCase):
+    def test_resume_never_recreates_central_policy(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d)
+            (directory/'network.json').write_text(json.dumps(dict(network='network1',resource='resource1',router='router1',virtual='10.30.1.0/24')))
+            calls=[]
+            def api(method,path,data=None):
+                calls.append((method,path))
+                if path.endswith('/resources'):
+                    return [dict(id='resource1',address='10.30.1.0/24',groups=['g1'],enabled=True)]
+                if path.endswith('/routers'):
+                    return [dict(id='router1',peer='peer1',metric=100,enabled=True,masquerade=False)]
+                raise AssertionError('unexpected policy call')
+            with patch.object(r,'PRIVATE',directory):
+                r.mapping_binding(api, ENV, 'peer1','g1',[])
+            self.assertTrue(all(method=='GET' and '/policies' not in path for method,path in calls))
+
+
 if __name__ == '__main__': unittest.main()

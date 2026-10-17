@@ -18,7 +18,7 @@ import time
 import tempfile
 from urllib.parse import urlsplit
 
-sys.path.insert(0, '/opt/openmain/common')
+sys.path.insert(0, '/opt/openmain/netbird-router/common')
 from runtime import Invalid, atomic, nft_config
 from network import API, reconcile, rows, one
 from preflight import resolve_profile, connected_profile
@@ -242,7 +242,8 @@ def monitoring(e, peer_ip):
     psk_file = CONFIG / 'router.psk'
     intent = PRIVATE / 'psk-intent'
     if not psk_file.exists():
-        if intent.exists():
+        if intent.exists() and (intent.read_text() != proxy or any(p.exists() for p in (
+                PRIVATE / 'zabbix-registration.json', PRIVATE / 'config-hashes.json', PRIVATE / 'ready'))):
             raise Invalid('PSK_MISSING_NO_REGENERATION')
         atomic(intent, proxy)
         atomic(psk_file, os.urandom(32).hex() + '\n', 0o640, (0, z.pw_gid))
@@ -298,11 +299,13 @@ def gateway(e):
     if marker.exists() and json.loads(marker.read_text()) != binding:
         raise Invalid('PERSISTENT_IDENTITY_BINDING_CONFLICT')
     directories()
+    lock = (PRIVATE / 'owner.lock').open('a')
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    if marker.exists() and json.loads(marker.read_text()) != binding:
+        raise Invalid('PERSISTENT_IDENTITY_BINDING_CONFLICT')
     ready = PRIVATE / 'ready'
     ready.unlink(missing_ok=True)
     atomic(marker, json.dumps(binding))
-    lock = (PRIVATE / 'owner.lock').open('a')
-    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     transit = interface(e['EDGE_IP'])
     apply_rules(edge_rules(e, transit), ['openmain_container_boundary'])
     for network in (e['VIRTUAL_NETWORK'], e['LAN_NETWORK_CIDR']):

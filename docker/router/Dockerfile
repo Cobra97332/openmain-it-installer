@@ -23,7 +23,7 @@ RUN --mount=type=secret,id=ca,required=false \
     && rm -rf /var/lib/apt/lists/* && rm -f /etc/apt/apt.conf.d/99build-ca /usr/sbin/policy-rc.d
 COPY --from=netbird /usr/local/bin/netbird /usr/local/bin/netbird
 # No native patches, lab client images, fault injectors or systemd installer.
-COPY netbird-router/common/runtime.py netbird-router/common/network.py netbird-router/common/preflight.py netbird-router/common/zabbix_access.py netbird-router/common/zabbix_registration.py netbird-router/common/zabbix_sync.py /opt/openmain/common/
+COPY netbird-router/common/runtime.py netbird-router/common/network.py netbird-router/common/preflight.py netbird-router/common/zabbix_access.py netbird-router/common/zabbix_registration.py netbird-router/common/zabbix_sync.py /opt/openmain/netbird-router/common/
 COPY zabbix-api-register.sh /opt/openmain/zabbix-api-register.sh
 COPY docker/router/start.sh docker/router/router.py /opt/openmain/
 RUN chmod 0755 /opt/openmain/start.sh && mkdir -p /run/zabbix \

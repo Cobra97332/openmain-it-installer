@@ -39,7 +39,8 @@ Mandatory cases in docker-lab/faults.py
    maps to preserve the observation window. No old/new TCP/UDP may pass, no
    publication may occur, and recovery requires a fresh full controller map.
 3. ACK: append a netlink AddRule targeting an absent test table to the ACTUAL
-   native family's pending Conn transaction at flushWithBackoff. Require its
+   AddFilterRule's pending Conn transaction immediately after Add/InsertRule,
+   at its own conn.Flush (the later family Flush can be empty). Require its
    real kernel ENOENT; queued ACL operations fail atomically in that same batch.
    No separate probe connection/error return stands in for native publication.
    Readback: first perform real ListChains, then discard its successful response

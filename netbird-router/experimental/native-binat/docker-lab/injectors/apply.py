@@ -30,8 +30,9 @@ def apply(root):
             '\t\tif err := e.binatLabBeforeOpen(); err != nil { return err }\n'
             '\t\tif err := e.binatGate.Open(binatEpoch); err != nil {')
     name = 'client/firewall/nftables/manager_linux.go'
-    replace('client/firewall/nftables/chains_linux.go', '\t\terr = r.conn.Flush()',
-            '\t\terr = labFlush(r.conn)')
+    replace('client/firewall/nftables/filter_linux.go',
+            '\tif err := r.conn.Flush(); err != nil {\n\t\tr.dropNetworkMatch(exprs)',
+            '\tif err := labFlush(r.conn); err != nil {\n\t\tr.dropNetworkMatch(exprs)')
     replace(name, '\tchains, err := m.rConn.ListChains()\n\tif err != nil {\n\t\treturn fmt.Errorf("BINAT native chain readback failed")',
             '\tchains, err := m.rConn.ListChains()\n'
             '\tif err == nil && labReadbackLost() { return fmt.Errorf("BINAT lab discarded native chain readback") }\n'

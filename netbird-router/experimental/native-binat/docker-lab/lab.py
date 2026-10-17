@@ -57,7 +57,7 @@ def safe_summary(report, status):
                    'lab_primary_return_missing', 'lab_foreign_reference_missing', 'lab_foreign_rules_changed', 'lab_primary_not_selected', 'lab_automatic_backup_failover_missing'})
     errors.update({'lab_injector_barrier_missing', 'lab_fault_baseline_missing',
                    'lab_fault_existing_flow_allowed', 'lab_fault_unconfirmed_publication',
-                   'lab_fault_owner_or_foreign_changed', 'lab_withheld_sync_missing'})
+                   'lab_fault_owner_or_foreign_changed', 'lab_withheld_sync_missing', 'lab_real_engine_restart_missing'})
     error = report.get('error_class')
     if error is not None and error not in errors and not re.fullmatch(
             r'(?:lab_api_http_[1-5][0-9]{2}|docker_operation_failed:(?:run|exec|compose|image))', str(error)):

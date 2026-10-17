@@ -7,18 +7,19 @@ import sys
 
 ROOT = Path('/run/netbird-binat-small-lab')
 OPERATIONS = ('status', 'stale', 'invalid', 'unknown', 'incomplete', 'pause',
-              'ack', 'readback', 'reset', 'release', 'unpause')
+              'ack', 'readback', 'reset', 'engine-reset', 'release', 'unpause')
 
 
 def command(operation):
     if operation not in OPERATIONS:
         raise RuntimeError('lab_injector_operation_refused')
     pid = int(Path('/run/lab-client.pid').read_text())
-    if pid <= 1:
+    generation = int((ROOT / 'lab-generation').read_text())
+    if pid <= 1 or generation < 1:
         raise RuntimeError('lab_injector_owner_invalid')
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         s.settimeout(10)
-        s.connect(str(ROOT / ('inject-' + str(pid) + '.sock')))
+        s.connect(str(ROOT / ('inject-' + str(pid) + '-' + str(generation) + '.sock')))
         s.sendall(json.dumps({'operation': operation}).encode() + b'\n')
         data = b''
         while b'\n' not in data:

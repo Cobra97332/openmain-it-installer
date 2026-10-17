@@ -14,7 +14,13 @@ def inject(lab, operation):
 def wait_inject(lab, predicate, timeout=40, after=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        states = inject(lab, 'status')
+        try:
+            states = inject(lab, 'status')
+        except RuntimeError:
+            # The real Engine restart closes/rebinds its test socket. A lost
+            # observation is never a pass; require the new generation below.
+            time.sleep(0.2)
+            continue
         if all(predicate(s) and (after is None or s['rejected'] > after[r]['rejected'])
                for r, s in states.items()):
             return states
@@ -98,12 +104,22 @@ def acceptance(lab, result):
         wait_inject(lab, lambda s: s['paused'])
         # ACL apply/readback has completed, but publication has NOT. Reset
         # invalidates its epoch while Engine.syncMsgMux is still held.
-        inject(lab, 'reset')
+        inject(lab, 'engine-reset')
         lab.control('restore_a')  # real concurrent controller update, queued
         closed_packets(lab, sessions, before)
         inject(lab, 'unpause')
-        wait_inject(lab, lambda s: s['reset_done'] and not s['reset_failed'])
-        wait_inject(lab, lambda s: s['hold'], after=prior)
+        deadline = time.monotonic() + 60
+        while True:
+            try:
+                now = inject(lab, 'status')
+                if all(now[r]['generation'] > prior[r]['generation'] and now[r]['hold']
+                       and now[r]['rejected'] > 0 for r in A):
+                    break
+            except RuntimeError:
+                pass
+            if time.monotonic() >= deadline:
+                raise RuntimeError('lab_real_engine_restart_missing')
+            time.sleep(0.2)
         closed_packets(lab, sessions, before)
         lab.control('restrict_a')  # held complete Sync remains unauthorized
         recover(lab, before)

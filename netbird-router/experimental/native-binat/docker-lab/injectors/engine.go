@@ -29,6 +29,7 @@ type binatLabState struct {
 	rejected    uint64
 	resetDone   bool
 	resetFailed bool
+	generation  int
 }
 
 func (e *Engine) startBINATLab() error {
@@ -39,7 +40,18 @@ func (e *Engine) startBINATLab() error {
 		return errors.New("lab instrumented client refuses non-lab execution")
 	}
 	e.binatLab = &binatLabState{}
-	path := binat.Root + "/inject-" + strconv.Itoa(os.Getpid()) + ".sock"
+	// Keep ONLY the test's withholding instruction across a real Engine restart;
+	// never retain a policy or readiness acknowledgement.
+	if data, err := os.ReadFile(binat.Root + "/lab-generation"); err == nil {
+		e.binatLab.generation, _ = strconv.Atoi(string(data))
+	}
+	e.binatLab.generation++
+	if err := os.WriteFile(binat.Root+"/lab-generation", []byte(strconv.Itoa(e.binatLab.generation)), 0600); err != nil {
+		return err
+	}
+	_, held := os.Stat(binat.Root + "/hold-across-reset")
+	e.binatLab.hold = held == nil
+	path := binat.Root + "/inject-" + strconv.Itoa(os.Getpid()) + "-" + strconv.Itoa(e.binatLab.generation) + ".sock"
 	// No replacing a socket belonging to another owner/process.
 	listener, err := net.Listen("unix", path)
 	if err != nil {
@@ -85,6 +97,9 @@ func (e *Engine) binatLabCommand(op string) map[string]any {
 		}
 		s.mode = op
 	case "release":
+		if err := os.Remove(binat.Root + "/hold-across-reset"); err != nil && !os.IsNotExist(err) {
+			return map[string]any{"ok": false}
+		}
 		s.hold = false
 		if s.resume != nil {
 			close(s.resume)
@@ -96,6 +111,17 @@ func (e *Engine) binatLabCommand(op string) map[string]any {
 		}
 		close(s.resume)
 		s.resume = nil
+	case "engine-reset":
+		s.hold = true
+		if err := os.WriteFile(binat.Root+"/hold-across-reset", []byte("withhold"), 0600); err != nil {
+			return map[string]any{"ok": false}
+		}
+		if e.binatGate.Close() != nil {
+			return map[string]any{"ok": false}
+		}
+		// This is NetBird's actual restart request. It waits for syncMsgMux;
+		// the pending map's epoch was invalidated above, before that wait.
+		go e.triggerClientRestart()
 	case "reset":
 		// Invalidate the pending publication BEFORE waiting on Engine.syncMsgMux.
 		// This models reset/disconnect arriving while apply owns the Engine lock.
@@ -122,7 +148,7 @@ func (e *Engine) binatLabCommand(op string) map[string]any {
 	default:
 		return map[string]any{"ok": false}
 	}
-	return map[string]any{"ok": true, "maps": s.maps, "rejected": s.rejected,
+	return map[string]any{"ok": true, "maps": s.maps, "rejected": s.rejected, "generation": s.generation,
 		"hold": s.hold, "paused": s.paused, "reset_done": s.resetDone, "reset_failed": s.resetFailed}
 }
 

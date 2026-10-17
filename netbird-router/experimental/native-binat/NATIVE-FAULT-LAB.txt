@@ -29,8 +29,11 @@ Mandatory cases in docker-lab/faults.py
 --------------------------------------
 1. Pause actual ACL apply/readback before readiness publication on BOTH A
    routers. Invalidate the publication epoch with reset while syncMsgMux is
-   held; issue a real controller policy change; release pending completion.
-   It must not publish. Actual firewall rebuild follows under the Engine lock.
+   held; invoke NetBird's actual triggerClientRestart, issue a real controller
+   policy change, release pending completion. It must not publish. Require a
+   NEW Engine generation (same client identity) withholding its initial full
+   map too, before recovering from another current complete controller map.
+   Only a test withholding flag/generation survive; no policies or ACKs persist.
 2. Inject stale serial, invalid protocol, unknown route-rule field, and missing
    complete-route-policy declaration in separate real Syncs. Hold later full
    maps to preserve the observation window. No old/new TCP/UDP may pass, no

@@ -51,6 +51,7 @@ services:
       - netbird:/var/lib/netbird
       - state:/state
       - proxy-db:/var/lib/zabbix
+      - nat-state:/nat-state:ro
       - ${CA_BUNDLE_FILE:-/etc/ssl/certs/ca-certificates.crt}:/run/openmain-ca.pem:ro
     secrets: [nb_setup_key, nb_api_token, zabbix_api_token]
     healthcheck:

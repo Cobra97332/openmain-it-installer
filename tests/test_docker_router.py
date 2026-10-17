@@ -172,4 +172,33 @@ class CentralAuthorityTests(unittest.TestCase):
         self.assertTrue(all(x=='GET' for x in calls))
 
 
+class TranslationReadinessTests(unittest.TestCase):
+    def test_readiness_released_by_actual_owner_sigkill(self):
+        import multiprocessing
+        import tempfile
+        from unittest.mock import patch
+        def owner(path,ready):
+            import fcntl,signal
+            fd=os.open(Path(path)/'ready.lock',os.O_CREAT|os.O_RDWR,0o600)
+            fcntl.flock(fd,fcntl.LOCK_EX)
+            ready.send(True)
+            signal.pause()
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d);(path/'binding.json').write_text(json.dumps(r.nat_context(ENV)))
+            context=multiprocessing.get_context('fork')
+            reader,writer=context.Pipe()
+            process=context.Process(target=owner,args=(d,writer));process.start()
+            try:
+                self.assertTrue(reader.poll(5));reader.recv()
+                with patch.object(r,'NAT_STATE',path),patch.object(r,'ROOT_UID',os.getuid()):
+                    self.assertTrue(r.nat_ready(ENV))
+                    self.assertFalse(r.nat_ready(dict(ENV,CUSTOMER='other')))
+                    process.kill();process.join(5)
+                    self.assertTrue((path/'ready.lock').exists())
+                    self.assertFalse(r.nat_ready(ENV))
+            finally:
+                if process.is_alive(): process.kill();process.join()
+                reader.close();writer.close()
+
+
 if __name__ == '__main__': unittest.main()

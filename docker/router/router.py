@@ -31,6 +31,30 @@ PRIVATE = STATE / 'private'
 CONFIG = STATE / 'zabbix'
 CHILDREN = []
 ROOT_UID = 0
+NAT_STATE = Path('/nat-state')
+
+
+def nat_context(e):
+    return {k:e[k] for k in ('CUSTOMER','ROUTER_ROLE','NB_MANAGEMENT_URL',
+        'VIRTUAL_NETWORK','LAN_NETWORK_CIDR','LAN_IP','TRANSIT_SUBNET','EDGE_IP','NAT_IP')}
+
+
+def nat_ready(e):
+    try:
+        if json.loads((NAT_STATE / 'binding.json').read_text()) != nat_context(e):
+            return False
+        fd = os.open(NAT_STATE / 'ready.lock', os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd) as lock:
+            info = os.fstat(lock.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != ROOT_UID or stat.S_IMODE(info.st_mode) != 0o600:
+                return False
+            try:
+                fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True  # readiness exists only while the NAT owner lives
+    except (OSError, ValueError, KeyError):
+        pass
+    return False
 
 
 def existing_profile(root=Path('/')):
@@ -391,6 +415,12 @@ def gateway(e):
             or url(config.get('ManagementURL', '')) != url(e['NB_MANAGEMENT_URL'])
             or profile['interface'] != 'wt0'):
             raise Invalid('EXISTING_PROFILE_CONFLICT')
+    for _ in range(30):
+        if nat_ready(e):
+            break
+        time.sleep(1)
+    else:
+        raise Invalid('NAT_OWNER_NOT_READY')
     directories()
     lock = (PRIVATE / 'owner.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -456,28 +486,30 @@ def gateway(e):
         raise Invalid('VIRTUAL_MAPPING_CONFLICT')
     monitoring(e, peer_ip)
     atomic(ready, str(os.getpid()))
-    while all(p.poll() is None for p in CHILDREN):
+    while all(p.poll() is None for p in CHILDREN) and nat_ready(e):
         time.sleep(1)
-    raise Invalid('CHILD_PROCESS_EXIT')
+    raise Invalid('CHILD_OR_NAT_PROCESS_EXIT')
 
 
 def nat(e):
-    state = Path('/nat-state')
+    state = NAT_STATE
     if state.is_symlink():
         raise Invalid('NAT_BINDING_SYMLINK')
     state.mkdir(mode=0o700, exist_ok=True)
     state.chmod(0o700)
     marker = state / 'binding.json'
-    binding = {k: e[k] for k in ('CUSTOMER','ROUTER_ROLE','NB_MANAGEMENT_URL',
-        'VIRTUAL_NETWORK','LAN_NETWORK_CIDR','LAN_IP','TRANSIT_SUBNET','EDGE_IP','NAT_IP')}
+    binding = nat_context(e)
     if marker.is_symlink() or (marker.exists() and json.loads(marker.read_text()) != binding):
         raise Invalid('NAT_MAPPING_CHANGED_NO_AUTOMATIC_MIGRATION')
     atomic(marker, json.dumps(binding))
     transit, lan = interface(e['NAT_IP']), interface(e['LAN_IP'])
     command('ip', 'route', 'replace', '100.64.0.0/10', 'via', e['EDGE_IP'], 'dev', transit)
     apply_rules(nat_rules(e, transit, lan), ['openmain_binat', 'openmain_container_boundary'])
-    while True:
-        time.sleep(30)
+    fd = os.open(state / 'ready.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        while True:
+            time.sleep(30)
 
 
 def main():

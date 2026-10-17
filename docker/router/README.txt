@@ -39,7 +39,13 @@ Betriebsmodell und Grenzen
   Proxy und Agent2; nat benötigt eigenen Namespace. Keine Zabbix-Sidecars mit
   einem nach Gateway-Neustart eventuell veralteten gemeinsamen Namespace.
 - Beide restart=unless-stopped; tini + Supervisor beendet alle Gateway-
-  Prozesse bei Kindprozessfehler. Ein manuell gestoppter Container bleibt
+  Prozesse bei Kindprozessfehler. NAT hält nach erfolgreicher Kernel-
+  Einrichtung einen exklusiven flock auf seinem vorhandenen Zustandsvolume.
+  Gateway liest dieses Volume nur: Start erst bei passender, lebender NAT-
+  Instanz; Prozessverlust beendet den laufenden Gateway-Supervisor. Ein
+  liegengebliebenes Lockfile nach SIGKILL gilt nicht als bereit (getestet).
+  Keine ACL-/Benutzerliste im Signal und kein zusätzlicher Dienst.
+  Ein manuell gestoppter Container bleibt
   erwartungsgemäß gestoppt. Ein bloßer Docker-healthcheck startet NICHT neu.
 - Nicht persistenter Userspace-TUN, Standard-NetBird-Binary unverändert.
   Identität, PSK/Registrierungsnachweise und SQLite-Daten liegen in getrennten
@@ -184,7 +190,7 @@ Historischer Netzwerk-Nachweis ef2ab99b7d9eca2712e1860604b8d02c69060918:
   Ein ARMv7-Image-/Gatewaytest ist damit nicht erfolgt; keine ARMv7-Freigabe.
 - Ein früherer emulierter ARM64-Lauf scheiterte bei der Netzwerkvorbereitung.
   Native ARM64-Tests bestehen; daraus wird keine emulierte Prüfung gemacht.
-- Lokal zusätzlich 13 reine Adaptertests, Compose-Validierung und echtes
+- Lokal zusätzlich 14 reine Adaptertests, Compose-Validierung und echtes
   nftables-Kernelladen bestanden. Kompletter lokaler Build: HTTP403 am
   Zabbix-Repository (Cloud-Egress); weiterer lokaler Netzwerkversuch durch
   vollen Docker-VFS-Testdatenträger blockiert. Nur eigene Testobjekte bereinigt.

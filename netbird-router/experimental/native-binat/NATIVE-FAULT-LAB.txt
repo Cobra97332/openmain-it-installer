@@ -38,8 +38,10 @@ Mandatory cases in docker-lab/faults.py
    complete-route-policy declaration in separate real Syncs. Hold later full
    maps to preserve the observation window. No old/new TCP/UDP may pass, no
    publication may occur, and recovery requires a fresh full controller map.
-3. ACK: submit a real netlink AddRule to an absent test table. Require kernel
-   ENOENT, return the error to actual Manager.Flush/ACL apply. No synthetic ACK.
+3. ACK: append a netlink AddRule targeting an absent test table to the ACTUAL
+   native family's pending Conn transaction at flushWithBackoff. Require its
+   real kernel ENOENT; queued ACL operations fail atomically in that same batch.
+   No separate probe connection/error return stands in for native publication.
    Readback: first perform real ListChains, then discard its successful response
    at ConfirmBINATNativeRules. This simulates response loss, NOT a kernel EIO.
    Both must leave readiness closed. Failed-state caches are rebuilt natively.

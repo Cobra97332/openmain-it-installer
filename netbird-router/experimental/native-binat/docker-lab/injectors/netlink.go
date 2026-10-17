@@ -22,22 +22,21 @@ func labConsume(name string) bool {
 	return true
 }
 
-func labNetlinkACK() error {
-	if !labConsume("ack") {
-		return nil
+func labFlush(conn *nftables.Conn) error {
+	fault := labConsume("ack")
+	if fault {
+		// Append to the ACTUAL native writer's pending transaction. Its real
+		// kernel ACK fails atomically, including any queued policy operations.
+		table := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: "openmain_lab_absent_ack_target"}
+		chain := &nftables.Chain{Table: table, Name: "absent"}
+		conn.AddRule(&nftables.Rule{Table: table, Chain: chain, Exprs: []expr.Any{&expr.Counter{}}})
 	}
-	// A REAL atomic netlink transaction to a deliberately nonexistent table.
-	// Kernel ENOENT is returned to the actual native ACL apply path. No rule is installed.
-	conn := &nftables.Conn{}
-	table := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: "openmain_lab_absent_ack_target"}
-	chain := &nftables.Chain{Table: table, Name: "absent"}
-	conn.AddRule(&nftables.Rule{Table: table, Chain: chain, Exprs: []expr.Any{&expr.Counter{}}})
 	err := conn.Flush()
-	if err == nil {
+	if fault && err == nil {
 		return errors.New("lab ACK fault fixture unexpectedly succeeded")
 	}
-	if errors.Is(err, syscall.ENOENT) {
-		os.WriteFile(binat.Root+"/hit-ack", []byte("kernel-ENOENT\n"), 0600)
+	if fault && errors.Is(err, syscall.ENOENT) {
+		os.WriteFile(binat.Root+"/hit-ack", []byte("native-batch-ENOENT\n"), 0600)
 	}
 	return err
 }

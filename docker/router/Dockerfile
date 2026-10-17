@@ -29,6 +29,9 @@ COPY docker/router/start.sh docker/router/router.py /opt/openmain/
 RUN chmod 0755 /opt/openmain/start.sh && mkdir -p /run/zabbix \
     && chown zabbix:zabbix /run/zabbix \
     && netbird version && zabbix_agent2 -V && zabbix_proxy -V
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.source="https://github.com/Cobra97332/openmain-it-installer" \
+      org.opencontainers.image.revision="${VCS_REF}"
 ENV PYTHONDONTWRITEBYTECODE=1 NB_STATE_DIR=/var/lib/netbird \
     NB_DAEMON_ADDR=unix:///run/netbird.sock NB_WG_KERNEL_DISABLED=true
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/openmain/start.sh"]

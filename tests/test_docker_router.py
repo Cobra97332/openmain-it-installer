@@ -114,4 +114,19 @@ class IdentityVolumeTests(unittest.TestCase):
             with self.assertRaises(Exception): r.existing_profile(root)
 
 
+class ForeignIdentityTests(unittest.TestCase):
+    def test_unbound_existing_identity_does_not_start_or_modify_anything(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            state=Path(d)/'state';state.mkdir()
+            with patch.object(r,'STATE',state), patch.object(r,'PRIVATE',state/'private'), \
+                 patch.object(r,'CONFIG',state/'zabbix'), patch.object(r,'existing_profile',return_value={}), \
+                 patch.object(r,'spawn') as start, patch.object(r,'command') as command:
+                with self.assertRaisesRegex(r.Invalid,'NO_ADOPTION'):
+                    r.gateway(ENV)
+                start.assert_not_called();command.assert_not_called()
+                self.assertEqual(list(state.iterdir()),[])
+
+
 if __name__ == '__main__': unittest.main()

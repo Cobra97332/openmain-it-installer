@@ -64,6 +64,7 @@ services:
     environment: *config
     cap_add: [NET_ADMIN]
     sysctls: {net.ipv4.ip_forward: '1'}
+    volumes: [nat-state:/nat-state]
     networks:
       transit: {ipv4_address: '${NAT_IP}'}
       lan: {ipv4_address: '${LAN_IP}'}
@@ -77,6 +78,7 @@ volumes:
   netbird: {}
   state: {}
   proxy-db: {}
+  nat-state: {}
 networks:
   uplink: {}
   transit:

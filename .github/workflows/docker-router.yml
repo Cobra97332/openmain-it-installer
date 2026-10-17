@@ -53,6 +53,7 @@ jobs:
           load: true
           tags: openmain-router:test
           provenance: false
+          build-args: VCS_REF=${{ github.sha }}
       - name: Binary start and Debian package architecture
         env: {TARGET_PLATFORM: '${{ matrix.platform }}'}
         run: |
@@ -66,11 +67,9 @@ jobs:
       - name: Probe actual Debian13 ARMHF package availability (not ARMv7 support)
         if: matrix.platform == 'linux/amd64'
         run: |
-          docker run --rm --cap-drop ALL --entrypoint sh openmain-router:test -c '
-            dpkg --add-architecture armhf &&
-            apt-get -o APT::Sandbox::User=root update >/dev/null &&
-            apt-cache policy zabbix-agent2:armhf zabbix-proxy-sqlite3:armhf
-          ' > armhf-packages.txt
+          docker run --rm --cap-drop ALL \
+            -v "$PWD/tests/docker_router/package_probe.py:/probe.py:ro" \
+            --entrypoint python3 openmain-router:test /probe.py > armhf-packages.txt
       - name: Real stock-controller and nftables gateway gates
         run: |
           sudo modprobe tun

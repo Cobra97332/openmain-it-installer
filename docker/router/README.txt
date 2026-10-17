@@ -38,7 +38,9 @@ Betriebsmodell und Grenzen
   erwartungsgemäß gestoppt. Ein bloßer Docker-healthcheck startet NICHT neu.
 - Nicht persistenter Userspace-TUN, Standard-NetBird-Binary unverändert.
   Identität, PSK/Registrierungsnachweise und SQLite-Daten liegen in getrennten
-  benannten Volumes. Kein automatischer Wechsel auf neue Identität/PSK.
+  benannten Volumes. Auch die NAT-Zuordnung hat eine persistente Bindung;
+  geänderte Kunden-/Netzangaben werden vor Regeländerungen abgelehnt.
+  Kein automatischer Wechsel auf neue Identität/PSK.
 - Zabbix läuft als zabbix-UID. Gateway-Caps: NET_ADMIN/NET_RAW für VPN,
   CHOWN/DAC_OVERRIDE/FOWNER für eigene Volumeinitialisierung,
   SETUID/SETGID für Demotion, KILL für den Supervisor. NAT nur NET_ADMIN.
@@ -146,7 +148,7 @@ Prüfung und Veröffentlichungsablauf
 
 Tatsächlich lokal ausgeführt (Stand des ersten Entwurfs)
 - Offizielles NetBird-Manifest abgefragt: amd64/arm64/arm/v6 vorhanden.
-- 9 neue reine Adaptertests bestanden; der zusätzliche Test schützt zentrale
+- 10 neue reine Adaptertests bestanden; der zusätzliche Test schützt zentrale
   Policy-Verschärfung bei Wiederaufnahme. Zuvor insgesamt 220 bestehende/neue
   Debian-13-Offline-Tests sowie bisherige Bash-/ShellCheck-Prüfungen bestanden.
 - Neue NAT- und Gateway-Grenzregeln im echten isolierten nftables-Kernel geladen.

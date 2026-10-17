@@ -336,8 +336,22 @@ def gateway(e):
     binding = {k: e[k] for k in ('CUSTOMER', 'ROUTER_ROLE', 'NB_MANAGEMENT_URL', 'VIRTUAL_NETWORK',
                                  'LAN_NETWORK_CIDR', 'LAN_IP', 'EDGE_IP', 'NAT_IP', 'NB_ZABBIX_API_URL', 'NB_ZABBIX_SERVER')}
     marker = PRIVATE / 'binding.json'
+    if STATE.exists() and any(p.is_symlink() for p in STATE.rglob('*')):
+        raise Invalid('STATE_FILE_SYMLINK')
     if marker.exists() and json.loads(marker.read_text()) != binding:
         raise Invalid('PERSISTENT_IDENTITY_BINDING_CONFLICT')
+    profile = existing_profile()
+    if profile is not None and not marker.exists():
+        raise Invalid('IDENTITY_WITHOUT_CUSTOMER_BINDING_NO_ADOPTION')
+    if profile is None and (PRIVATE / 'netbird-enrollment.json').exists():
+        raise Invalid('IDENTITY_VOLUME_MISSING_NO_REENROLLMENT')
+    if profile is not None:
+        from preflight import url
+        config = profile['config']
+        if (config.get('DisableFirewall', False) is not False
+            or url(config.get('ManagementURL', '')) != url(e['NB_MANAGEMENT_URL'])
+            or profile['interface'] != 'wt0'):
+            raise Invalid('EXISTING_PROFILE_CONFLICT')
     directories()
     lock = (PRIVATE / 'owner.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -350,12 +364,7 @@ def gateway(e):
     apply_rules(edge_rules(e, transit), ['openmain_container_boundary'])
     for network in (e['VIRTUAL_NETWORK'], e['LAN_NETWORK_CIDR']):
         command('ip', 'route', 'replace', network, 'via', e['NAT_IP'], 'dev', transit)
-    existed = existing_profile() is not None
-    if existed:
-        from preflight import url
-        config = resolve_profile()['config']
-        if config.get('DisableFirewall', False) is not False or url(config.get('ManagementURL', '')) != url(e['NB_MANAGEMENT_URL']):
-            raise Invalid('EXISTING_PROFILE_CONFLICT')
+    existed = profile is not None
     spawn(['netbird', 'service', 'run', '--log-level', 'info', '--log-file', str(PRIVATE / 'netbird.log')], PRIVATE / 'netbird-bootstrap.log')
     for _ in range(30):
         if Path('/run/netbird.sock').exists():
@@ -365,6 +374,7 @@ def gateway(e):
         time.sleep(1)
     if not existed:
         secret('nb_setup_key')
+        atomic(PRIVATE / 'netbird-enrollment.json', json.dumps({'phase':'requested'}))
         command('netbird', 'up', '--management-url', e['NB_MANAGEMENT_URL'],
                 '--hostname', 'router-' + e['CUSTOMER'] + '-' + e['ROUTER_ROLE'],
                 '--interface-name', 'wt0', '--disable-dns', '--setup-key-file', '/run/secrets/nb_setup_key')
@@ -378,6 +388,7 @@ def gateway(e):
             time.sleep(1)
     else:
         raise Invalid('NETBIRD_NOT_CONNECTED')
+    atomic(PRIVATE / 'netbird-enrollment.json', json.dumps({'phase':'connected','ip':peer_ip}))
     os.environ['NB_API_TOKEN'] = secret('nb_api_token')
     os.environ['NB_ZABBIX_API_TOKEN'] = secret('zabbix_api_token')
     api = API(e['NB_MANAGEMENT_URL'], os.environ['NB_API_TOKEN'])
@@ -403,6 +414,17 @@ def gateway(e):
 
 
 def nat(e):
+    state = Path('/nat-state')
+    if state.is_symlink():
+        raise Invalid('NAT_BINDING_SYMLINK')
+    state.mkdir(mode=0o700, exist_ok=True)
+    state.chmod(0o700)
+    marker = state / 'binding.json'
+    binding = {k: e[k] for k in ('CUSTOMER','ROUTER_ROLE','NB_MANAGEMENT_URL',
+        'VIRTUAL_NETWORK','LAN_NETWORK_CIDR','LAN_IP','TRANSIT_SUBNET','EDGE_IP','NAT_IP')}
+    if marker.is_symlink() or (marker.exists() and json.loads(marker.read_text()) != binding):
+        raise Invalid('NAT_MAPPING_CHANGED_NO_AUTOMATIC_MIGRATION')
+    atomic(marker, json.dumps(binding))
     transit, lan = interface(e['NAT_IP']), interface(e['LAN_IP'])
     command('ip', 'route', 'replace', '100.64.0.0/10', 'via', e['EDGE_IP'], 'dev', transit)
     apply_rules(nat_rules(e, transit, lan), ['openmain_binat', 'openmain_container_boundary'])

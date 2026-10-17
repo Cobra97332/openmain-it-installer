@@ -1,0 +1,13 @@
+# syntax=docker/dockerfile:1
+# Laboratory tools only. Build before disconnecting all runtime networks.
+FROM debian:13-slim
+RUN --mount=type=secret,id=ca,target=/run/build-ca,required=false \
+    if test -f /run/build-ca; then \
+      printf 'Acquire::https::CaInfo "/run/build-ca";\n' >/etc/apt/apt.conf.d/99lab-ca; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates python3 openssl nftables iptables iproute2 iputils-ping conntrack curl \
+      && rm -f /etc/apt/apt.conf.d/99lab-ca && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/lab
+COPY netbird-router/experimental/native-binat/docker-lab /opt/lab
+ENTRYPOINT ["python3", "/opt/lab/container.py"]

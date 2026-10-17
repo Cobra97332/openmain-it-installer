@@ -1,0 +1,94 @@
+REAL-CONTROLLER FOLLOW-UP — 2026-10-13 / RELEASE BLOCKED
+
+Starting OpenMain head: 5afea91b15de3fe6c19af4b7455bceb89f66ae55
+Branch: experiment/native-binat-authorization; PR #34 only.
+Final commit/check/review URLs are recorded in the PR conversation, so this
+report does not misleadingly embed its own not-yet-created Git commit hash.
+PR #33, beta, main, CT110/111 and production systems are unchanged.
+
+The preferred patch is UNCHANGED. SHA256:
+294fbd8d1ce92527bdd8b9feee2fe7872d6c7f276474cb1d1a7db46bfcd4d4ee
+Pinned upstream: fca64287cf51a85552a41b022013abbfdb335452 (NetBird v0.80.0)
+Official controller image:
+netbirdio/netbird-server:0.80.0@sha256:05b3d8d6d056e5062a2965d4d6e5d6d83f09f2bf9133947a8e5972e0e0e7a261
+
+ACTUALLY EXECUTED IN THIS FOLLOW-UP
+- NET_ADMIN and newly created TUN in disposable network-none Docker: PASS.
+- New tools Dockerfile build with public Debian packages and mounted CA: PASS.
+- REAL controller in INTERNAL Docker network, no host ports/network: PASS.
+  Real TLS/name/CA validation, pristine bootstrap, PAT, actual API-reported
+  version 0.80.0, default policy removed ONLY in fresh lab, synthetic one-off
+  setup keys, real native DROP + TCP-port policy API semantics: PASS.
+  Repeated with newly built tools image: PASS. cleanup_complete=true.
+  real_clients_executed=false and release=blocked in BOTH sanitized reports.
+- Full command with absent patched image: FAIL safely before client deployment;
+  classified patched_client_image_missing, cleanup_complete=true. No fixture
+  driver fallback or dummy enrollment key used.
+- Bash syntax + ShellCheck + 230 Debian-13 offline regressions: PASS.
+  Includes 8 NEW lab isolation/report/build/TLS/credential/cleanup contracts. These
+  contracts are mocks, not real NetBird client integration.
+- New Codex reviews found two lab P2s: partial-preparation credential cleanup
+  and accidental whole-CA-directory mounts into clients. Fixed independent
+  cleanup/confirmed-failure reporting and certificate-only client mounts.
+  Actual Docker negative test proves cleanup of generated private material after
+  Compose write failure. A certificate-only mount probe checks that the CA
+  signing key is absent, without starting or claiming a real NetBird client.
+- Debian-13 bootstrap with jq actually removed, 7 tests: PASS.
+- Native small core Go tests WITH race detector: PASS.
+- Actual ARM64 native Go core under QEMU-user, 14 tests: PASS.
+- Actual ARM64 Python under QEMU-user, 33 simulated-API tests: PASS.
+- Small compiled Go gate + synthetic native ACL real-kernel packet tests: PASS.
+- Existing Python snapshot real-kernel packet tests: PASS.
+- Existing older compiled Go publisher real-kernel packet suite: PASS.
+- Mandatory old publisher and small retained-veth owner-death gates: FAIL,
+  unauthorized NEW packet. Neither assertion changed or waived.
+- All SIX unchanged legacy P1 packet counterexamples: FAIL, as previously.
+- Initial QEMU VM rerun: FAIL before kernel tests because the fixture packager
+  omitted the NEW lab-contract source assets. Fixed by copying only the five
+  required public fixtures; no assertion was skipped. Initial synthetic
+  BIOS+UEFI boots: PASS. Corrected VM/TUN/BIOS/UEFI rerun results follow in PR.
+  No VM/TUN result is claimed from that early failure, and no official Debian
+  Installer or Proxmox/Pi certification is claimed.
+
+NOT EXECUTED / BLOCKERS
+The REAL patched ./client build was attempted and failed at the module download
+for github.com/klauspost/compress v1.18.7: the configured proxy denies the
+storage.googleapis.com target. This is a network-policy boundary, not absence
+of NET_ADMIN/TUN. No route/proxy bypass or TLS relaxation was attempted.
+Consequently there is NO local real-WireGuard/native-Engine controller acceptance,
+NO measured true HA interruption/primary return and NO native multi-arch image
+acceptance. The reproducible build/topology/partial packet runner is provided
+for a disposable Linux lab with authorized public module access.
+
+Additionally the mandatory real-client fault-injection suite is INCOMPLETE.
+packets.py REQUIRED explicitly blocks unsupported/unimplemented cases with a
+nonzero full-run result. This includes RELATED/reply-only, precise ports/ICMP,
+multiple independent sources, malformed/stale maps, concurrent resets, unknown
+kernel ACK, orphan opt-out, process-crash/restart and complete HA return. See
+RUNBOOK.txt. No successful callback simulation substitutes for these proofs.
+
+CI/REVIEW
+Previous exact head 5afea91: 2 validate PASS; 2 offline FAIL; 2 platform FAIL.
+The new head is pushed for ALL six existing checks plus mandatory real-lab steps
+inside offline-regressions. They continue after earlier failures. Sanitized JSON
+only is archived; raw client/API logs and generated credentials are excluded.
+Final exact-head CI and explicitly requested Codex review are documented in PR.
+Pending checks/review must not be reported as completed.
+
+REMAINING SECURITY FINDINGS
+Known PR #33 NEW-flow ACL race and established/reply withdrawal P1s remain in the
+unchanged shipped path. Old full-publisher serial/pending-ownership P1 findings
+remain open; it is not the selected small candidate. No small-candidate P1 fix
+or absence of P1 is certified by the real-controller-only results. Missing
+real-Engine/map/reset/crash/packet proof itself blocks security acceptance.
+Controller receipt is not local kernel publication; no distributed controller
+kernel ACK exists in the reviewed protocol. Brief old-flow drainage is accepted,
+but stale NEW-flow authorization and unknown-policy admission are not waived.
+
+PACKAGING/HARDWARE
+TARGETARCH build supports Linux AMD64/ARM64 in principle, not yet built/verified
+for the real client. It is an experimental lab image, not a router migration.
+Before distribution: platform-matched base images, immutable digests, signed
+artifacts/SBOM/license notices, reboot/TUN cleanup and safe rollback proof.
+Real Debian-13/netinstall, PVE unprivileged LXC/VM and Pi 3/4/5 ARM64 network,
+failover, throughput/CPU and reboot tests remain necessary. PRODUCTION BLOCKED.

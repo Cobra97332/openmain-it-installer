@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""Disposable real-controller lab. Never uses host profiles, ports or networking."""
+import argparse
+import hashlib
+import json
+import os
+import re
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+
+CONTROLLER = ('netbirdio/netbird-server:0.80.0@sha256:'
+              '05b3d8d6d056e5062a2965d4d6e5d6d83f09f2bf9133947a8e5972e0e0e7a261')
+TOOLS = 'openmain-native-lab-tools:debian13'
+CLIENT = 'openmain-native-lab-client:0.80.0-small'
+ROOT = Path(__file__).resolve().parents[4]
+PATCH = ROOT / 'netbird-router/experimental/native-binat/netbird-v0.80.0-small-native.patch'
+DEPENDENCY_PATCH = PATCH.parent / 'google-nftables-v0.3.0-ct-direction.patch'
+
+
+def patchset_digest():
+    injectors = Path(__file__).parent / 'injectors'
+    files = (PATCH, DEPENDENCY_PATCH, *(injectors / n for n in ('apply.py', 'engine.go', 'netlink.go')))
+    hashes = ''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '\n' for p in files)
+    return hashlib.sha256(hashes.encode('ascii')).hexdigest()
+
+
+ROUTERS = ('primary-a', 'backup-a', 'primary-b', 'backup-b')
+PEERS = ('peer', 'probe') + ROUTERS
+
+
+def safe_summary(report, status):
+    stages = {'prepare', 'client_image', 'controller_bootstrap', 'enrollment_keys',
+              'client_compose', 'configure', 'packet_gates'} | {'start_' + n for n in PEERS}
+    errors = {'RuntimeError', 'ValueError', 'OSError', 'TimeoutExpired',
+              'patched_client_image_missing', 'unexpected_initializer_output'}
+    # Worker classes are fixed lab diagnostics, not upstream response text.
+    errors.update({'lab_local_' + c + '_failed' for c in ('ip', 'nft', 'openssl', 'python3')})
+    errors.update({'lab_wait_timeout', 'lab_lan_interface_ambiguous',
+                   'lab_client_build_mismatch', 'lab_client_upstream_mismatch',
+                   'lab_setup_pat_missing', 'lab_setup_key_missing', 'lab_controller_not_pristine',
+                   'lab_controller_version_mismatch', 'lab_controller_policy_contract', 'lab_setup_not_confirmed',
+                   'lab_controller_has_foreign_policy', 'lab_fresh_local_publication_missing',
+                   'lab_packet_permission_mismatch', 'lab_packet_target_refused',
+                   'lab_packet_probe_timeout', 'lab_packet_probe_incomplete',
+                   'lab_authorized_tcp_reply_missing', 'lab_authorized_udp_reply_missing',
+                   'lab_unauthorized_tcp_reply_observed', 'lab_unauthorized_udp_reply_observed', 'lab_established_connection_missing',
+                   'lab_existing_permission_survived_local_withdrawal', 'lab_existing_permission_survived_drop',
+                   'lab_passive_baseline_missing', 'lab_reply_only_withdrawal_failed', 'lab_passive_sender_unproven', 'lab_passive_pause_unconfirmed',
+                   'lab_icmp_permission_mismatch', 'lab_icmp_probe_failed', 'lab_policy_readback_mismatch',
+                   'lab_related_delivery_mismatch', 'lab_related_classification_missing', 'lab_related_parent_missing',
+                   'lab_controller_loss_gate_remained_open', 'lab_controller_loss_existing_flow_allowed',
+                   'lab_controller_reconnect_missing', 'lab_restart_target_refused', 'lab_tun_survived_owner_death',
+                   'lab_stale_resume_not_refused', 'lab_orphan_resume_not_refused', 'lab_restart_publication_missing',
+                   'lab_primary_return_missing', 'lab_foreign_reference_missing', 'lab_foreign_rules_changed', 'lab_primary_not_selected', 'lab_automatic_backup_failover_missing'})
+    errors.update({'lab_injector_barrier_missing', 'lab_fault_baseline_missing',
+                   'lab_fault_existing_flow_allowed', 'lab_fault_unconfirmed_publication',
+                   'lab_fault_owner_or_foreign_changed', 'lab_withheld_sync_missing', 'lab_real_engine_restart_missing'})
+    error = report.get('error_class')
+    if error is not None and error not in errors and not re.fullmatch(
+            r'(?:lab_api_http_[1-5][0-9]{2}|docker_operation_failed:(?:run|exec|compose|image))', str(error)):
+        error = 'unclassified'
+    cases = report.get('cases', {})
+    packet_error = cases.get('real_client_gate_failure')
+    return {'release': 'blocked', 'exit_status': status,
+            'stage': report.get('stage') if report.get('stage') in stages else 'unknown',
+            'error_class': error, 'packet_error_class': packet_error if packet_error in errors else None,
+            'real_clients_executed': report.get('real_clients_executed') is True,
+            'lifecycle_gates_passed': {name: cases.get(name) == 'pass' for name in (
+                'userspace_tun_owner_death', 'no_optin_orphan_restart',
+                'stale_accept_restart_refused', 'engine_restart_same_identity',
+                'primary_backup_failover_100_200')},
+            'additional_gates_passed': {name: cases.get(name) == 'pass' for name in (
+                'related_icmp', 'icmp_port_protocol_restrictions',
+                'multiple_independent_acl_sources', 'established_reply_only_tcp_udp')},
+            'native_fault_gates_passed': {name: cases.get(name) == 'pass' for name in (
+                'concurrent_policy_reset', 'unknown_stale_networkmap', 'kernel_ack_failure',
+                'fresh_map_after_native_firewall_rebuild')},
+            'publication_failure': {r: {key: value.get(key) is True for key in ('open', 'newer', 'tun_exists')}
+                for r, value in report.get('observations', {}).get('publication_failure', {}).items()
+                if r in ROUTERS and isinstance(value, dict)},
+            'sender_failure': {p: report.get('observations', {}).get('sender_failure', {}).get(p) is True
+                for p in ('tcp', 'udp')} if 'sender_failure' in report.get('observations', {}) else {},
+            'passed_cases': sum(v == 'pass' for v in cases.values()),
+            'failed_or_blocked_cases': sum(v != 'pass' for v in cases.values())}
+
+
+def docker(*args, data=None, check=True, timeout=600):
+    env = dict(os.environ)
+    for k in ('DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'):
+        env.pop(k, None)
+    r = subprocess.run(['docker', '--host=unix:///var/run/docker.sock', *args],
+                       input=data, text=True, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, env=env, timeout=timeout)
+    if check and r.returncode:
+        # Never return raw Docker output: logs/build errors can contain secrets/URLs.
+        raise RuntimeError('docker_operation_failed:' + args[0])
+    return r
+
+
+def topology(work, project, tools=TOOLS):
+    services = {}
+    proxies = {k: '' for k in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY',
+                              'http_proxy', 'https_proxy', 'all_proxy')}
+    base = dict(cap_drop=['ALL'], security_opt=['no-new-privileges:true'],
+                logging={'driver': 'none'}, restart='no')
+    services['controller'] = dict(base, image=CONTROLLER,
+        command=['--config', '/etc/netbird/config.yaml'],
+        environment=dict(proxies, NB_SETUP_PAT_ENABLED='true', NB_DISABLE_GEOLOCATION='true'),
+        networks={'control': {'aliases': ['controller.lab.test']}},
+        volumes=[str(work / 'runtime/controller') + ':/etc/netbird:ro',
+                 str(work / 'runtime/server-state') + ':/var/lib/netbird'],
+        tmpfs=['/tmp:mode=1777'])
+    # Tools hold ONLY lab credentials. No Docker socket is mounted into containers.
+    services['tools'] = dict(base, image=tools, entrypoint=['sleep', 'infinity'],
+        environment=proxies, networks=['control'],
+        volumes=[str(work / 'runtime') + ':/lab', str(Path(__file__).parent) + ':/opt/lab:ro'])
+    for index, name in enumerate(PEERS):
+        router = name in ROUTERS
+        networks = {'control': {}}
+        if router:
+            networks['lan-' + name[-1]] = {}
+        services[name] = dict(base, image=CLIENT, hostname=name,
+            cap_add=['NET_ADMIN', 'NET_RAW', 'MKNOD'],
+            device_cgroup_rules=['c 10:200 rwm'],
+            environment=dict(proxies, NB_WG_KERNEL_DISABLED='true', OPENMAIN_ISOLATED_TEST='1'),
+            entrypoint=['sleep', 'infinity'], networks=networks,
+            volumes=[str(work / 'runtime/ca/cert.pem') + ':/lab-ca/cert.pem:ro',
+                     str(work / 'runtime/keys' / name) + ':/lab-key:ro',
+                     str(Path(__file__).parent) + ':/opt/lab:ro'],
+            tmpfs=['/run:mode=0755', '/var/lib/netbird:mode=0700', '/tmp:mode=1777'],
+            sysctls={'net.ipv4.ip_forward': '1' if router else '0'})
+    for lan in ('a', 'b'):
+        services['lan-' + lan] = dict(base, image=tools, hostname='lan-' + lan,
+            cap_add=['NET_ADMIN', 'NET_RAW'], environment=dict(proxies, OPENMAIN_ISOLATED_TEST='1'),
+            entrypoint=['python3', '/opt/lab/container.py', 'lan'],
+            networks={'lan-' + lan: {}},
+            volumes=[str(Path(__file__).parent) + ':/opt/lab:ro'])
+    # Distinct Docker transport subnets avoid overlapping IPAM; identical real
+    # customer addresses are assigned INSIDE their separate namespaces.
+    networks = {n: {'internal': True, 'enable_ipv6': False,
+                   'ipam': {'config': [{'subnet': subnet}]}}
+                for n, subnet in zip(('control', 'lan-a', 'lan-b'),
+                                     ('172.30.240.0/24', '172.30.241.0/24', '172.30.242.0/24'))}
+    return {'name': project, 'services': services, 'networks': networks}
+
+
+class Lab:
+    def __init__(self, work, tools=TOOLS):
+        self.work = work
+        self.project = 'om-binat-' + work.name.rsplit('-', 1)[-1]
+        self.tools = tools
+        self.file = work / 'compose.json'
+
+    def resume_router(self, name, opt_in=True):
+        if name not in ROUTERS:
+            raise RuntimeError('lab_restart_target_refused')
+        return self.exec(name, 'python3', '/opt/lab/container.py',
+                         'resume' if opt_in else 'resume-no-binat', name, patchset_digest())
+
+    def compose(self, *args, check=True, timeout=600):
+        return docker('compose', '-p', self.project, '-f', str(self.file), *args, check=check, timeout=timeout)
+
+    def exec(self, name, *args, data=None, timeout=600):
+        deadline = time.monotonic() + timeout
+        def remaining():
+            value = deadline - time.monotonic()
+            if value <= 0:
+                raise subprocess.TimeoutExpired('isolated-lab-exec', timeout)
+            return value
+        cid = self.compose('ps', '-q', name, timeout=remaining()).stdout.strip()
+        if not cid or '\n' in cid:
+            raise RuntimeError('missing_lab_container:' + name)
+        r = docker('exec', '-i', cid, *args, data=data, check=False, timeout=remaining())
+        if r.returncode:
+            try:
+                error = json.loads(r.stdout)['error_class']
+                if re.fullmatch(r'lab_[a-z_0-9]+', error):
+                    raise RuntimeError(error)
+            except (KeyError, ValueError, TypeError):
+                pass
+            raise RuntimeError('docker_operation_failed:exec')
+        return r.stdout
+
+    def prepare(self):
+        init = docker('run', '--rm', '--network', 'none', '--cap-drop', 'ALL', '--cap-add', 'DAC_OVERRIDE',
+                      '--security-opt', 'no-new-privileges:true',
+                      '-v', str(self.work) + ':/lab',
+                      '-v', str(Path(__file__).parent) + ':/opt/lab:ro',
+                      '--entrypoint', 'python3', self.tools, '/opt/lab/container.py', 'initialize')
+        if init.stdout.strip() != 'initialized':
+            raise RuntimeError('unexpected_initializer_output')
+        self.file.write_text(json.dumps(topology(self.work, self.project, self.tools), indent=2))
+        self.file.chmod(0o600)
+
+    def control(self, operation, **kw):
+        response = self.exec('tools', 'python3', '/opt/lab/container.py', 'control',
+                             data=json.dumps(dict(operation=operation, **kw)))
+        return json.loads(response)
+
+    def cleanup(self):
+        # Only this random, exclusively allocated project. No prune, host nft or
+        # unrelated containers/volumes. Private evidence directory is retained.
+        stopped = True
+        if self.file.exists():
+            try:
+                stopped = self.compose('down', '--remove-orphans', check=False).returncode == 0
+            except (RuntimeError, OSError, subprocess.TimeoutExpired):
+                stopped = False
+        # Initialization can fail BEFORE compose.json exists. Credential cleanup
+        # is therefore independent of Compose creation and stack teardown.
+        try:
+            r = docker('run', '--rm', '--network', 'none', '--cap-drop', 'ALL',
+                       '--cap-add', 'DAC_OVERRIDE', '--security-opt', 'no-new-privileges:true',
+                       '-v', str(self.work) + ':/lab', '--entrypoint', 'python3', self.tools,
+                       '-c', 'from pathlib import Path\nimport shutil\np=Path("/lab/runtime")\n'
+                             'if p.is_symlink(): raise SystemExit(1)\n'
+                             'if p.exists(): shutil.rmtree(p)\n'
+                             'if p.exists() or p.is_symlink(): raise SystemExit(1)\n', check=False)
+            return stopped and r.returncode == 0
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            return False
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--controller-only', action='store_true', help='bootstrap/API proof, NOT client acceptance')
+    p.add_argument('--tools-image', default=TOOLS)
+    p.add_argument('--report', type=Path, required=True)
+    args = p.parse_args()
+    if os.environ.get('OPENMAIN_ISOLATED_TEST') != '1':
+        p.error('OPENMAIN_ISOLATED_TEST=1 required')
+    args.report = args.report.resolve()
+    if args.report.exists():
+        p.error('report already exists; refusing overwrite')
+    work = Path(tempfile.mkdtemp(prefix='om-binat-lab-', dir=os.environ.get('TMPDIR', '/tmp')))
+    os.chmod(work, 0o700)
+    lab = Lab(work, args.tools_image)
+    report = {'release': 'blocked', 'patchset_sha256': patchset_digest(),
+              'dependency_patch_sha256': hashlib.sha256(DEPENDENCY_PATCH.read_bytes()).hexdigest(),
+              'patch_sha256': hashlib.sha256(PATCH.read_bytes()).hexdigest(),
+              'upstream': 'fca64287cf51a85552a41b022013abbfdb335452',
+              'controller_image': CONTROLLER, 'real_clients_executed': False, 'cases': {},
+              'mode': 'controller_only' if args.controller_only else 'real_clients',
+              'controller_ack': False, 'private_work_directory': str(work)}
+    status = 1
+    report['stage'] = 'prepare'
+    try:
+        lab.prepare()
+        if args.controller_only:
+            report['stage'] = 'controller_bootstrap'
+            lab.compose('up', '-d', '--pull', 'never', 'controller', 'tools')
+            report['cases'].update(lab.control('bootstrap'))
+            report['cases'].update(lab.control('api_contract'))
+            report['cases'].update(lab.control('enrollment_keys'))
+            status = 0  # explicitly ONLY the controller/API command succeeds
+        else:
+            report['stage'] = 'client_image'
+            image = docker('image', 'inspect', CLIENT, check=False)
+            if image.returncode or not image.stdout:
+                raise RuntimeError('patched_client_image_missing')
+            # Generate individual setup-key files before Docker creates the
+            # client bind mounts; each client sees only its own one-off key.
+            lab.compose('up', '-d', '--pull', 'never', 'controller', 'tools', 'lan-a', 'lan-b')
+            report['stage'] = 'controller_bootstrap'
+            report['cases'].update(lab.control('bootstrap'))
+            # The full client run includes the same native DROP/port contract.
+            # It creates no setup keys; enrollment_keys owns that single step.
+            report['cases'].update(lab.control('api_contract'))
+            report['stage'] = 'enrollment_keys'
+            report['cases'].update(lab.control('enrollment_keys'))
+            report['stage'] = 'client_compose'
+            lab.compose('up', '-d', '--pull', 'never', *PEERS)
+            for name in PEERS:
+                report['stage'] = 'start_' + name
+                report['cases'].update(json.loads(lab.exec(name, 'python3', '/opt/lab/container.py',
+                                                          'start', name, report['patchset_sha256'])))
+            report['stage'] = 'configure'
+            report['cases'].update(lab.control('configure'))
+            report['real_clients_executed'] = True
+            report['stage'] = 'packet_gates'
+            packet_cases = json.loads(run_packets(lab))
+            report['observations'] = {key: packet_cases.pop(key) for key in
+                ('backup_observed_after_seconds', 'primary_return_observed_after_seconds', 'publication_failure', 'sender_failure') if key in packet_cases}
+            report['cases'].update(packet_cases)
+            # No success override: unimplemented required adversarial gates fail.
+            status = 0 if all(v == 'pass' for v in report['cases'].values()) else 1
+    except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as e:
+        report['error_class'] = type(e).__name__
+        # Only our classified messages, never Docker/API response bodies.
+        if isinstance(e, RuntimeError) and (re.fullmatch(r'lab_[a-z_0-9]+', str(e)) or str(e).startswith(('docker_operation_failed:', 'missing_lab_container:',
+                                                             'patched_client_image_missing', 'unexpected_initializer_output'))):
+            report['error_class'] = str(e)
+    finally:
+        if status and not args.controller_only and report['stage'] in ('configure', 'packet_gates'):
+            diagnostics = {}
+            for name in PEERS:
+                try:
+                    value = json.loads(lab.exec(name, 'python3', '/opt/lab/traffic.py', 'diagnostics'))
+                    diagnostics[name] = {k: v for k, v in value.items() if type(v) is bool}
+                except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired):
+                    diagnostics[name] = {'diagnostics_unavailable': True}
+            report['client_diagnostics'] = diagnostics
+            print(json.dumps({'client_diagnostics': diagnostics}))
+        report['cleanup_complete'] = lab.cleanup()
+        if not report['cleanup_complete']:
+            status = 1
+        fd = os.open(args.report, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            json.dump(report, f, indent=2)
+        # Fixed classifications only, never API responses, log lines or keys.
+        print(json.dumps(safe_summary(report, status)))
+    return status
+
+
+def run_packets(lab):
+    # Kept in a separate module: orchestration lives outside client namespaces.
+    sys.path.insert(0, str(Path(__file__).parent))
+    from packets import acceptance
+    return json.dumps(acceptance(lab))
+
+
+if __name__ == '__main__':
+    sys.exit(main())

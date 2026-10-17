@@ -1,0 +1,99 @@
+PR34: four native Engine fault proofs (2026-10-17)
+================================================
+
+Supported candidate: AMD64, native nftables, process-owned nonpersistent TUN,
+NetBird v0.80.0 pinned by source SHA. NetBird's native ACL compiler remains the
+only permission source. Original conntrack tuples and primary/backup 100/200
+are unchanged. No runtime/installer patch or production configuration changed.
+
+Test-image overlay
+------------------
+docker-lab/injectors/apply.py applies exact source anchors AFTER the selected
+small native patch, ONLY in Dockerfile.client. Normal patch builds never apply
+it. Its three source files are included in the image/lab provenance digest.
+The instrumented binary is a TEST artifact, never a shipping client.
+
+Each router exposes a root-only Unix socket inside the existing protected lab
+directory, bound to the actual client PID. No host ports/network/socket mounts.
+Commands contain a fixed operation enum, never policy data. The hooks cannot
+publish an ACCEPT, bypass map validation, or set readiness. They can withhold or
+corrupt a real received map, invalidate readiness, pause before Open, or exercise
+the native Close/Create/Init path. They do not implement a second ACL compiler.
+
+Maps are modified at Engine.updateNetworkMap's input AFTER authenticated Sync
+decoding and gate closure, BEFORE the existing digest/validation/native apply.
+This tests the actual Engine validator and packet path; it does not claim a
+malicious controller on the encrypted wire or test every protobuf decoder.
+
+Mandatory cases in docker-lab/faults.py
+--------------------------------------
+1. Pause actual ACL apply/readback before readiness publication on BOTH A
+   routers. Invalidate the publication epoch with reset while syncMsgMux is
+   held; invoke NetBird's actual triggerClientRestart, issue a real controller
+   policy change, release pending completion. It must not publish. Require a
+   NEW Engine generation (same client identity) withholding its initial full
+   map too, before recovering from another current complete controller map.
+   Only a test withholding flag/generation survive; no policies or ACKs persist.
+2. Inject stale serial, invalid protocol, unknown route-rule field, and missing
+   complete-route-policy declaration in separate real Syncs. Hold later full
+   maps to preserve the observation window. No old/new TCP/UDP may pass, no
+   publication may occur, and recovery requires a fresh full controller map.
+3. ACK: append a netlink AddRule targeting an absent test table to the ACTUAL
+   AddFilterRule's pending Conn transaction immediately after Add/InsertRule,
+   at its own conn.Flush (the later family Flush can be empty). Require its
+   real kernel ENOENT; queued ACL operations fail atomically in that same batch.
+   No separate probe connection/error return stands in for native publication.
+   Readback: first perform real ListChains, then discard its successful response
+   at ConfirmBINATNativeRules. This simulates response loss, NOT a kernel EIO.
+   Both must leave readiness closed. Failed-state caches are rebuilt natively.
+4. Live native firewall Close/Create/Init with the same running Engine/TUN and
+   peer identity. Withhold actual complete Sync maps after rebuilding. Old/new
+   flows must stay denied until another complete map is validated and published.
+
+Every case uses real TCP/UDP sockets, checks pre-existing flows and new tuples,
+keeps unrelated customer B working, denies the excluded identity, preserves
+foreign rules, and checks both primary and backup. Counters from earlier faults
+cannot satisfy a later fault barrier. Recovery uses the real controller API;
+the injector never authorizes a copied/synthetic map. The existing RELATED,
+reply-only, SIGKILL, controller-loss and failover tests remain mandatory.
+
+Evidence levels
+---------------
+Unit/mocked orchestration checks are not daemon proofs. The standalone local
+ACK probe proves the injector's real kernel ENOENT and one-shot operation only.
+Full acceptance requires the actual controller/client CI packet step to pass.
+Controller mutation/readback, client receipt, local kernel publication, and
+controller ACK are different events. No distributed controller ACK is claimed.
+
+Legacy CI separation (proposed, NOT silently implemented)
+--------------------------------------------------------
+Existing workflow still runs ALL previous assertions with their original exit
+codes. The Router and QEMU overall results can therefore remain red even if the
+native fault step passes. No continue-on-error, xfail, skip, or expected-failure
+conversion has been added.
+
+A subsequent mechanical CI split can expose independent named checks:
+  native-engine: normal native patch/Go/race/ABI + actual clients/all fault cases
+  native-vm: Debian13 VM + CT ABI + process-owned TUN SIGKILL/fail-stop
+  legacy-audit: unchanged six nft_kernel.py counterexamples + persistent-veth
+                owner-death gate; retain failing exit status and artifacts
+  legacy-vm-audit: unchanged legacy counterexamples inside the Debian13 VM
+
+The native build script currently combines its functional test and unsupported
+persistent-veth owner-death assertion; split their INVOCATIONS, never remove
+the assertion. Likewise split VM invocations, retaining both mandatory runs.
+Branch protection/release decisions must explicitly name the supported mode;
+never claim the legacy audit passed or general installer safety from native CI.
+
+Legacy security facts remain
+----------------------------
+The six old P1 counterexamples concern the external ACL-copy/archived proof
+design, stock early ESTABLISHED and external reply ACCEPT paths. Persistent
+veth survives SIGKILL with old READY and admits unauthorized packets. These
+are real vulnerabilities in UNSUPPORTED modes, not flaky infrastructure.
+The production installer still contains the old path: no production approval.
+An experimental native success cannot authorize existing-router migration.
+
+Execution results and exact CI head are recorded in the PR run/comment.
+Hardware PVE, physical Raspberry Pi and production server tests are not run.
+No merge/production approval while the native proofs remain unconfirmed.

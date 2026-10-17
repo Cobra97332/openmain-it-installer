@@ -1,0 +1,8 @@
+**
+!netbird-router/
+!netbird-router/experimental/
+!netbird-router/experimental/native-binat/
+!netbird-router/experimental/native-binat/docker-lab/
+!netbird-router/experimental/native-binat/docker-lab/**
+**/__pycache__/**
+**/*.pyc

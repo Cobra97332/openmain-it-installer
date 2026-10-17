@@ -1,0 +1,60 @@
+SMALL NATIVE CANDIDATE — NOT RELEASE ACCEPTANCE
+Parent: ecb2dd265b6a4002a50288095a5d77dc9a24c5fa, PR #34 only.
+Pinned upstream/source/toolchain hashes are unchanged; see ARCHITECTURE.md.
+Exact new OpenMain SHA and CI/review links are recorded in the PR conversation.
+
+Actually executed locally:
+- Small patch applies cleanly to the verified fresh NetBird v0.80.0 archive.
+- Bash syntax/ShellCheck and 222 offline regressions: PASS (Debian 13 container).
+- Additional Debian 13 regression run, 222 tests: PASS.
+- Debian 13 without jq, 7 bootstrap tests: PASS.
+- ARM64 Python under QEMU-user, 33 simulated-API tests: PASS.
+- Native gate Go unit/race tests, 12 top-level cases: PASS.
+  ARM64 QEMU-user unit results are recorded with the final head in PR.
+- Actual compiled small gate + nft/conntrack packet tests: PASS, including
+  original/reply UDP/TCP withdrawal, new flow denial, native late DROP,
+  synchronous concurrent closure/reset fencing, RELATED ICMP, multiple source
+  ACLs, simulated backup/overlapping LAN, closed restart, unknown layout and
+  foreign-rule preservation. Synthetic native ACL rules, NOT real Engine/maps.
+- Standalone source-extracted originalRouteTuple + actual nft SDK test: PASS.
+  This is NOT full native backend compilation.
+- Existing Python snapshot real-kernel suite: PASS.
+- All SIX unchanged legacy kernel P1 counterexamples: FAIL.
+- Additional small veth-owner-death NEW-flow counterexample: FAIL.
+  That retained-veth/kernel dataplane is refused by the candidate's actual
+  Engine checks. Failure remains visible/mandatory; no success/waiver claimed.
+- Actual QEMU Debian 13 VM: FAIL on inherited security gates. Synthetic ISO
+  BIOS/UEFI boots: PASS. Official Debian Installer/empty-disk acceptance not run.
+- Initial TUN fixture runs: FAIL. Diagnosis: inherited sysfs mount was not bound
+  to the new network namespace. Replaced sysfs proof in the native candidate
+  with existing rtnetlink library queries. The rerun actually PASSED both
+  TUN/SIGKILL and unknown-closure fail-stop packet proofs: interface removal,
+  blocked NEW tuple and foreign-rule preservation. Synthetic transport only.
+  That run's subsequent BIOS disk was affected by local disk exhaustion and
+  timed out; it is not a successful full QEMU run. Completed task-created test
+  disks were removed, logs retained, and all QEMU modes are rerunning.
+- Full native ACL/Engine/nft build locally BLOCKED by public Go-module download
+  policy (klauspost/compress v1.18.7). No full build success claimed locally.
+  GitHub CI on 0f9f6a0 compiled actual native ACL/Engine/nft successfully.
+
+The corrected QEMU job runs actual TUN/UDP/nft/conntrack in disposable namespaces
+for BOTH SIGKILL and unknown-kernel-closure fail-stop. Each must prove a valid
+flow, a closed gate, owner FD/interface removal and denial of a NEW tuple. The
+transport is synthetic plaintext, not real NetBird/WireGuard/controller.
+Final executed results and all exact-head GitHub checks follow in PR #34.
+
+No existing security tests were deleted, weakened or converted to expected
+failures. The current shipped helper is unchanged and unsafe for NEW flows;
+accepted short existing-flow continuation does not waive those failures.
+Candidate restart/controller ordering, physical Pi performance, actual Proxmox
+and real metric-100/200 failover remain unverified. Keep release BLOCKED.
+
+Exact-head fd138d7 Codex review found P1 orphaned open boundary on opt-out:
+https://github.com/Cobra97332/openmain-it-installer/pull/34#discussion_r4250709144
+The follow-up inspects nft tables/chains read-only on ALL unconfigured Linux
+startup paths and refuses orphaned or uninspectable state BEFORE tunnel creation.
+Kernel regression checks absent-opt-in refusal leaves the full ruleset unchanged;
+TUN lifetime tests now also probe no-config startup AFTER actual owner death.
+A native-boundary-only orphan is covered separately. Non-Linux no-opt-in startup
+is preserved. Updated Go/race suite has 14 tests; all suite/CI checks and exact-head
+review are rerun. No old review result is applied to the new commit.

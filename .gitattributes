@@ -1,0 +1,2 @@
+# Unified-diff context includes tabs and a space for empty context lines.
+netbird-router/experimental/native-binat/*.patch whitespace=-space-before-tab,-blank-at-eol

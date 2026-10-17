@@ -1,0 +1,45 @@
+Current simplification candidate: see SMALL-NATIVE.md and SMALL-NATIVE-TESTS.txt.
+The following results concern the retained complete-snapshot research patch.
+
+EXPERIMENT ONLY — NATIVE/PR #33 RELEASE BLOCKED
+Revision continues OpenMain fe2cf950e02238b6f11c76c46734d0ea9a36b423.
+Pinned NetBird v0.80.0: fca64287cf51a85552a41b022013abbfdb335452.
+Exact final OpenMain SHA, Actions links and review are recorded in PR #34.
+
+This revision implements the native publisher, authoritative-map adapter and
+Engine/ACL/nft lifecycle wiring as a separate lab-only patch. No installer,
+customer configuration or PR #33 branch was changed.
+
+Executed locally so far:
+- Exact-source patch application PASS.
+- Native Go publisher contracts, including race detector: 10 top-level PASS
+  (including ownerless reset refusal and release restoring stock ACL behavior).
+- Compiled native Go publisher real isolated nft/conntrack packets: valid and
+  withdrawn ESTABLISHED UDP/TCP original/reply, new flows, explicit DROP,
+  simultaneous update closure, multiple ACLs, strict ports/echo ICMP,
+  RELATED ICMP parent entitlement/revocation, reachable NOTRACK virtual denial,
+  pre-validation observation/reload and stale/contradictory map refusal,
+  atomic preceding-own-guard upgrade with active NOTRACK and actual-batch
+  observation, plus unknown-layout refusal,
+  protected owner reload and stale
+  serial refusal, overlapping-real-LAN backup path, foreign rules: PASS.
+- Debian 13 Bash syntax/ShellCheck + 222 offline tests PASS.
+- Debian 13 jq-absent bootstrap: 7 tests PASS.
+- Actual QEMU-user ARM64 native Go publisher contracts: 10 top-level PASS.
+- Mandatory native SIGKILL gate: FAIL, unauthorized packet reaches the LAN.
+- All SIX unchanged legacy P1 kernel gates: FAIL, no assertion was weakened.
+- Native ACL/Engine build locally BLOCKED by public Go module download policy
+  (klauspost/compress v1.18.7). No local Engine compilation success claimed.
+
+Mandatory negative gates: original SIX legacy P1 tests remain unchanged. The
+additional compiled-native owner-death gate requires immediate denial after
+SIGKILL; a surviving rule/device is a real security failure, not an expected
+failure or test waiver. CI runs this independently of the regular packet suite.
+This architecture remains BLOCKED pending proof of owner-lifetime enforcement.
+
+Final-head no-jq/ARM64/QEMU/CI outcomes follow in PR #34; earlier commit results
+must not be attributed to this revision. Synthetic maps and backup paths are not
+real NetBird controller/Engine or route-metric failover acceptance. Physical Pi,
+Proxmox VM/LXC, official netinstall, actual client/controller/reboot/failover and
+exclusive namespace lifetime are not certified. See ARCHITECTURE.md and LAB.md.
+No beta/main/customer/CT 110/111 changes, credentials or productive API access.

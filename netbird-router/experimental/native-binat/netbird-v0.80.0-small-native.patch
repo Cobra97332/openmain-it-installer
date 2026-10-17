@@ -1,0 +1,2503 @@
+diff --git a/client/firewall/binat/cmd/ct-readback/main.go b/client/firewall/binat/cmd/ct-readback/main.go
+new file mode 100644
+--- /dev/null
++++ b/client/firewall/binat/cmd/ct-readback/main.go
+@@ -0,0 +1,48 @@
++// Real kernel ABI proof, not an Engine/controller or packet authorization proof.
++package main
++
++import (
++	"fmt"
++	nft "github.com/google/nftables"
++	"github.com/google/nftables/expr"
++	"net"
++	"os"
++)
++
++func main() {
++	ifaces, err := net.Interfaces()
++	if err != nil || os.Getenv("OPENMAIN_ISOLATED_TEST") != "1" || len(ifaces) != 1 || ifaces[0].Name != "lo" {
++		panic("isolated network-none namespace required")
++	}
++	c := &nft.Conn{}
++	table := c.AddTable(&nft.Table{Name: "lab_binat_ct_readback", Family: nft.TableFamilyIPv4})
++	chain := c.AddChain(&nft.Chain{Name: "probe", Table: table})
++	for _, dir := range []uint32{0, 1} {
++		for _, key := range []expr.CtKey{expr.CtKeySRC, expr.CtKeyDST, expr.CtKeyPROTOSRC, expr.CtKeyPROTODST} {
++			name := fmt.Sprintf("synthetic-%d-%d", dir, key)
++			c.AddRule(&nft.Rule{Table: table, Chain: chain, UserData: []byte(name), Exprs: []expr.Any{&expr.Ct{Key: key, Register: 1, Direction: dir}, &expr.Verdict{Kind: expr.VerdictDrop}}})
++		}
++	}
++	if err := c.Flush(); err != nil {
++		panic(fmt.Errorf("synthetic kernel installation failed: %w", err))
++	}
++	defer func() {
++		c.DelTable(table)
++		if c.Flush() != nil {
++			panic("synthetic cleanup failed")
++		}
++	}()
++	rows, err := c.GetRules(table, chain)
++	if err != nil || len(rows) != 8 {
++		panic("mandatory conntrack kernel readback failed")
++	}
++	seen := map[string]bool{}
++	for _, row := range rows {
++		ct, ok := row.Exprs[0].(*expr.Ct)
++		if !ok || ct.Register != 1 || ct.Direction > 1 || row.Handle == 0 || string(row.UserData) != fmt.Sprintf("synthetic-%d-%d", ct.Direction, ct.Key) || seen[string(row.UserData)] {
++			panic("kernel tuple/identity metadata changed")
++		}
++		seen[string(row.UserData)] = true
++	}
++	fmt.Println("PASS: actual kernel original/reply address/port readback, stable UserData and handles; not full Engine authorization")
++}
+diff --git a/client/firewall/binat/cmd/small-lab/main.go b/client/firewall/binat/cmd/small-lab/main.go
+new file mode 100644
+--- /dev/null
++++ b/client/firewall/binat/cmd/small-lab/main.go
+@@ -0,0 +1,192 @@
++//go:build linux
++
++package main
++
++import (
++	"bufio"
++	"encoding/base64"
++	"encoding/binary"
++	"encoding/json"
++	"fmt"
++	"github.com/netbirdio/netbird/client/firewall/binat"
++	"net"
++	"os"
++	"strings"
++	"syscall"
++	"unsafe"
++)
++
++func main() {
++	if os.Getenv("OPENMAIN_SMALL_NO_CONFIG_PROBE") == "1" {
++		if os.Getenv("OPENMAIN_ISOLATED_TEST") != "1" {
++			panic("isolated read-only probe required")
++		}
++		os.Unsetenv("NB_EXPERIMENTAL_BINAT_CONFIG")
++		candidate, err := binat.LoadLabFromEnv()
++		if candidate != nil {
++			panic("unconfigured probe activated a gate")
++		}
++		json.NewEncoder(os.Stdout).Encode(map[string]bool{"Refused": err != nil})
++		return
++	}
++	interfaces, err := net.Interfaces()
++	if os.Getenv("OPENMAIN_ISOLATED_TEST") != "1" || err != nil || len(interfaces) != 1 || interfaces[0].Name != "lo" {
++		panic("fresh isolated lab required")
++	}
++	if os.MkdirAll(binat.Root, 0700) != nil {
++		panic("lab root")
++	}
++	scopes := []binat.Scope{{Virtual: "10.80.1.0/24", Real: "192.168.80.0/24", Overlay: "nb0", LAN: "lan0"}, {Virtual: "10.81.1.0/24", Real: "192.168.80.0/24", Overlay: "backup0", LAN: "lan0"}}
++	data, _ := json.Marshal(scopes)
++	if os.WriteFile(binat.Root+"/config.json", data, 0600) != nil {
++		panic("config")
++	}
++	os.Setenv("NB_EXPERIMENTAL_BINAT_CONFIG", binat.Root+"/config.json")
++	g, err := binat.LoadLabFromEnv()
++	if err != nil {
++		fmt.Println("bootstrap refused")
++		os.Exit(1)
++	}
++	defer func() {
++		if g != nil {
++			g.Close()
++			g.Release()
++		}
++	}()
++	out := json.NewEncoder(os.Stdout)
++	out.Encode(map[string]bool{"Ready": true})
++	var tun *os.File
++	var transport net.PacketConn
++	defer func() {
++		if transport != nil {
++			transport.Close()
++		}
++	}()
++	defer func() {
++		if tun != nil {
++			tun.Close()
++		}
++	}()
++	var pending uint64
++	scanner := bufio.NewScanner(os.Stdin)
++	for scanner.Scan() {
++		stage := "operation"
++		if strings.HasPrefix(scanner.Text(), "inject ") {
++			data, decodeErr := base64.StdEncoding.DecodeString(strings.TrimPrefix(scanner.Text(), "inject "))
++			ok := decodeErr == nil && tun != nil && len(data) > 20 && len(data) < 4096
++			if ok {
++				_, err = tun.Write(data)
++				ok = err == nil
++			}
++			out.Encode(map[string]bool{"OK": ok})
++			continue
++		}
++		switch scanner.Text() {
++		case "tun-start":
++			stage = "tun-open"
++			if tun != nil {
++				err = binat.ErrUnconfirmed
++				break
++			}
++			tun, err = os.OpenFile("/dev/net/tun", os.O_RDWR, 0)
++			if err != nil {
++				break
++			}
++			stage = "tun-ioctl"
++			var request [40]byte
++			copy(request[:16], "nb0")
++			binary.LittleEndian.PutUint16(request[16:18], 0x1001)
++			_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, tun.Fd(), 0x400454ca, uintptr(unsafe.Pointer(&request[0])))
++			if errno != 0 {
++				err = errno
++				tun.Close()
++				tun = nil
++				break
++			}
++			stage = "tun-flags"
++			err = binat.RequireEphemeralTUN("nb0", true)
++			if err == nil {
++				g.BindFailStop(func() { os.Exit(1) })
++			}
++			if err != nil {
++				break
++			}
++			stage = "transport-bind"
++			transport, err = net.ListenPacket("udp4", "127.0.0.1:52183")
++			if err != nil {
++				break
++			}
++			// Synthetic decrypted transport for the isolated FD-lifetime test.
++			// Not WireGuard, not controller enrollment, never a production path.
++			go func() {
++				buffer := make([]byte, 4096)
++				for {
++					n, _, readErr := transport.ReadFrom(buffer)
++					if readErr != nil {
++						return
++					}
++					if n > 20 && buffer[0]>>4 == 4 {
++						tun.Write(buffer[:n])
++					}
++				}
++			}()
++		case "absent-opt-in":
++			previous := os.Getenv("NB_EXPERIMENTAL_BINAT_CONFIG")
++			os.Unsetenv("NB_EXPERIMENTAL_BINAT_CONFIG")
++			candidate, checkErr := binat.LoadLabFromEnv()
++			err = checkErr
++			if candidate != nil {
++				candidate.Release()
++			}
++			os.Setenv("NB_EXPERIMENTAL_BINAT_CONFIG", previous)
++		case "foreign-preflight":
++			err = binat.RefuseStalePassthroughs(scopes)
++		case "close":
++			if g == nil {
++				err = binat.ErrUnconfirmed
++			} else {
++				err = g.Close()
++			}
++		case "prepare":
++			if g == nil {
++				err = binat.ErrUnconfirmed
++			} else {
++				pending, err = g.Prepare()
++			}
++		case "open":
++			if g == nil {
++				err = binat.ErrUnconfirmed
++			} else {
++				var epoch uint64
++				epoch = pending
++				if epoch == 0 {
++					epoch, err = g.Prepare()
++				} else {
++					err = nil
++				}
++				if err == nil {
++					err = g.Open(epoch)
++					pending = 0
++				}
++			}
++		case "restart":
++			if g != nil {
++				err = g.Close()
++				if err != nil {
++					break
++				}
++				g.Release()
++				g = nil
++			}
++			g, err = binat.LoadLabFromEnv()
++			pending = 0
++		default:
++			err = binat.ErrUnconfirmed
++		}
++		response := map[string]any{"OK": err == nil}
++		if err != nil {
++			response["ErrorClass"] = stage
++		}
++		out.Encode(response)
++	}
++}
+diff --git a/client/firewall/binat/gate_linux.go b/client/firewall/binat/gate_linux.go
+new file mode 100644
+--- /dev/null
++++ b/client/firewall/binat/gate_linux.go
+@@ -0,0 +1,583 @@
++//go:build linux
++
++// Package binat provides only a synchronous availability gate. Native NetBird
++// ACLs remain the sole source of authorization; this gate contains no policies.
++package binat
++
++import (
++	"bytes"
++	"context"
++	"crypto/rand"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"fmt"
++	nft "github.com/google/nftables"
++	nl "github.com/mdlayher/netlink"
++	"github.com/vishvananda/netlink"
++	"io"
++	"net"
++	"net/netip"
++	"os"
++	"os/exec"
++	"regexp"
++	"strings"
++	"sync"
++	"syscall"
++	"time"
++)
++
++const Table = "netbird_binat_native_gate_v1"
++const Root = "/run/netbird-binat-small-lab"
++
++var ErrUnconfirmed = errors.New("BINAT native gate closure unconfirmed")
++var names = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,15}$`)
++
++type Scope struct{ Virtual, Real, Overlay, LAN string }
++type Runner func(string) ([]byte, error)
++type Gate struct {
++	mutex      sync.Mutex
++	scopes     []Scope
++	run        Runner
++	lock       *os.File
++	marker     string
++	released   bool
++	epoch      uint64
++	seenSerial uint64
++	observed   string
++	hasSerial  bool
++	failStop   func()
++	poisoned   bool
++	references [2]string
++}
++
++var configured struct {
++	sync.RWMutex
++	active *Gate
++}
++
++func Active() bool { configured.RLock(); defer configured.RUnlock(); return configured.active != nil }
++func Scopes() []Scope {
++	configured.RLock()
++	defer configured.RUnlock()
++	if configured.active == nil {
++		return nil
++	}
++	return configured.active.Scopes()
++}
++func (g *Gate) Scopes() []Scope { return append([]Scope(nil), g.scopes...) }
++func CloseActive() error {
++	configured.RLock()
++	g := configured.active
++	configured.RUnlock()
++	if g != nil {
++		return g.Close()
++	}
++	if os.Getenv("NB_EXPERIMENTAL_BINAT_CONFIG") != "" {
++		return ErrUnconfirmed
++	}
++	return nil
++}
++func ValidateScopes(items []Scope) error {
++	if len(items) == 0 || len(items) > 16 {
++		return errors.New("BINAT invalid scope count")
++	}
++	for i, s := range items {
++		v, err := netip.ParsePrefix(s.Virtual)
++		if err != nil || !v.Addr().Is4() || v != v.Masked() || v.Bits() < 8 {
++			return errors.New("BINAT invalid virtual prefix")
++		}
++		r, err := netip.ParsePrefix(s.Real)
++		if err != nil || !r.Addr().Is4() || r != r.Masked() || r.Bits() != v.Bits() || r.Overlaps(v) {
++			return errors.New("BINAT invalid real prefix")
++		}
++		if !names.MatchString(s.Overlay) || !names.MatchString(s.LAN) || s.Overlay == s.LAN {
++			return errors.New("BINAT invalid interface")
++		}
++		for _, prior := range items[:i] {
++			n, _ := netip.ParsePrefix(prior.Virtual)
++			if n.Overlaps(v) {
++				return errors.New("BINAT ambiguous scope")
++			}
++		}
++	}
++	return nil
++}
++
++func privateFile(path string) ([]byte, error) {
++	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
++	if err != nil {
++		return nil, errors.New("BINAT protected file missing")
++	}
++	defer f.Close()
++	st, err := f.Stat()
++	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || st.Sys().(*syscall.Stat_t).Uid != 0 || st.Size() > 1024*1024 {
++		return nil, errors.New("BINAT protected file unsafe")
++	}
++	b, err := io.ReadAll(io.LimitReader(f, 1024*1024+1))
++	if err != nil || int64(len(b)) != st.Size() {
++		return nil, errors.New("BINAT protected read incomplete")
++	}
++	return b, nil
++}
++
++func execute(script string) ([]byte, error) {
++	if len(script) > 65536 {
++		return nil, errors.New("BINAT gate transaction too large")
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	cmd := exec.CommandContext(ctx, "/usr/sbin/nft", "-s", "-j", "-f", "-")
++	cmd.Stdin = strings.NewReader(script)
++	out := &boundedOutput{}
++	cmd.Stdout = out
++	if cmd.Run() != nil {
++		return nil, errors.New("BINAT gate kernel operation failed")
++	}
++	return out.Bytes(), nil
++}
++
++type boundedOutput struct{ bytes.Buffer }
++
++func (b *boundedOutput) Write(v []byte) (int, error) {
++	if len(v) > 1024*1024-b.Len() {
++		return 0, errors.New("BINAT gate readback too large")
++	}
++	return b.Buffer.Write(v)
++}
++func New(items []Scope, run Runner) (*Gate, error) {
++	if err := ValidateScopes(items); err != nil {
++		return nil, err
++	}
++	if run == nil {
++		run = execute
++	}
++	data, _ := json.Marshal(items)
++	sum := sha256.Sum256(data)
++	return &Gate{scopes: append([]Scope(nil), items...), run: run, marker: "netbird-native-binat-" + hex.EncodeToString(sum[:])}, nil
++}
++func LoadLabFromEnv() (*Gate, error) { return loadLabFromEnv(refuseOrphans) }
++func loadLabFromEnv(inspect func() error) (*Gate, error) {
++	value := os.Getenv("NB_EXPERIMENTAL_BINAT_CONFIG")
++	if value == "" {
++		if err := inspect(); err != nil {
++			return nil, err
++		}
++		return nil, nil
++	}
++	if value != Root+"/config.json" || os.Getenv("OPENMAIN_ISOLATED_TEST") != "1" {
++		return nil, errors.New("BINAT requires isolated small native lab")
++	}
++	if strings.HasPrefix(os.Getenv("NB_NFTABLES_TABLE"), Table) {
++		return nil, errors.New("BINAT native table ownership collision")
++	}
++	st, err := os.Lstat(Root)
++	if err != nil || !st.IsDir() || st.Mode().Perm() != 0700 || st.Sys().(*syscall.Stat_t).Uid != 0 {
++		return nil, errors.New("BINAT unsafe lab directory")
++	}
++	data, err := privateFile(value)
++	if err != nil {
++		return nil, err
++	}
++	var scopes []Scope
++	dec := json.NewDecoder(bytes.NewReader(data))
++	dec.DisallowUnknownFields()
++	if dec.Decode(&scopes) != nil || dec.Decode(&struct{}{}) != io.EOF {
++		return nil, errors.New("BINAT invalid scopes")
++	}
++	g, err := New(scopes, nil)
++	if err != nil {
++		return nil, err
++	}
++	f, err := os.OpenFile(Root+"/owner.lock", os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
++	if err != nil {
++		return nil, ErrUnconfirmed
++	}
++	st, err = f.Stat()
++	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || st.Sys().(*syscall.Stat_t).Uid != 0 {
++		f.Close()
++		return nil, ErrUnconfirmed
++	}
++	if syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
++		f.Close()
++		return nil, ErrUnconfirmed
++	}
++	g.lock = f
++	if err = g.Bootstrap(); err != nil {
++		f.Close()
++		return nil, err
++	}
++	configured.Lock()
++	configured.active = g
++	configured.Unlock()
++	return g, nil
++}
++func (g *Gate) layout() string {
++	text := fmt.Sprintf("create table ip %s { comment %q; }\nadd chain ip %s ready\nadd chain ip %s guard { type filter hook postrouting priority -200; policy accept; }\n", Table, g.marker, Table, Table)
++	for _, s := range g.scopes {
++		text += fmt.Sprintf("add rule ip %s guard ip daddr %s ct state invalid,untracked drop\nadd rule ip %s guard ct original ip daddr %s ct state invalid,untracked drop\nadd rule ip %s guard ct original ip daddr %s jump ready\nadd rule ip %s guard ct original ip daddr %s drop\n", Table, s.Virtual, Table, s.Virtual, Table, s.Virtual, Table, s.Virtual)
++	}
++	return text
++}
++
++// Adoption is only for this exact, scope-bound owned layout. Compare the kernel
++// table with closed/open reference layouts, excluding handles/counters only.
++func canonical(data []byte, table string) (string, error) {
++	var v struct {
++		NFTables []map[string]json.RawMessage `json:"nftables"`
++	}
++	if json.Unmarshal(data, &v) != nil {
++		return "", ErrUnconfirmed
++	}
++	tables, chains := 0, 0
++	var rows []map[string]any
++	for _, entry := range v.NFTables {
++		for kind, raw := range entry {
++			if kind != "metainfo" && kind != "table" && kind != "chain" && kind != "rule" {
++				return "", ErrUnconfirmed
++			}
++			if kind == "metainfo" {
++				continue
++			}
++			var row map[string]any
++			if json.Unmarshal(raw, &row) != nil {
++				return "", ErrUnconfirmed
++			}
++			if row["family"] != "ip" {
++				return "", ErrUnconfirmed
++			}
++			if kind == "table" {
++				tables++
++				if row["name"] != table {
++					return "", ErrUnconfirmed
++				}
++			}
++			if kind == "chain" {
++				chains++
++				if row["name"] != "ready" && row["name"] != "guard" {
++					return "", ErrUnconfirmed
++				}
++			}
++			delete(row, "handle")
++			if row["table"] == table {
++				row["table"] = Table
++			}
++			if kind == "table" && row["name"] == table {
++				row["name"] = Table
++			}
++			if exprs, ok := row["expr"].([]any); ok {
++				for _, x := range exprs {
++					if e, ok := x.(map[string]any); ok {
++						if _, ok := e["counter"]; ok {
++							e["counter"] = nil
++						}
++					}
++				}
++			}
++			rows = append(rows, map[string]any{kind: row})
++		}
++	}
++	if tables != 1 || chains != 2 {
++		return "", ErrUnconfirmed
++	}
++	encoded, _ := json.Marshal(rows)
++	return string(encoded), nil
++}
++func (g *Gate) permits() string {
++	return fmt.Sprintf("add rule ip %s ready counter accept comment %q\n", Table, "native-policy-ready")
++}
++func (g *Gate) known() error { return g.knownState(nil) }
++func (g *Gate) knownState(required *bool) error {
++	live, err := g.run("list table ip " + Table + "\n")
++	if err != nil {
++		return ErrUnconfirmed
++	}
++	actual, err := canonical(live, Table)
++	if err != nil {
++		return err
++	}
++	if g.references[0] != "" && g.references[1] != "" {
++		for i, expected := range g.references {
++			if actual == expected && (required == nil || (i == 1) == *required) {
++				return nil
++			}
++		}
++		return fmt.Errorf("%w: unknown gate layout; unchanged", ErrUnconfirmed)
++	}
++	// nft candidate has no packet hooks. Hook metadata is reinstated for comparison.
++	var nonce [8]byte
++	if _, err := rand.Read(nonce[:]); err != nil {
++		return ErrUnconfirmed
++	}
++	candidate := Table + "_check_" + hex.EncodeToString(nonce[:])
++	script := strings.ReplaceAll(g.layout(), Table, candidate)
++	script = strings.ReplaceAll(script, " { type filter hook postrouting priority -200; policy accept; }", "")
++	if _, err = g.run(script); err != nil {
++		return ErrUnconfirmed
++	}
++	defer g.run("delete table ip " + candidate + "\n")
++	for _, open := range []bool{false, true} {
++		if open {
++			if _, err = g.run(strings.ReplaceAll(g.permits(), Table, candidate)); err != nil {
++				return ErrUnconfirmed
++			}
++		}
++		data, err := g.run("list table ip " + candidate + "\n")
++		if err != nil {
++			return ErrUnconfirmed
++		}
++		var envelope map[string]any
++		if json.Unmarshal(data, &envelope) != nil {
++			return ErrUnconfirmed
++		}
++		rows, ok := envelope["nftables"].([]any)
++		if !ok {
++			return ErrUnconfirmed
++		}
++		for _, raw := range rows {
++			item, ok := raw.(map[string]any)
++			if !ok {
++				return ErrUnconfirmed
++			}
++			if chain, ok := item["chain"].(map[string]any); ok && chain["name"] == "guard" {
++				chain["type"] = "filter"
++				chain["hook"] = "postrouting"
++				chain["prio"] = float64(-200)
++				chain["policy"] = "accept"
++			}
++		}
++		expected, _ := json.Marshal(envelope)
++		normal, err := canonical(expected, candidate)
++		if err != nil {
++			return err
++		}
++		index := 0
++		if open {
++			index = 1
++		}
++		g.references[index] = normal
++	}
++	for i, expected := range g.references {
++		if expected == actual && (required == nil || (i == 1) == *required) {
++			return nil
++		}
++	}
++	return fmt.Errorf("%w: unknown gate layout; unchanged", ErrUnconfirmed)
++}
++func (g *Gate) Bootstrap() error {
++	tables, err := g.run("list tables\n")
++	if err != nil {
++		return ErrUnconfirmed
++	}
++	var v struct {
++		NFTables []struct {
++			Table struct{ Name, Family string } `json:"table"`
++		} `json:"nftables"`
++	}
++	if json.Unmarshal(tables, &v) != nil {
++		return ErrUnconfirmed
++	}
++	exists := false
++	for _, x := range v.NFTables {
++		if x.Table.Name == Table && x.Table.Family == "ip" {
++			exists = true
++		}
++	}
++	if !exists {
++		if _, err = g.run(g.layout()); err != nil {
++			return ErrUnconfirmed
++		}
++	}
++	return g.Close()
++}
++
++// If kernel closure cannot be confirmed, terminate the verified TUN owner.
++// This uses the existing NetBird service restart; no watcher/recovery daemon.
++func (g *Gate) BindFailStop(stop func()) { g.mutex.Lock(); defer g.mutex.Unlock(); g.failStop = stop }
++func (g *Gate) closeLocked() (result error) {
++	defer func() {
++		if result != nil {
++			g.poisoned = true
++			if g.failStop != nil {
++				g.failStop()
++			}
++		}
++	}()
++	if g.released {
++		return ErrUnconfirmed
++	}
++	if err := g.known(); err != nil {
++		return err
++	}
++	if _, err := g.run("flush chain ip " + Table + " ready\n"); err != nil {
++		return ErrUnconfirmed
++	}
++	data, err := g.run("list chain ip " + Table + " ready\n")
++	if err != nil {
++		return ErrUnconfirmed
++	}
++	var v struct {
++		NFTables []map[string]any `json:"nftables"`
++	}
++	if json.Unmarshal(data, &v) != nil {
++		return ErrUnconfirmed
++	}
++	for _, e := range v.NFTables {
++		if _, ok := e["rule"]; ok {
++			return ErrUnconfirmed
++		}
++	}
++	return nil
++}
++func (g *Gate) Close() error {
++	g.mutex.Lock()
++	defer g.mutex.Unlock()
++	g.epoch++
++	return g.closeLocked()
++}
++
++// Called only after native map/ACL/backend success, under Engine.syncMsgMux.
++// This confirms local readiness, never a controller acknowledgement.
++func (g *Gate) Prepare() (uint64, error) {
++	g.mutex.Lock()
++	defer g.mutex.Unlock()
++	g.epoch++
++	if err := g.closeLocked(); err != nil {
++		return 0, err
++	}
++	return g.epoch, nil
++}
++func (g *Gate) Open(epoch uint64) error {
++	g.mutex.Lock()
++	defer g.mutex.Unlock()
++	if g.poisoned || epoch != g.epoch {
++		return ErrUnconfirmed
++	}
++	if err := g.closeLocked(); err != nil {
++		return err
++	}
++	_, err := g.run(g.permits())
++	if err == nil {
++		wantOpen := true
++		err = g.knownState(&wantOpen)
++	}
++	if err != nil {
++		if g.closeLocked() != nil {
++			return ErrUnconfirmed
++		}
++		return errors.New("BINAT opening failed; closure confirmed")
++	}
++	return nil
++}
++func (g *Gate) Release() {
++	g.mutex.Lock()
++	defer g.mutex.Unlock()
++	g.released = true
++	g.failStop = nil
++	configured.Lock()
++	if configured.active == g {
++		configured.active = nil
++	}
++	configured.Unlock()
++	if g.lock != nil {
++		g.lock.Close()
++		g.lock = nil
++	}
++}
++
++// In-process ordering fence only. Restart never reuses an authorization ACK;
++// the next full authenticated NetworkMap must pass validation and native apply.
++func (g *Gate) Observe(serial uint64, digest string) error {
++	g.mutex.Lock()
++	defer g.mutex.Unlock()
++	if g.released || len(digest) != 64 {
++		return ErrUnconfirmed
++	}
++	if _, err := hex.DecodeString(digest); err != nil {
++		return ErrUnconfirmed
++	}
++	if g.hasSerial && (serial < g.seenSerial || serial == g.seenSerial && digest != g.observed) {
++		return ErrUnconfirmed
++	}
++	g.hasSerial = true
++	g.seenSerial = serial
++	g.observed = digest
++	return nil
++}
++
++// A kernel WireGuard interface can outlive the policy owner. Use NetBird's
++// existing userspace bind on a fresh nonpersistent TUN, never auto-migrate.
++func RequireFreshUserspaceOverlay(scopes []Scope) error {
++	if os.Getenv("NB_WG_KERNEL_DISABLED") != "true" {
++		return errors.New("BINAT requires explicit NetBird userspace WireGuard")
++	}
++	interfaces, err := net.Interfaces()
++	if err != nil {
++		return ErrUnconfirmed
++	}
++	for _, scope := range scopes {
++		for _, nic := range interfaces {
++			if nic.Name == scope.Overlay {
++				return errors.New("BINAT refuses existing overlay interface")
++			}
++		}
++	}
++	// The owned gate is already closed. Refuse foreign passthroughs before
++	// creating an interface whose name could reactivate a stale ACCEPT.
++	return RefuseStalePassthroughs(scopes)
++}
++func RequireEphemeralTUN(name string, userspace bool) error {
++	if !userspace || !names.MatchString(name) {
++		return errors.New("BINAT requires process-owned TUN")
++	}
++	link, err := netlink.LinkByName(name)
++	if err != nil {
++		return ErrUnconfirmed
++	}
++	return validateTUNLink(link)
++}
++func validateTUNLink(link netlink.Link) error {
++	tun, ok := link.(*netlink.Tuntap)
++	if !ok || tun.Mode != netlink.TUNTAP_MODE_TUN || !tun.NonPersist {
++		return errors.New("BINAT persistent/non-TUN interface refused")
++	}
++	return nil
++}
++
++// Always read the CURRENT namespace before a no-opt-in Engine can create its
++// tunnel. Refuse rather than modifying any unconfigured/foreign firewall state.
++func refuseOrphans() error {
++	conn, err := nft.New(nft.WithSockOptions(func(c *nl.Conn) error { return c.SetReadDeadline(time.Now().Add(10 * time.Second)) }))
++	if err != nil {
++		return ErrUnconfirmed
++	}
++	tables, err := conn.ListTables()
++	if err != nil {
++		return ErrUnconfirmed
++	}
++	chains, err := conn.ListChains()
++	if err != nil {
++		return ErrUnconfirmed
++	}
++	return orphanedBoundary(tables, chains)
++}
++func orphanedBoundary(tables []*nft.Table, chains []*nft.Chain) error {
++	for _, table := range tables {
++		if table == nil {
++			return ErrUnconfirmed
++		}
++		if table.Family == nft.TableFamilyIPv4 && (table.Name == Table || table.Name == "netbird_binat_experiment_v3") {
++			return errors.New("BINAT orphaned boundary: explicit configuration/verified manual cleanup required")
++		}
++	}
++	for _, chain := range chains {
++		if chain == nil || chain.Table == nil {
++			return ErrUnconfirmed
++		}
++		if chain.Table.Family == nft.TableFamilyIPv4 && chain.Name == "netbird-binat-native" {
++			return errors.New("BINAT orphaned native boundary: configuration required")
++		}
++	}
++	return nil
++}
+diff --git a/client/firewall/binat/gate_linux_test.go b/client/firewall/binat/gate_linux_test.go
+new file mode 100644
+--- /dev/null
++++ b/client/firewall/binat/gate_linux_test.go
+@@ -0,0 +1,209 @@
++//go:build linux
++
++package binat
++
++import (
++	"errors"
++	nft "github.com/google/nftables"
++	"github.com/vishvananda/netlink"
++	"strings"
++	"testing"
++)
++
++func TestBINATSmallScopeValidation(t *testing.T) {
++	good := []Scope{{"10.80.1.0/24", "192.168.80.0/24", "nb0", "lan0"}}
++	if _, err := New(good, nil); err != nil {
++		t.Fatal(err)
++	}
++	for _, bad := range [][]Scope{nil, append(good, good...), {{"10.80.1.1/24", "192.168.80.0/24", "nb0", "lan0"}}, {{"10.80.1.0/24", "192.168.80.0/24", "nb0", "nb0"}}} {
++		if _, err := New(bad, nil); err == nil {
++			t.Fatal("ambiguous scope accepted")
++		}
++	}
++}
++func TestBINATSmallNoPolicyCopyOrUnconditionalHookGrant(t *testing.T) {
++	g, _ := New([]Scope{{"10.80.1.0/24", "192.168.80.0/24", "nb0", "lan0"}}, nil)
++	layout := g.layout()
++	if strings.Contains(layout, " accept ") || !strings.Contains(layout, "ct state invalid,untracked drop") || !strings.Contains(layout, "jump ready") || !strings.Contains(layout, "ct original ip daddr 10.80.1.0/24 drop") {
++		t.Fatal("unsafe initial layout")
++	}
++	if strings.Contains(g.permits(), "saddr") || strings.Contains(g.permits(), "proto-dst") {
++		t.Fatal("gate must not interpret policy")
++	}
++}
++func TestBINATSmallUnknownReadbackCannotOpen(t *testing.T) {
++	calls := []string{}
++	g, _ := New([]Scope{{"10.80.1.0/24", "192.168.80.0/24", "nb0", "lan0"}}, func(s string) ([]byte, error) {
++		calls = append(calls, s)
++		return nil, errors.New("synthetic unavailable kernel")
++	})
++	if g.Open(0) == nil {
++		t.Fatal("unknown kernel opened")
++	}
++	for _, s := range calls {
++		if strings.Contains(s, "native-policy-ready") {
++			t.Fatal("grant attempted")
++		}
++	}
++}
++func TestBINATSmallCanonicalRejectsIncompleteReadback(t *testing.T) {
++	for _, text := range []string{`{}`, `{"nftables":[]}`, `{"nftables":[{"table":{"family":"ip","name":"example"}}]}`, `{"nftables":[{"set":{}}]}`} {
++		if _, err := canonical([]byte(text), "example"); err == nil {
++			t.Fatal("partial/unsupported readback accepted")
++		}
++	}
++}
++
++func TestBINATSmallResetInvalidatesPendingOpenBeforeIO(t *testing.T) {
++	calls := 0
++	g, _ := New([]Scope{{"10.80.1.0/24", "192.168.80.0/24", "nb0", "lan0"}}, func(string) ([]byte, error) { calls++; return nil, errors.New("synthetic IO") })
++	g.epoch = 1
++	_ = g.Close()
++	calls = 0
++	if g.Open(1) == nil || calls != 0 {
++		t.Fatal("stale native completion can reopen after reset")
++	}
++}
++
++func TestBINATSmallRejectedMapSerialCannotReopenOlderPolicy(t *testing.T) {
++	g, _ := New([]Scope{{"10.80.1.0/24", "192.168.80.0/24", "nb0", "lan0"}}, nil)
++	a := strings.Repeat("a", 64)
++	b := strings.Repeat("b", 64)
++	if g.Observe(8, a) != nil {
++		t.Fatal("first policy refused")
++	}
++	if g.Observe(7, a) == nil || g.Observe(8, b) == nil {
++		t.Fatal("stale/contradictory observation accepted")
++	}
++	if g.Observe(9, b) != nil {
++		t.Fatal("new complete policy refused")
++	}
++}
++
++func TestBINATSmallKernelAndExistingOverlayRefused(t *testing.T) {
++	scopes := []Scope{{"10.80.1.0/24", "192.168.80.0/24", "nb0", "lan0"}}
++	t.Setenv("NB_WG_KERNEL_DISABLED", "")
++	if RequireFreshUserspaceOverlay(scopes) == nil {
++		t.Fatal("kernel mode admitted")
++	}
++	t.Setenv("NB_WG_KERNEL_DISABLED", "true")
++	scopes[0].Overlay = "lo"
++	if RequireFreshUserspaceOverlay(scopes) == nil {
++		t.Fatal("existing interface admitted")
++	}
++	if RequireEphemeralTUN("lo", false) == nil || RequireEphemeralTUN("lo", true) == nil {
++		t.Fatal("non-TUN admitted")
++	}
++}
++
++func TestBINATSmallUnconfirmedKernelCloseStopsBoundOwner(t *testing.T) {
++	calls := 0
++	g, _ := New([]Scope{{"10.80.1.0/24", "192.168.80.0/24", "nb0", "lan0"}}, func(string) ([]byte, error) { return nil, errors.New("synthetic read failure") })
++	g.BindFailStop(func() { calls++ })
++	if g.Close() == nil || calls != 1 || !g.poisoned {
++		t.Fatal("unconfirmed closure did not stop/latch owner")
++	}
++	if g.Open(g.epoch) == nil {
++		t.Fatal("poisoned gate reopened")
++	}
++}
++
++func TestBINATSmallCanonicalPreservesVerdictAndIgnoresHandles(t *testing.T) {
++	a := `{"nftables":[{"table":{"family":"ip","name":"example"}},{"chain":{"family":"ip","table":"example","name":"ready"}},{"chain":{"family":"ip","table":"example","name":"guard"}},{"rule":{"family":"ip","table":"example","chain":"ready","handle":4,"expr":[{"counter":{"packets":8,"bytes":9}},{"accept":null}]}}]}`
++	x, e := canonical([]byte(a), "example")
++	if e != nil {
++		t.Fatal(e)
++	}
++	b := strings.ReplaceAll(a, `"handle":4`, `"handle":5`)
++	b = strings.ReplaceAll(b, `"packets":8`, `"packets":80`)
++	y, e := canonical([]byte(b), "example")
++	if e != nil || x != y {
++		t.Fatal("volatile state changed ownership comparison")
++	}
++	b = strings.ReplaceAll(a, "accept", "drop")
++	y, _ = canonical([]byte(b), "example")
++	if x == y {
++		t.Fatal("verdict lost")
++	}
++}
++
++func TestBINATSmallPersistentAndTAPRefused(t *testing.T) {
++	for _, link := range []netlink.Link{&netlink.Device{}, &netlink.Tuntap{Mode: netlink.TUNTAP_MODE_TUN, NonPersist: false}, &netlink.Tuntap{Mode: netlink.TUNTAP_MODE_TAP, NonPersist: true}} {
++		if validateTUNLink(link) == nil {
++			t.Fatal("unsafe dataplane admitted")
++		}
++	}
++	if validateTUNLink(&netlink.Tuntap{Mode: netlink.TUNTAP_MODE_TUN, NonPersist: true}) != nil {
++		t.Fatal("ephemeral TUN refused")
++	}
++}
++
++func TestBINATSmallNativeTableCollisionRefusedBeforeIO(t *testing.T) {
++	t.Setenv("NB_EXPERIMENTAL_BINAT_CONFIG", Root+"/config.json")
++	t.Setenv("OPENMAIN_ISOLATED_TEST", "1")
++	t.Setenv("NB_NFTABLES_TABLE", Table)
++	if _, err := LoadLabFromEnv(); err == nil || !strings.Contains(err.Error(), "ownership collision") {
++		t.Fatal("native/gate ownership collision not rejected before bootstrap")
++	}
++}
++
++func TestBINATSmallCachedKernelLayoutStillRejectsMutation(t *testing.T) {
++	base := `{"nftables":[{"table":{"family":"ip","name":"netbird_binat_native_gate_v1"}},{"chain":{"family":"ip","table":"netbird_binat_native_gate_v1","name":"ready"}},{"chain":{"family":"ip","table":"netbird_binat_native_gate_v1","name":"guard"}}]}`
++	expected, err := canonical([]byte(base), Table)
++	if err != nil {
++		t.Fatal(err)
++	}
++	changed := strings.Replace(base, `"name":"ready"`, `"name":"unknown"`, 1)
++	live := base
++	calls := 0
++	g, _ := New([]Scope{{"10.80.1.0/24", "192.168.80.0/24", "nb0", "lan0"}}, func(script string) ([]byte, error) {
++		calls++
++		if script != "list table ip "+Table+"\n" {
++			t.Fatal("cached verification mutated kernel")
++		}
++		return []byte(live), nil
++	})
++	g.references = [2]string{expected, expected}
++	if g.known() != nil || calls != 1 {
++		t.Fatal("cached layout rejected")
++	}
++	live = changed
++	if g.known() == nil {
++		t.Fatal("cache hid a foreign/unknown layout")
++	}
++}
++
++func TestBINATSmallAbsentOptInStillInspectsOrphansBeforeStartup(t *testing.T) {
++	t.Setenv("NB_EXPERIMENTAL_BINAT_CONFIG", "")
++	calls := 0
++	for _, name := range []string{Table, "netbird_binat_experiment_v3"} {
++		gate, err := loadLabFromEnv(func() error {
++			calls++
++			return orphanedBoundary([]*nft.Table{{Name: name, Family: nft.TableFamilyIPv4}}, nil)
++		})
++		if gate != nil || err == nil {
++			t.Fatal("orphaned gate admitted without config")
++		}
++	}
++	if calls != 2 {
++		t.Fatal("missing opt-in skipped inspection")
++	}
++	gate, err := loadLabFromEnv(func() error {
++		return orphanedBoundary([]*nft.Table{{Name: "foreign", Family: nft.TableFamilyIPv4}}, nil)
++	})
++	if gate != nil || err != nil {
++		t.Fatal("ordinary clean startup altered")
++	}
++	if _, err := loadLabFromEnv(func() error { return ErrUnconfirmed }); err == nil {
++		t.Fatal("uninspectable state admitted")
++	}
++}
++func TestBINATSmallNativeOrphanDetectedWithoutGateTable(t *testing.T) {
++	chains := []*nft.Chain{{Name: "netbird-binat-native", Table: &nft.Table{Name: "netbird", Family: nft.TableFamilyIPv4}}}
++	if orphanedBoundary(nil, chains) == nil {
++		t.Fatal("native orphan admitted")
++	}
++	if orphanedBoundary(nil, []*nft.Chain{{Name: "ordinary", Table: &nft.Table{Name: "foreign", Family: nft.TableFamilyIPv4}}}) != nil {
++		t.Fatal("foreign rules rejected")
++	}
++}
+diff --git a/client/firewall/binat/gate_other.go b/client/firewall/binat/gate_other.go
+new file mode 100644
+--- /dev/null
++++ b/client/firewall/binat/gate_other.go
+@@ -0,0 +1,33 @@
++//go:build !linux
++
++package binat
++
++import (
++	"errors"
++	"os"
++)
++
++type Scope struct{ Virtual, Real, Overlay, LAN string }
++type Gate struct{}
++
++var ErrUnconfirmed = errors.New("BINAT unavailable")
++
++func LoadLabFromEnv() (*Gate, error) {
++	if os.Getenv("NB_EXPERIMENTAL_BINAT_CONFIG") == "" {
++		return nil, nil
++	}
++	return nil, ErrUnconfirmed
++}
++func (*Gate) Close() error      { return ErrUnconfirmed }
++func (*Gate) Open(uint64) error { return ErrUnconfirmed }
++func (*Gate) Release()          {}
++func (*Gate) Scopes() []Scope   { return nil }
++
++func (*Gate) Prepare() (uint64, error) { return 0, ErrUnconfirmed }
++
++func (*Gate) Observe(uint64, string) error { return ErrUnconfirmed }
++
++func RequireFreshUserspaceOverlay([]Scope) error { return ErrUnconfirmed }
++func RequireEphemeralTUN(string, bool) error     { return ErrUnconfirmed }
++
++func (*Gate) BindFailStop(func()) {}
+diff --git a/client/firewall/binat/stale_linux.go b/client/firewall/binat/stale_linux.go
+new file mode 100644
+--- /dev/null
++++ b/client/firewall/binat/stale_linux.go
+@@ -0,0 +1,145 @@
++//go:build linux
++
++package binat
++
++import (
++	"bytes"
++	"errors"
++	"os"
++	"os/exec"
++	"strings"
++	"time"
++
++	nft "github.com/google/nftables"
++	"github.com/google/nftables/expr"
++	nl "github.com/mdlayher/netlink"
++)
++
++// RefuseStalePassthroughs is read-only. In particular it does not infer rule
++// ownership from an interface name or delete administrator/old-client rules.
++// Call before creating a fresh overlay; the owned readiness gate stays CLOSED.
++func RefuseStalePassthroughs(scopes []Scope) error {
++	if err := ValidateScopes(scopes); err != nil {
++		return err
++	}
++	// Avoid adopting a saved firewalld trusted-zone assignment which can outlive
++	// the TUN and be republished after this inspection. Supporting firewalld needs
++	// separate zone-state acceptance; never trust/untrust it as a shortcut.
++	for _, binary := range []string{"firewall-cmd", "firewalld"} {
++		if _, err := exec.LookPath(binary); err == nil || !errors.Is(err, exec.ErrNotFound) {
++			return errors.New("BINAT firewalld state unsupported; no trusted-zone adoption")
++		}
++	}
++	if custom := os.Getenv("NB_NFTABLES_TABLE"); custom != "" && custom != "netbird" {
++		return errors.New("BINAT requires default native table ownership")
++	}
++	// Legacy xtables rules are not visible through nftables netlink. Never
++	// claim their filter state was inspected or adopt a legacy passthrough.
++	legacy, legacyErr := os.ReadFile("/proc/net/ip_tables_names")
++	if legacyErr != nil && !errors.Is(legacyErr, os.ErrNotExist) {
++		return ErrUnconfirmed
++	}
++	for _, table := range strings.Fields(string(legacy)) {
++		if table == "filter" {
++			return errors.New("BINAT legacy iptables filter state unsupported")
++		}
++	}
++	conn, err := nft.New(nft.WithSockOptions(func(c *nl.Conn) error { return c.SetReadDeadline(time.Now().Add(10 * time.Second)) }))
++	if err != nil {
++		return ErrUnconfirmed
++	}
++	chains, err := conn.ListChains()
++	if err != nil {
++		return ErrUnconfirmed
++	}
++	for _, chain := range chains {
++		if chain == nil || chain.Table == nil {
++			return ErrUnconfirmed
++		}
++		table := chain.Table
++		if table.Family != nft.TableFamilyIPv4 && table.Family != nft.TableFamilyINet {
++			continue
++		}
++		if table.Name == "firewalld" {
++			return errors.New("BINAT foreign firewalld state refused")
++		}
++		// Only the native IPv4 work table is rebuilt by this Engine. Bootstrap
++		// independently verifies the private gate's layout before this function.
++		if table.Family == nft.TableFamilyIPv4 && (table.Name == "netbird" || table.Name == Table) {
++			continue
++		}
++		rules, err := conn.GetRules(table, chain)
++		if err != nil {
++			return ErrUnconfirmed
++		}
++		for _, rule := range rules {
++			if rule == nil {
++				return ErrUnconfirmed
++			}
++			if stalePassthrough(rule.Exprs, scopes) {
++				return errors.New("BINAT stale foreign interface passthrough; verified manual cleanup required")
++			}
++		}
++	}
++	return nil
++}
++
++// This is a refusal detector for native passthroughs, not a policy evaluator.
++// Unknown interface sets/maps are refused conservatively. Even a narrow foreign
++// ACCEPT for the target interface requires manual verification before adoption.
++func stalePassthrough(items []expr.Any, scopes []Scope) bool {
++	permitting := false
++	for _, item := range items {
++		switch v := item.(type) {
++		case *expr.Verdict:
++			// RETURN can also skip a later DROP in an accepting base chain.
++			permitting = permitting || v.Kind == expr.VerdictAccept || v.Kind == expr.VerdictJump || v.Kind == expr.VerdictGoto || v.Kind == expr.VerdictReturn
++		case *expr.Lookup:
++			// A verdict map can grant without an explicit Verdict. Data maps
++			// (including prefix DNAT) use a non-verdict destination register.
++			permitting = permitting || (v.IsDestRegSet && v.DestRegister == 0)
++		}
++	}
++	for i, item := range items {
++		meta, ok := item.(*expr.Meta)
++		if !ok || meta.SourceRegister || (meta.Key != expr.MetaKeyIIFNAME && meta.Key != expr.MetaKeyOIFNAME) {
++			continue
++		}
++		if i+1 == len(items) {
++			return true
++		}
++		// Do not try to evaluate a foreign ACL or track reused nft registers.
++		// Only a direct exact equality is an understood interface constraint.
++		// Named interface sets/maps and transforms remain unsupported even
++		// when they do not expose an inline verdict.
++		cmp, direct := items[i+1].(*expr.Cmp)
++		if !direct {
++			return true
++		}
++		if !permitting {
++			continue
++		}
++		if cmp.Register != meta.Register || cmp.Op != expr.CmpOpEq {
++			return true
++		}
++		end := bytes.IndexByte(cmp.Data, 0)
++		if end <= 0 || len(cmp.Data) > 16 {
++			return true
++		}
++		name := string(cmp.Data[:end])
++		if !names.MatchString(name) {
++			return true
++		}
++		for _, tail := range cmp.Data[end:] {
++			if tail != 0 {
++				return true
++			}
++		}
++		for _, scope := range scopes {
++			if name == scope.Overlay {
++				return true
++			}
++		}
++	}
++	return false
++}
+diff --git a/client/firewall/binat/stale_linux_test.go b/client/firewall/binat/stale_linux_test.go
+new file mode 100644
+--- /dev/null
++++ b/client/firewall/binat/stale_linux_test.go
+@@ -0,0 +1,72 @@
++//go:build linux
++
++package binat
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/google/nftables/expr"
++)
++
++func TestBINATSmallStalePassthroughs(t *testing.T) {
++	scopes := []Scope{{"10.80.1.0/24", "192.168.80.0/24", "nb0", "lan0"}}
++	for _, key := range []expr.MetaKey{expr.MetaKeyIIFNAME, expr.MetaKeyOIFNAME} {
++		for _, verdict := range []expr.VerdictKind{expr.VerdictAccept, expr.VerdictJump, expr.VerdictGoto, expr.VerdictReturn} {
++			for _, name := range []string{"nb0\x00", "nb", "nb*", ""} {
++				items := []expr.Any{&expr.Meta{Key: key, Register: 1}, &expr.Cmp{Register: 1, Data: []byte(name)}, &expr.Verdict{Kind: verdict}}
++				if !stalePassthrough(items, scopes) {
++					t.Fatal("stale interface permit not refused")
++				}
++			}
++		}
++	}
++	for _, name := range []string{"lo\x00", "nb0\x00", "eth9\x00"} {
++		inverted := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Register: 1, Op: expr.CmpOpNeq, Data: []byte(name)}, &expr.Verdict{Kind: expr.VerdictAccept}}
++		if !stalePassthrough(inverted, scopes) {
++			t.Fatal("inverted interface permit not refused")
++		}
++	}
++	unrelated := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Register: 1, Data: []byte("eth9\x00")}, &expr.Verdict{Kind: expr.VerdictAccept}}
++	if stalePassthrough(unrelated, scopes) {
++		t.Fatal("unrelated interface refused")
++	}
++	drop := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Register: 1, Data: []byte("nb0\x00")}, &expr.Verdict{Kind: expr.VerdictDrop}}
++	if stalePassthrough(drop, scopes) {
++		t.Fatal("administrator drop refused")
++	}
++	verdictMap := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte("lo\x00")}, &expr.Payload{DestRegister: 1}, &expr.Lookup{SourceRegister: 1, IsDestRegSet: true, DestRegister: 0, SetName: "decisions"}}
++	if !stalePassthrough(verdictMap, scopes) {
++		t.Fatal("verdict map after overwritten interface register accepted")
++	}
++	translation := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Register: 1, Data: []byte("nb0\x00")}, &expr.Payload{DestRegister: 1}, &expr.Lookup{SourceRegister: 1, DestRegister: 1, IsDestRegSet: true, SetName: "prefix-translation"}}
++	if stalePassthrough(translation, scopes) {
++		t.Fatal("IP lookup after register overwrite mistaken for interface map")
++	}
++	unrelatedSet := append(append([]expr.Any{}, unrelated[:2]...), &expr.Payload{DestRegister: 1}, &expr.Lookup{SourceRegister: 1, SetName: "source-addresses"}, &expr.Verdict{Kind: expr.VerdictAccept})
++	if stalePassthrough(unrelatedSet, scopes) {
++		t.Fatal("unrelated IP set mistaken for interface map")
++	}
++	lookup := []expr.Any{&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Lookup{SourceRegister: 1, SetName: "unknown-interface-map"}}
++	if !stalePassthrough(lookup, scopes) {
++		t.Fatal("unknown interface set/map accepted")
++	}
++}
++
++func TestBINATSmallFirewalldRefusedBeforeKernelOrCommands(t *testing.T) {
++	dir := t.TempDir()
++	// If executed, this synthetic command would leave a marker. It must never run.
++	marker := filepath.Join(dir, "executed")
++	command := []byte("#!/bin/sh\ntouch " + marker + "\n")
++	if err := os.WriteFile(filepath.Join(dir, "firewall-cmd"), command, 0700); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("PATH", dir)
++	if RefuseStalePassthroughs([]Scope{{"10.80.1.0/24", "192.168.80.0/24", "nb0", "lan0"}}) == nil {
++		t.Fatal("firewalld state accepted")
++	}
++	if _, err := os.Stat(marker); !os.IsNotExist(err) {
++		t.Fatal("firewall command was executed")
++	}
++}
+diff --git a/client/firewall/nftables/binat_linux_test.go b/client/firewall/nftables/binat_linux_test.go
+new file mode 100644
+--- /dev/null
++++ b/client/firewall/nftables/binat_linux_test.go
+@@ -0,0 +1,23 @@
++//go:build linux && !android
++
++package nftables
++
++import (
++	"github.com/google/nftables/expr"
++	"testing"
++)
++
++func TestBINATSmallNativeOriginalTupleLoads(t *testing.T) {
++	items := []expr.Any{&expr.Payload{Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4, DestRegister: 1}, &expr.Payload{Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4, DestRegister: 1}, &expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1}, &expr.Payload{Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 2, DestRegister: 1}, &expr.Payload{Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2, DestRegister: 1}, &expr.Verdict{Kind: expr.VerdictDrop}}
++	result := originalRouteTuple(items)
++	expected := []expr.CtKey{expr.CtKeySRC, expr.CtKeyDST, expr.CtKeyPROTOCOL, expr.CtKeyPROTOSRC, expr.CtKeyPROTODST}
++	for i, key := range expected {
++		v, ok := result[i].(*expr.Ct)
++		if !ok || v.Key != key || v.Direction != 0 || v.Register != 1 {
++			t.Fatalf("original tuple load %d wrong", i)
++		}
++	}
++	if result[5].(*expr.Verdict).Kind != expr.VerdictDrop {
++		t.Fatal("DROP changed")
++	}
++}
+diff --git a/client/firewall/nftables/chains_linux.go b/client/firewall/nftables/chains_linux.go
+--- a/client/firewall/nftables/chains_linux.go
++++ b/client/firewall/nftables/chains_linux.go
+@@ -6,6 +6,7 @@
+ 	"bytes"
+ 	"errors"
+ 	"fmt"
++	"net/netip"
+ 	"slices"
+ 	"strings"
+ 	"time"
+@@ -19,6 +20,7 @@
+ 	"golang.org/x/sys/unix"
+ 
+ 	nberrors "github.com/netbirdio/netbird/client/errors"
++	"github.com/netbirdio/netbird/client/firewall/binat"
+ 	"github.com/netbirdio/netbird/client/firewall/firewalld"
+ 	firewall "github.com/netbirdio/netbird/client/firewall/manager"
+ 	nbnet "github.com/netbirdio/netbird/client/net"
+@@ -73,6 +75,26 @@
+ 
+ 	insertReturnTrafficRule(r.conn, r.workTable, r.chains[chainNameRoutingFw])
+ 
++	if binat.Active() {
++		prio := nftables.ChainPriority(-201)
++		policy := nftables.ChainPolicyAccept
++		check := r.conn.AddChain(&nftables.Chain{Name: "netbird-binat-native", Table: r.workTable, Hooknum: nftables.ChainHookPostrouting, Priority: &prio, Type: nftables.ChainTypeFilter, Policy: &policy})
++		for _, scope := range binat.Scopes() {
++			if r.workTable.Family != nftables.TableFamilyIPv4 {
++				continue
++			}
++			prefix, _ := netip.ParsePrefix(scope.Virtual)
++			matches := originalRouteTuple(prefixMatchExprs(r.af, prefix, false))
++			// Exact overlay/LAN direction; neither a peer mark nor ESTABLISHED
++			// alone is authorization. Replies use original tuple selectors too.
++			for _, path := range [][2]string{{scope.Overlay, scope.LAN}, {scope.LAN, scope.Overlay}} {
++				guard := slices.Clone(matches)
++				guard = append(guard, &expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifname(path[0])}, &expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifname(path[1])})
++				r.conn.AddRule(&nftables.Rule{Table: r.workTable, Chain: check, Exprs: append(guard, &expr.Verdict{Kind: expr.VerdictJump, Chain: chainNameRoutingFw})})
++			}
++			r.conn.AddRule(&nftables.Rule{Table: r.workTable, Chain: check, Exprs: append(matches, &expr.Verdict{Kind: expr.VerdictDrop})})
++		}
++	}
+ 	r.addPostroutingRules()
+ 
+ 	if err := r.conn.Flush(); err != nil {
+@@ -88,8 +110,10 @@
+ 		log.Errorf("failed to open interface in foreign chains: %s", err)
+ 	}
+ 
+-	if err := firewalld.TrustInterface(r.wgIface.Name()); err != nil {
+-		log.Warnf("failed to trust interface in firewalld: %v", err)
++	if !binat.Active() {
++		if err := firewalld.TrustInterface(r.wgIface.Name()); err != nil {
++			log.Warnf("failed to trust interface in firewalld: %v", err)
++		}
+ 	}
+ 
+ 	if err := r.refreshRulesMap(); err != nil {
+@@ -195,6 +219,10 @@
+ }
+ 
+ func (r *family) acceptFilterTableRules(includeForward bool) error {
++	if binat.Active() {
++		// Preserve the iptables-backed filter table and its nft fallback too.
++		return nil
++	}
+ 	if r.filterTable == nil {
+ 		return nil
+ 	}
+@@ -289,6 +317,12 @@
+ // acceptExternalChainsRules adds accept rules to external chains (non-netbird, non-iptables tables).
+ // It dynamically finds chains at call time to handle chains that may have been created after startup.
+ func (r *family) acceptExternalChainsRules(includeForward bool) error {
++	if binat.Active() {
++		// Experimental BINAT must honor existing firewall policy. The native
++		// routing ACL is authoritative; do not insert bypasses into foreign
++		// INPUT/FORWARD chains, including on later monitor reconciliation.
++		return nil
++	}
+ 	chains := r.findExternalChains()
+ 	if len(chains) == 0 {
+ 		return nil
+@@ -416,6 +450,11 @@
+ }
+ 
+ func (r *family) removeAcceptFilterRules() error {
++	if binat.Active() {
++		// This mode inserted no passthroughs; preserve pre-existing matching
++		// external/filter rules during shutdown as well.
++		return nil
++	}
+ 	var merr *multierror.Error
+ 
+ 	if err := r.removeFilterTableRules(); err != nil {
+diff --git a/client/firewall/nftables/family_linux.go b/client/firewall/nftables/family_linux.go
+--- a/client/firewall/nftables/family_linux.go
++++ b/client/firewall/nftables/family_linux.go
+@@ -12,6 +12,7 @@
+ 	log "github.com/sirupsen/logrus"
+ 
+ 	nberrors "github.com/netbirdio/netbird/client/errors"
++	"github.com/netbirdio/netbird/client/firewall/binat"
+ 	"github.com/netbirdio/netbird/client/firewall/firewalld"
+ 	firewall "github.com/netbirdio/netbird/client/firewall/manager"
+ 	"github.com/netbirdio/netbird/client/internal/routemanager/ipfwdstate"
+@@ -163,8 +164,10 @@
+ 		merr = multierror.Append(merr, fmt.Errorf("remove accept filter rules: %w", err))
+ 	}
+ 
+-	if err := firewalld.UntrustInterface(r.wgIface.Name()); err != nil {
+-		merr = multierror.Append(merr, err)
++	if !binat.Active() {
++		if err := firewalld.UntrustInterface(r.wgIface.Name()); err != nil {
++			merr = multierror.Append(merr, err)
++		}
+ 	}
+ 
+ 	if err := r.removeNatPreroutingRules(); err != nil {
+diff --git a/client/firewall/nftables/filter_linux.go b/client/firewall/nftables/filter_linux.go
+--- a/client/firewall/nftables/filter_linux.go
++++ b/client/firewall/nftables/filter_linux.go
+@@ -15,6 +15,7 @@
+ 	log "github.com/sirupsen/logrus"
+ 
+ 	nberrors "github.com/netbirdio/netbird/client/errors"
++	"github.com/netbirdio/netbird/client/firewall/binat"
+ 	firewall "github.com/netbirdio/netbird/client/firewall/manager"
+ 	nbid "github.com/netbirdio/netbird/client/internal/acl/id"
+ )
+@@ -188,6 +189,9 @@
+ 		exprs = append(exprs, portExprs...)
+ 	}
+ 
++	if binat.Active() && r.workTable.Family == nftables.TableFamilyIPv4 {
++		exprs = originalRouteTuple(exprs)
++	}
+ 	exprs = append(exprs, &expr.Counter{})
+ 	return exprs, nil
+ }
+@@ -538,3 +542,38 @@
+ 	}
+ 	return sets
+ }
++
++// Scope authorization is evaluated after NAT in BOTH directions. Keep native
++// RuleIDs, source sets, port sets, priorities and verdicts; change only loads.
++func originalRouteTuple(items []expr.Any) []expr.Any {
++	for i, item := range items {
++		switch v := item.(type) {
++		case *expr.Payload:
++			key := expr.CtKey(0xffffffff)
++			if v.Base == expr.PayloadBaseNetworkHeader && v.Len == 4 {
++				if v.Offset == 12 {
++					key = expr.CtKeySRC
++				}
++				if v.Offset == 16 {
++					key = expr.CtKeyDST
++				}
++			}
++			if v.Base == expr.PayloadBaseTransportHeader && v.Len == 2 {
++				if v.Offset == 0 {
++					key = expr.CtKeyPROTOSRC
++				}
++				if v.Offset == 2 {
++					key = expr.CtKeyPROTODST
++				}
++			}
++			if key != expr.CtKey(0xffffffff) {
++				items[i] = &expr.Ct{Key: key, Register: v.DestRegister, Direction: 0}
++			}
++		case *expr.Meta:
++			if v.Key == expr.MetaKeyL4PROTO {
++				items[i] = &expr.Ct{Key: expr.CtKeyPROTOCOL, Register: v.Register, Direction: 0}
++			}
++		}
++	}
++	return items
++}
+diff --git a/client/firewall/nftables/manager_linux.go b/client/firewall/nftables/manager_linux.go
+--- a/client/firewall/nftables/manager_linux.go
++++ b/client/firewall/nftables/manager_linux.go
+@@ -15,6 +15,7 @@
+ 	"golang.org/x/sys/unix"
+ 
+ 	nberrors "github.com/netbirdio/netbird/client/errors"
++	"github.com/netbirdio/netbird/client/firewall/binat"
+ 	firewall "github.com/netbirdio/netbird/client/firewall/manager"
+ 	"github.com/netbirdio/netbird/client/iface/wgaddr"
+ 	"github.com/netbirdio/netbird/client/internal/statemanager"
+@@ -203,6 +204,10 @@
+ 
+ // rollbackInit performs best-effort cleanup of already-initialized state when Init fails partway through.
+ func (m *Manager) rollbackInit() {
++	if binat.CloseActive() != nil {
++		log.Error("BINAT rollback closure unconfirmed")
++		return
++	}
+ 	if err := m.family4.Reset(); err != nil {
+ 		log.Warnf("rollback family: %v", err)
+ 	}
+@@ -381,8 +386,12 @@
+ 	m.mutex.Lock()
+ 	defer m.mutex.Unlock()
+ 
++	// Preserve native protection when the independent BINAT closure is not
++	// confirmed; removal of the native firewall must not worsen this failure.
++	if err := binat.CloseActive(); err != nil {
++		return err
++	}
+ 	var merr *multierror.Error
+-
+ 	if err := m.family4.Reset(); err != nil {
+ 		merr = multierror.Append(merr, fmt.Errorf("reset family: %w", err))
+ 	}
+@@ -746,6 +755,9 @@
+ }
+ 
+ func (m *Manager) createWorkTableFamily(family nftables.TableFamily) (*nftables.Table, error) {
++	if err := binat.CloseActive(); err != nil {
++		return nil, err
++	}
+ 	tables, err := m.rConn.ListTablesOfFamily(family)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("list of tables: %w", err)
+@@ -767,7 +779,7 @@
+ 	rule := &nftables.Rule{
+ 		Table: table,
+ 		Chain: chain,
+-		Exprs: getEstablishedExprs(1),
++		Exprs: binatReturnTraffic(table, chain),
+ 	}
+ 
+ 	conn.InsertRule(rule)
+@@ -808,3 +820,77 @@
+ 	}
+ 	return len(sources) > 0 && sources[0].Addr().Is6()
+ }
++
++// ConfirmBINATNativeRules refuses publication over absent native chains or stale
++// in-memory handles. This is an owner-lifecycle check, not protection from an
++// independent privileged writer deleting tables after this check.
++func (m *Manager) ConfirmBINATNativeRules() error {
++	m.mutex.Lock()
++	defer m.mutex.Unlock()
++	chains, err := m.rConn.ListChains()
++	if err != nil {
++		return fmt.Errorf("BINAT native chain readback failed")
++	}
++	live := make(map[string]*nftables.Chain)
++	for _, chain := range chains {
++		if chain.Table != nil && chain.Table.Name == m.family4.workTable.Name && chain.Table.Family == nftables.TableFamilyIPv4 {
++			live[chain.Name] = chain
++		}
++	}
++	for _, name := range []string{chainNameRoutingFw, chainNameMangleForward, chainNameRoutingNat, "netbird-binat-native"} {
++		if live[name] == nil {
++			return fmt.Errorf("BINAT native chain missing")
++		}
++	}
++	forward := live[chainNameMangleForward]
++	if forward.Hooknum == nil || *forward.Hooknum != *nftables.ChainHookForward || forward.Type != nftables.ChainTypeFilter {
++		return fmt.Errorf("BINAT native hook changed")
++	}
++	boundary := live["netbird-binat-native"]
++	if boundary.Hooknum == nil || *boundary.Hooknum != *nftables.ChainHookPostrouting || boundary.Priority == nil || *boundary.Priority != nftables.ChainPriority(-201) || boundary.Type != nftables.ChainTypeFilter {
++		return fmt.Errorf("BINAT native postrouting boundary missing")
++	}
++	observed := make(map[string]map[string]bool)
++	for _, tracked := range m.family4.filters {
++		if tracked.nftRule == nil || tracked.nftRule.Chain == nil {
++			return fmt.Errorf("BINAT native handle missing")
++		}
++		name := tracked.nftRule.Chain.Name
++		if live[name] == nil {
++			return fmt.Errorf("BINAT native ACL chain missing")
++		}
++		if observed[name] == nil {
++			rows, readErr := m.rConn.GetRules(m.family4.workTable, live[name])
++			if readErr != nil {
++				return fmt.Errorf("BINAT native ACL readback failed")
++			}
++			observed[name] = make(map[string]bool)
++			for _, row := range rows {
++				observed[name][string(row.UserData)] = true
++			}
++		}
++		if !observed[name][string(tracked.nftRule.UserData)] {
++			return fmt.Errorf("BINAT native tracked ACL absent")
++		}
++	}
++	return nil
++}
++
++// Do not let the native ESTABLISHED shortcut bypass scoped route authorization.
++// Non-BINAT traffic retains NetBird's ordinary shortcut.
++func binatReturnTraffic(table *nftables.Table, chain *nftables.Chain) []expr.Any {
++	items := getEstablishedExprs(1)
++	if !binat.Active() || table.Family != nftables.TableFamilyIPv4 || chain.Name != chainNameRoutingFw {
++		return items
++	}
++	var conditions []expr.Any
++	for _, scope := range binat.Scopes() {
++		prefix, _ := netip.ParsePrefix(scope.Virtual)
++		match := prefixMatchExprs(afIPv4, prefix, false)
++		match = originalRouteTuple(match)
++		cmp := match[len(match)-1].(*expr.Cmp)
++		cmp.Op = expr.CmpOpNeq
++		conditions = append(conditions, match...)
++	}
++	return append(conditions, items...)
++}
+diff --git a/client/internal/acl/binat_map_linux.go b/client/internal/acl/binat_map_linux.go
+new file mode 100644
+--- /dev/null
++++ b/client/internal/acl/binat_map_linux.go
+@@ -0,0 +1,136 @@
++//go:build linux
++
++package acl
++
++import (
++	"crypto/sha256"
++	"encoding/hex"
++	"errors"
++	"github.com/netbirdio/netbird/client/firewall/binat"
++	mgm "github.com/netbirdio/netbird/shared/management/proto"
++	"google.golang.org/protobuf/proto"
++	"net/netip"
++)
++
++// ValidateBINATMap checks the complete authoritative NetworkMap, not live nft rules
++// or a per-rule callback. Unsupported/ambiguous maps never publish a subset.
++func ValidateBINATMap(m *mgm.NetworkMap, scopes []binat.Scope) error {
++	if m == nil || len(m.RoutesFirewallRules) == 0 && !m.RoutesFirewallRulesIsEmpty {
++		return errors.New("BINAT complete route policy missing")
++	}
++	if len(m.FirewallRules) == 0 && !m.FirewallRulesIsEmpty {
++		return errors.New("BINAT complete peer policy missing")
++	}
++	if len(m.ForwardingRules) != 0 {
++		return errors.New("BINAT forwarding services unsupported")
++	}
++
++	for _, r := range m.RoutesFirewallRules {
++		if r != nil && len(r.ProtoReflect().GetUnknown()) != 0 {
++			return errors.New("BINAT unknown route policy fields")
++		}
++		if r == nil || r.IsDynamic || len(r.Domains) > 0 || r.CustomProtocol != 0 {
++			return errors.New("BINAT dynamic/custom route unsupported")
++		}
++		dest, err := netip.ParsePrefix(r.Destination)
++		if err != nil || dest != dest.Masked() {
++			return errors.New("BINAT invalid route destination")
++		}
++		intersects, contained := false, false
++		for _, s := range scopes {
++			v, _ := netip.ParsePrefix(s.Virtual)
++			if v.Overlaps(dest) {
++				intersects = true
++				if v.Contains(dest.Addr()) && dest.Bits() >= v.Bits() {
++					contained = true
++				}
++			}
++		}
++		if !intersects {
++			continue
++		}
++		if !contained {
++			return errors.New("BINAT ambiguous route selector")
++		}
++		protocol := ""
++		switch r.Protocol {
++		case mgm.RuleProtocol_ALL:
++			protocol = "all"
++		case mgm.RuleProtocol_TCP:
++			protocol = "tcp"
++		case mgm.RuleProtocol_UDP:
++			protocol = "udp"
++		case mgm.RuleProtocol_ICMP:
++			protocol = "icmp"
++		default:
++			return errors.New("BINAT unsupported route protocol")
++		}
++
++		switch r.Action {
++		case mgm.RuleAction_ACCEPT:
++
++		case mgm.RuleAction_DROP:
++
++		default:
++			return errors.New("BINAT unsupported route action")
++		}
++		var ports [][2]uint16
++		if r.PortInfo != nil {
++			if len(r.PortInfo.ProtoReflect().GetUnknown()) != 0 {
++				return errors.New("BINAT unknown port selector")
++			}
++			switch sel := r.PortInfo.PortSelection.(type) {
++			case nil:
++				// NetBird v0.80.0 GetProtoPortInfo always returns a message;
++				// an exact empty message means no port restriction. Native
++				// convertPortInfo treats this identically to a nil pointer.
++			case *mgm.PortInfo_Port:
++				if sel == nil || sel.Port == 0 || sel.Port > 65535 {
++					return errors.New("BINAT invalid port")
++				}
++				ports = append(ports, [2]uint16{uint16(sel.Port), uint16(sel.Port)})
++			case *mgm.PortInfo_Range_:
++				if sel == nil || sel.Range == nil || sel.Range.Start == 0 || sel.Range.Start > sel.Range.End || sel.Range.End > 65535 {
++					return errors.New("BINAT invalid port range")
++				}
++				if len(sel.Range.ProtoReflect().GetUnknown()) != 0 {
++					return errors.New("BINAT unknown port selector")
++				}
++				ports = append(ports, [2]uint16{uint16(sel.Range.Start), uint16(sel.Range.End)})
++			default:
++				return errors.New("BINAT incomplete port selector")
++			}
++		}
++		if len(ports) > 0 && protocol != "tcp" && protocol != "udp" {
++			return errors.New("BINAT ports on unsupported protocol")
++		}
++		// A complete v0.80.0 map can retain a rule with zero sources after
++		// membership withdrawal. Native applyRouteACL skips it and deletes
++		// the previous backend rule; it is NEVER a wildcard permission.
++		for _, source := range r.SourceRanges {
++			prefix, err := netip.ParsePrefix(source)
++			if err != nil || !prefix.Addr().Is4() || prefix != prefix.Masked() {
++				return errors.New("BINAT invalid source")
++			}
++		}
++	}
++	return nil
++}
++
++// Bind unsupported and partial maps too, without retaining any raw policy data.
++// A conservative deterministic policy encoding includes all proto rule fields;
++// reordered same-serial messages can refuse availability rather than grant.
++func BINATPolicyDigest(m *mgm.NetworkMap) (string, error) {
++	if m == nil {
++		return "", errors.New("BINAT missing observed policy")
++	}
++	policy := &mgm.NetworkMap{FirewallRules: m.FirewallRules, FirewallRulesIsEmpty: m.FirewallRulesIsEmpty,
++		RoutesFirewallRules: m.RoutesFirewallRules, RoutesFirewallRulesIsEmpty: m.RoutesFirewallRulesIsEmpty,
++		ForwardingRules: m.ForwardingRules}
++	raw, err := (proto.MarshalOptions{Deterministic: true}).Marshal(policy)
++	if err != nil {
++		return "", errors.New("BINAT observation encoding failed")
++	}
++	sum := sha256.Sum256(raw)
++	return hex.EncodeToString(sum[:]), nil
++}
+diff --git a/client/internal/acl/binat_map_linux_test.go b/client/internal/acl/binat_map_linux_test.go
+new file mode 100644
+--- /dev/null
++++ b/client/internal/acl/binat_map_linux_test.go
+@@ -0,0 +1,158 @@
++//go:build linux
++
++package acl
++
++import (
++	"errors"
++	"github.com/netbirdio/netbird/client/firewall/binat"
++	firewall "github.com/netbirdio/netbird/client/firewall/manager"
++	"github.com/netbirdio/netbird/shared/management/networkmap"
++	p "github.com/netbirdio/netbird/shared/management/proto"
++	"github.com/netbirdio/netbird/shared/management/types"
++	"testing"
++)
++
++func TestBINATSmallNativeCompleteMapValidation(t *testing.T) {
++	scopes := []binat.Scope{{Virtual: "10.80.1.0/24", Real: "192.168.80.0/24", Overlay: "nb0", LAN: "lan0"}}
++	rule := &p.RouteFirewallRule{SourceRanges: []string{"100.64.0.10/32", "100.64.0.11/32"}, Destination: "10.80.1.0/24", Protocol: p.RuleProtocol_TCP, Action: p.RuleAction_DROP, PortInfo: &p.PortInfo{PortSelection: &p.PortInfo_Range_{Range: &p.PortInfo_Range{Start: 443, End: 445}}}}
++	m := &p.NetworkMap{Serial: 8, FirewallRulesIsEmpty: true, RoutesFirewallRules: []*p.RouteFirewallRule{rule}}
++	if err := ValidateBINATMap(m, scopes); err != nil {
++		t.Fatal(err)
++	}
++	if len(rule.SourceRanges) != 2 || rule.Action != p.RuleAction_DROP {
++		t.Fatal("validation mutated native map")
++	}
++	for _, source := range []string{"invalid", "100.64.0.1/24"} {
++		rule.SourceRanges = []string{source}
++		if ValidateBINATMap(m, scopes) == nil {
++			t.Fatal("invalid source accepted")
++		}
++	}
++	rule.SourceRanges = []string{"100.64.0.10/32"}
++	rule.IsDynamic = true
++	if ValidateBINATMap(m, scopes) == nil {
++		t.Fatal("dynamic map accepted")
++	}
++	rule.IsDynamic = false
++	m.RoutesFirewallRules = nil
++	if ValidateBINATMap(m, scopes) == nil {
++		t.Fatal("partial map accepted")
++	}
++	m.RoutesFirewallRulesIsEmpty = true
++	if err := ValidateBINATMap(m, scopes); err != nil {
++		t.Fatal(err)
++	}
++	if ValidateBINATMap(nil, scopes) == nil {
++		t.Fatal("missing map accepted")
++	}
++}
++
++func TestBINATSmallNativeControllerEmptyPortInfo(t *testing.T) {
++	scopes := []binat.Scope{{Virtual: "10.80.1.0/24", Real: "192.168.80.0/24", Overlay: "nb0", LAN: "lan0"}}
++	empty := networkmap.GetProtoPortInfo(&types.RouteFirewallRule{})
++	if empty == nil || empty.GetPortSelection() != nil {
++		t.Fatal("pinned controller port encoding changed")
++	}
++	rule := &p.RouteFirewallRule{SourceRanges: []string{"100.64.0.10/32"}, Destination: "10.80.1.0/24", Action: p.RuleAction_ACCEPT, PortInfo: empty}
++	m := &p.NetworkMap{FirewallRulesIsEmpty: true, RoutesFirewallRules: []*p.RouteFirewallRule{rule}}
++	for _, protocol := range []p.RuleProtocol{p.RuleProtocol_ALL, p.RuleProtocol_TCP, p.RuleProtocol_UDP, p.RuleProtocol_ICMP} {
++		rule.Protocol = protocol
++		if err := ValidateBINATMap(m, scopes); err != nil {
++			t.Fatalf("native unrestricted protocol rejected: %v", err)
++		}
++	}
++	rule.Protocol = p.RuleProtocol_TCP
++	for _, invalid := range []*p.PortInfo{
++		{PortSelection: (*p.PortInfo_Port)(nil)},
++		{PortSelection: (*p.PortInfo_Range_)(nil)},
++		{PortSelection: &p.PortInfo_Port{Port: 0}},
++		{PortSelection: &p.PortInfo_Port{Port: 65536}},
++		{PortSelection: &p.PortInfo_Range_{Range: nil}},
++		{PortSelection: &p.PortInfo_Range_{Range: &p.PortInfo_Range{Start: 443, End: 0}}},
++		{PortSelection: &p.PortInfo_Range_{Range: &p.PortInfo_Range{Start: 445, End: 443}}},
++	} {
++		rule.PortInfo = invalid
++		if ValidateBINATMap(m, scopes) == nil {
++			t.Fatal("malformed explicit port selector accepted")
++		}
++	}
++	rule.PortInfo = &p.PortInfo{}
++	rule.PortInfo.ProtoReflect().SetUnknown([]byte{0x18, 0x01})
++	if ValidateBINATMap(m, scopes) == nil {
++		t.Fatal("unknown port fields accepted")
++	}
++}
++
++func TestBINATSmallNativeUnknownNestedPortRange(t *testing.T) {
++	scopes := []binat.Scope{{Virtual: "10.80.1.0/24", Real: "192.168.80.0/24", Overlay: "nb0", LAN: "lan0"}}
++	span := &p.PortInfo_Range{Start: 443, End: 445}
++	span.ProtoReflect().SetUnknown([]byte{0x18, 0x01})
++	rule := &p.RouteFirewallRule{SourceRanges: []string{"100.64.0.10/32"}, Destination: "10.80.1.0/24", Protocol: p.RuleProtocol_TCP, Action: p.RuleAction_ACCEPT, PortInfo: &p.PortInfo{PortSelection: &p.PortInfo_Range_{Range: span}}}
++	m := &p.NetworkMap{FirewallRulesIsEmpty: true, RoutesFirewallRules: []*p.RouteFirewallRule{rule}}
++	if ValidateBINATMap(m, scopes) == nil {
++		t.Fatal("unknown nested port-range fields accepted")
++	}
++	span.ProtoReflect().SetUnknown(nil)
++	if err := ValidateBINATMap(m, scopes); err != nil {
++		t.Fatal(err)
++	}
++}
++
++type binatEmptySourcesRule struct{}
++
++func (binatEmptySourcesRule) ID() firewall.RuleID { return "previous-permission" }
++
++type binatEmptySourcesBackend struct {
++	firewall.Manager
++	deleted int
++	fail    bool
++}
++
++func (b *binatEmptySourcesBackend) DeleteFilterRule(firewall.Rule) error {
++	b.deleted++
++	if b.fail {
++		return errors.New("synthetic deletion failure")
++	}
++	return nil
++}
++
++func TestBINATSmallNativeZeroSourcesWithdrawsWithoutWildcard(t *testing.T) {
++	scopes := []binat.Scope{{Virtual: "10.80.1.0/24", Real: "192.168.80.0/24", Overlay: "nb0", LAN: "lan0"}}
++	rule := &p.RouteFirewallRule{SourceRanges: nil, Destination: "10.80.1.0/24", Protocol: p.RuleProtocol_ALL, Action: p.RuleAction_ACCEPT, PortInfo: networkmap.GetProtoPortInfo(&types.RouteFirewallRule{})}
++	m := &p.NetworkMap{FirewallRulesIsEmpty: true, RoutesFirewallRules: []*p.RouteFirewallRule{rule}}
++	if err := ValidateBINATMap(m, scopes); err != nil {
++		t.Fatal(err)
++	}
++	for _, fail := range []bool{false, true} {
++		backend := &binatEmptySourcesBackend{fail: fail}
++		manager := NewDefaultManagerForBINAT(backend)
++		old := binatEmptySourcesRule{}
++		manager.routeRules[old.ID()] = old
++		err := manager.applyRouteACLs(m.RoutesFirewallRules, false)
++		if backend.deleted != 1 || (err != nil) != fail {
++			t.Fatal("native withdrawal outcome not confirmed")
++		}
++		if fail && len(manager.routeRules) != 1 || !fail && len(manager.routeRules) != 0 {
++			t.Fatal("native route tracking lost or retained incorrectly")
++		}
++		// Embedded nil Manager panics if any AddFilterRule/wildcard is attempted.
++	}
++	rule.Protocol = p.RuleProtocol_UNKNOWN
++	if ValidateBINATMap(m, scopes) == nil {
++		t.Fatal("empty-source rule bypassed semantic validation")
++	}
++}
++
++func TestBINATSmallNativeUnknownRouteFields(t *testing.T) {
++	scopes := []binat.Scope{{Virtual: "10.80.1.0/24", Real: "192.168.80.0/24", Overlay: "nb0", LAN: "lan0"}}
++	rule := &p.RouteFirewallRule{SourceRanges: []string{"100.64.0.10/32"}, Destination: "10.80.1.0/24", Protocol: p.RuleProtocol_ALL, Action: p.RuleAction_ACCEPT}
++	m := &p.NetworkMap{FirewallRulesIsEmpty: true, RoutesFirewallRules: []*p.RouteFirewallRule{rule}}
++	rule.ProtoReflect().SetUnknown([]byte{0x98, 0x06, 0x01})
++	if ValidateBINATMap(m, scopes) == nil {
++		t.Fatal("unknown route rule fields accepted")
++	}
++	rule.ProtoReflect().SetUnknown(nil)
++	if err := ValidateBINATMap(m, scopes); err != nil {
++		t.Fatal(err)
++	}
++}
+diff --git a/client/internal/acl/binat_map_other.go b/client/internal/acl/binat_map_other.go
+new file mode 100644
+--- /dev/null
++++ b/client/internal/acl/binat_map_other.go
+@@ -0,0 +1,13 @@
++//go:build !linux
++
++package acl
++
++import (
++	"errors"
++	"github.com/netbirdio/netbird/client/firewall/binat"
++	mgm "github.com/netbirdio/netbird/shared/management/proto"
++)
++
++func ValidateBINATMap(*mgm.NetworkMap, []binat.Scope) error { return errors.New("BINAT unavailable") }
++
++func BINATPolicyDigest(*mgm.NetworkMap) (string, error) { return "", errors.New("BINAT unavailable") }
+diff --git a/client/internal/acl/manager.go b/client/internal/acl/manager.go
+--- a/client/internal/acl/manager.go
++++ b/client/internal/acl/manager.go
+@@ -33,6 +33,8 @@
+ 
+ // DefaultManager uses firewall manager to handle
+ type DefaultManager struct {
++	binatManaged       bool
++	lastApplyError     error
+ 	firewall           firewall.Manager
+ 	peerRulesPairs     map[id.RuleID][]firewall.Rule
+ 	routeRules         map[id.RuleID]firewall.Rule
+@@ -79,12 +81,25 @@
+ 	}
+ }
+ 
++// NewDefaultManagerForBINAT keeps authorization in the normal native ACL engine.
++func NewDefaultManagerForBINAT(fm firewall.Manager) *DefaultManager {
++	d := NewDefaultManager(fm)
++	d.binatManaged = true
++	return d
++}
++func (d *DefaultManager) FilteringError() error {
++	d.mutex.Lock()
++	defer d.mutex.Unlock()
++	return d.lastApplyError
++}
++
+ // ApplyFiltering firewall rules to the local firewall manager processed by ACL policy.
+ //
+ // If allowByDefault is true it appends allow ALL traffic rules to input and output chains.
+ func (d *DefaultManager) ApplyFiltering(networkMap *mgmProto.NetworkMap, dnsRouteFeatureFlag bool) {
+ 	d.mutex.Lock()
+ 	defer d.mutex.Unlock()
++	d.lastApplyError = nil
+ 
+ 	if d.firewall == nil {
+ 		log.Debug("firewall manager is not supported, skipping firewall rules")
+@@ -103,7 +118,7 @@
+ 	hash, err := d.firewallConfigHash(networkMap, dnsRouteFeatureFlag)
+ 	if err != nil {
+ 		log.Errorf("unable to hash firewall configuration, applying unconditionally: %v", err)
+-	} else if d.hasAppliedConfig && d.previousConfigHash == hash {
++	} else if !d.binatManaged && d.hasAppliedConfig && d.previousConfigHash == hash {
+ 		log.Debugf("not applying the firewall configuration update as there is nothing new (hash: %d)", hash)
+ 		return
+ 	}
+@@ -134,6 +149,7 @@
+ 		log.Error("failed to flush firewall rules: ", flushErr)
+ 	}
+ 
++	d.lastApplyError = errors.Join(err, peerErr, routeErr, flushErr)
+ 	// Only remember the hash once the firewall actually reflects this config.
+ 	// If applying or flushing failed, leave the previous hash untouched so the
+ 	// next (possibly identical) update is not skipped and gets a chance to
+diff --git a/client/internal/engine.go b/client/internal/engine.go
+--- a/client/internal/engine.go
++++ b/client/internal/engine.go
+@@ -28,6 +28,7 @@
+ 	"github.com/netbirdio/netbird/client/anonymize"
+ 	nberrors "github.com/netbirdio/netbird/client/errors"
+ 	"github.com/netbirdio/netbird/client/firewall"
++	"github.com/netbirdio/netbird/client/firewall/binat"
+ 	"github.com/netbirdio/netbird/client/firewall/firewalld"
+ 	firewallManager "github.com/netbirdio/netbird/client/firewall/manager"
+ 	"github.com/netbirdio/netbird/client/firewall/uspfilter/forwarder"
+@@ -265,6 +266,8 @@
+ 	firewall          firewallManager.Manager
+ 	routeManager      routemanager.Manager
+ 	acl               acl.Manager
++	binatGate         *binat.Gate
++	binatGateMu       sync.RWMutex
+ 	dnsForwardMgr     *dnsfwd.Manager
+ 	ingressGatewayMgr *ingressgw.Manager
+ 
+@@ -405,6 +408,13 @@
+ 		return nil
+ 	}
+ 	e.cancel()
++	var binatStopError error
++	e.binatGateMu.RLock()
++	publisher := e.binatGate
++	e.binatGateMu.RUnlock()
++	if publisher != nil {
++		binatStopError = publisher.Close()
++	}
+ 	e.syncMsgMux.Lock()
+ 
+ 	e.stopLocked()
+@@ -422,7 +432,7 @@
+ 
+ 	log.Infof("stopped Netbird Engine")
+ 
+-	return nil
++	return binatStopError
+ }
+ 
+ // stopLocked tears down everything Start may have brought up, in the order
+@@ -432,6 +442,15 @@
+ // step is nil-guarded. It does not wait on shutdownWg — the caller does that
+ // after releasing the lock, since the goroutines also take syncMsgMux.
+ func (e *Engine) stopLocked() {
++	if e.binatGate != nil {
++		if e.binatGate.Close() != nil {
++			log.Error("BINAT shutdown closure unconfirmed")
++		}
++		if listener, ok := e.mgmClient.(interface{ SetSyncDisconnectListener(func(error)) }); ok {
++			listener.SetSyncDisconnectListener(nil)
++		}
++		defer e.binatGate.Release()
++	}
+ 	if e.connMgr != nil {
+ 		e.connMgr.Close()
+ 	}
+@@ -555,6 +574,38 @@
+ 		return fmt.Errorf("engine already stopped: %w", ctxErr)
+ 	}
+ 
++	// Install/adopt the protected DENY boundary before interface creation,
++	// firewall reset, route manager initialization or any management map.
++	publisher, loadErr := binat.LoadLabFromEnv()
++	e.binatGateMu.Lock()
++	e.binatGate = publisher
++	e.binatGateMu.Unlock()
++	err = loadErr
++	if err != nil {
++		return err
++	}
++	if e.binatGate != nil && (e.config.DisableFirewall || e.config.BlockInbound || e.config.DisableServerRoutes) {
++		_ = e.binatGate.Close()
++		e.binatGate.Release()
++		return errors.New("BINAT requires active routed native firewall")
++	}
++	if publisher != nil {
++		listener, ok := e.mgmClient.(interface{ SetSyncDisconnectListener(func(error)) })
++		if !ok {
++			_ = publisher.Close()
++			publisher.Release()
++			return errors.New("BINAT management transport cannot confirm stream loss")
++		}
++		listener.SetSyncDisconnectListener(func(error) {
++			// Close increments the epoch too: an in-flight publication cannot
++			// reopen after this loss. This callback never takes syncMsgMux.
++			if publisher.Close() != nil {
++				log.Error("BINAT stream-loss closure unconfirmed")
++			} else {
++				log.Info("BINAT stream-loss closure confirmed locally controller_ack=false")
++			}
++		})
++	}
+ 	e.started = true
+ 
+ 	// Tear down any partially-initialized state on a failed start. Cancel the
+@@ -575,6 +626,16 @@
+ 
+ 	e.exposeManager = expose.NewManager(e.ctx, e.mgmClient)
+ 
++	if e.binatGate != nil {
++		for _, scope := range e.binatGate.Scopes() {
++			if scope.Overlay != e.config.WgIfaceName {
++				return errors.New("BINAT overlay binding mismatch before creation")
++			}
++		}
++		if err := binat.RequireFreshUserspaceOverlay(e.binatGate.Scopes()); err != nil {
++			return err
++		}
++	}
+ 	wgIface, err := e.newWgIface()
+ 	if err != nil {
+ 		log.Errorf("failed creating wireguard interface instance %s: [%s]", e.config.WgIfaceName, err)
+@@ -641,6 +702,12 @@
+ 		return fmt.Errorf("create wg interface: %w", err)
+ 	}
+ 
++	if e.binatGate != nil {
++		if err := binat.RequireEphemeralTUN(e.wgInterface.Name(), e.wgInterface.IsUserspaceBind()); err != nil {
++			return err
++		}
++		e.binatGate.BindFailStop(func() { os.Exit(1) })
++	}
+ 	if filteredDevice := e.wgInterface.GetDevice(); filteredDevice != nil {
+ 		filteredDevice.SetPanicHandler(e.triggerClientRestart)
+ 	}
+@@ -654,6 +721,16 @@
+ 	// depends on the DNS server, and the firewall depends on the wg interface.
+ 	e.dnsServer.SetFirewall(e.firewall)
+ 
++	if e.binatGate != nil {
++		if !isBINATNativeFirewall(e.firewall) {
++			return errors.New("BINAT requires native nftables backend")
++		}
++		for _, scope := range e.binatGate.Scopes() {
++			if scope.Overlay != e.wgInterface.Name() {
++				return errors.New("BINAT overlay binding mismatch")
++			}
++		}
++	}
+ 	e.udpMux, err = e.wgInterface.Up()
+ 	if err != nil {
+ 		log.Errorf("failed to pull up wgInterface [%s]: %s", e.wgInterface.Name(), err.Error())
+@@ -679,7 +756,11 @@
+ 
+ 	// if inbound conns are blocked there is no need to create the ACL manager
+ 	if e.firewall != nil && !e.config.BlockInbound {
+-		e.acl = acl.NewDefaultManager(e.firewall)
++		if e.binatGate != nil {
++			e.acl = acl.NewDefaultManagerForBINAT(e.firewall)
++		} else {
++			e.acl = acl.NewDefaultManager(e.firewall)
++		}
+ 	}
+ 
+ 	if err := e.dnsServer.Initialize(); err != nil {
+@@ -1003,7 +1084,7 @@
+ 	}
+ }
+ 
+-func (e *Engine) handleSync(update *mgmProto.SyncResponse) error {
++func (e *Engine) handleSync(update *mgmProto.SyncResponse) (result error) {
+ 	started := time.Now()
+ 	defer func() {
+ 		duration := time.Since(started)
+@@ -1013,6 +1094,17 @@
+ 	e.syncMsgMux.Lock()
+ 	defer e.syncMsgMux.Unlock()
+ 
++	// A failed/partial/config-only sync cannot leave the old snapshot open.
++	if e.binatGate != nil {
++		if err := e.binatGate.Close(); err != nil {
++			return err
++		}
++		defer func() {
++			if result != nil && e.binatGate.Close() != nil {
++				result = binat.ErrUnconfirmed
++			}
++		}()
++	}
+ 	// Check context INSIDE lock to ensure atomicity with shutdown
+ 	if e.ctx.Err() != nil {
+ 		return e.ctx.Err()
+@@ -1081,6 +1173,9 @@
+ 	//   NetworkMap == nil                 -> config-only update (e.g. relay token rotation),
+ 	//                                        leave the previously applied checks untouched
+ 	if nm == nil {
++		if e.binatGate != nil {
++			log.Info("BINAT config-only sync: guard remains closed")
++		}
+ 		return nil
+ 	}
+ 
+@@ -1514,6 +1609,9 @@
+ 			log.Warnf("posture checks not refreshed before the sync connect, sending the previous results")
+ 		}
+ 		err := e.mgmClient.Sync(e.ctx, e.syncInfoFunc(info), e.handleSync)
++		if e.binatGate != nil && e.binatGate.Close() != nil {
++			log.Error("BINAT stream-end closure unconfirmed")
++		}
+ 		if err != nil {
+ 			// happens if management is unavailable for a long time.
+ 			// We want to cancel the operation of the whole client
+@@ -1564,7 +1662,37 @@
+ 	return nil
+ }
+ 
+-func (e *Engine) updateNetworkMap(networkMap *mgmProto.NetworkMap) error {
++func (e *Engine) updateNetworkMap(networkMap *mgmProto.NetworkMap) (result error) {
++	var binatEpoch uint64
++	// Scope closure precedes peer-IP changes, DNS, routes, ACL and forwarding.
++	if e.binatGate != nil {
++		if err := e.binatGate.Close(); err != nil {
++			return err
++		}
++		defer func() {
++			if result != nil && e.binatGate.Close() != nil {
++				result = binat.ErrUnconfirmed
++			}
++		}()
++		if networkMap == nil || networkMap.GetSerial() < e.networkSerial {
++			return errors.New("BINAT stale/incomplete NetworkMap")
++		}
++		digest, digestErr := acl.BINATPolicyDigest(networkMap)
++		if digestErr != nil {
++			return digestErr
++		}
++		if err := e.binatGate.Observe(networkMap.GetSerial(), digest); err != nil {
++			return err
++		}
++		if err := acl.ValidateBINATMap(networkMap, e.binatGate.Scopes()); err != nil {
++			return err
++		}
++		var prepareErr error
++		binatEpoch, prepareErr = e.binatGate.Prepare()
++		if prepareErr != nil {
++			return prepareErr
++		}
++	}
+ 	// intentionally leave it before checking serial because for now it can happen that peer IP changed but serial didn't
+ 	if networkMap.GetPeerConfig() != nil {
+ 		err := e.updateConfig(networkMap.GetPeerConfig())
+@@ -1590,6 +1718,9 @@
+ 	if e.firewall != nil {
+ 		if localipfw, ok := e.firewall.(localIpUpdater); ok {
+ 			if err := localipfw.UpdateLocalIPs(); err != nil {
++				if e.binatGate != nil {
++					return errors.New("BINAT local-address update failed")
++				}
+ 				log.Errorf("failed to update local IPs: %v", err)
+ 			}
+ 		}
+@@ -1599,6 +1730,9 @@
+ 		// This needs to be toggled before applying routes.
+ 		isLegacy := len(networkMap.RoutesFirewallRules) == 0 && !networkMap.RoutesFirewallRulesIsEmpty
+ 		if err := e.firewall.SetLegacyManagement(isLegacy); err != nil {
++			if e.binatGate != nil {
++				return errors.New("BINAT legacy firewall update failed")
++			}
+ 			log.Errorf("failed to set legacy management flag: %v", err)
+ 		}
+ 	}
+@@ -1612,6 +1746,9 @@
+ 
+ 	done := e.phase("dns_server")
+ 	if err := e.dnsServer.UpdateDNSServer(serial, dnsConfig); err != nil {
++		if e.binatGate != nil {
++			return errors.New("BINAT DNS update failed")
++		}
+ 		log.Errorf("failed to update dns server, err: %v", err)
+ 	}
+ 	done()
+@@ -1633,6 +1770,9 @@
+ 	done = e.phase("routes_apply")
+ 	dnsRouteFeatureFlag := toDNSFeatureFlag(networkMap)
+ 	if err := e.routeManager.UpdateRoutes(serial, serverRoutes, clientRoutes, dnsRouteFeatureFlag); err != nil {
++		if e.binatGate != nil {
++			return errors.New("BINAT route update failed")
++		}
+ 		log.Errorf("failed to update routes: %v", err)
+ 	}
+ 	done()
+@@ -1640,6 +1780,11 @@
+ 	done = e.phase("filtering")
+ 	if e.acl != nil {
+ 		e.acl.ApplyFiltering(networkMap, dnsRouteFeatureFlag)
++		if e.binatGate != nil {
++			if state, ok := e.acl.(interface{ FilteringError() error }); !ok || state.FilteringError() != nil {
++				return errors.New("BINAT native ACL apply failed")
++			}
++		}
+ 	}
+ 	done()
+ 
+@@ -1651,6 +1796,9 @@
+ 	// Ingress forward rules
+ 	done = e.phase("forward_rules")
+ 	if _, err := e.updateForwardRules(networkMap.GetForwardingRules()); err != nil {
++		if e.binatGate != nil {
++			return errors.New("BINAT forwarding update failed")
++		}
+ 		log.Errorf("failed to update forward rules, err: %v", err)
+ 	}
+ 	done()
+@@ -1671,6 +1819,18 @@
+ 	e.connMgr.SetExcludeList(e.ctx, e.toExcludedLazyPeers(remotePeers))
+ 	done()
+ 
++	if e.binatGate != nil {
++		if err := e.ctx.Err(); err != nil {
++			return err
++		}
++		if err := confirmBINATNativeFirewall(e.firewall); err != nil {
++			return err
++		}
++		if err := e.binatGate.Open(binatEpoch); err != nil {
++			return err
++		}
++		log.Infof("BINAT native kernel policy applied locally: serial=%d controller_ack=false", serial)
++	}
+ 	e.networkSerial = serial
+ 
+ 	return nil
+@@ -2149,6 +2309,9 @@
+ }
+ 
+ func (e *Engine) close() {
++	if e.binatGate != nil && e.binatGate.Close() != nil {
++		log.Error("BINAT reset closure unconfirmed")
++	}
+ 	if e.afpacketCapture != nil {
+ 		e.afpacketCapture.Stop()
+ 		e.afpacketCapture = nil
+diff --git a/client/internal/engine_binat_linux.go b/client/internal/engine_binat_linux.go
+new file mode 100644
+--- /dev/null
++++ b/client/internal/engine_binat_linux.go
+@@ -0,0 +1,19 @@
++//go:build linux && !android
++
++package internal
++
++import (
++	"github.com/netbirdio/netbird/client/firewall/binat"
++	fw "github.com/netbirdio/netbird/client/firewall/manager"
++	"github.com/netbirdio/netbird/client/firewall/nftables"
++)
++
++func isBINATNativeFirewall(f fw.Manager) bool { _, ok := f.(*nftables.Manager); return ok }
++
++func confirmBINATNativeFirewall(f fw.Manager) error {
++	native, ok := f.(*nftables.Manager)
++	if !ok {
++		return binat.ErrUnconfirmed
++	}
++	return native.ConfirmBINATNativeRules()
++}
+diff --git a/client/internal/engine_binat_other.go b/client/internal/engine_binat_other.go
+new file mode 100644
+--- /dev/null
++++ b/client/internal/engine_binat_other.go
+@@ -0,0 +1,12 @@
++//go:build !linux || android
++
++package internal
++
++import (
++	"github.com/netbirdio/netbird/client/firewall/binat"
++	fw "github.com/netbirdio/netbird/client/firewall/manager"
++)
++
++func isBINATNativeFirewall(fw.Manager) bool { return false }
++
++func confirmBINATNativeFirewall(fw.Manager) error { return binat.ErrUnconfirmed }
+diff --git a/shared/management/client/binat_sync_test.go b/shared/management/client/binat_sync_test.go
+new file mode 100644
+--- /dev/null
++++ b/shared/management/client/binat_sync_test.go
+@@ -0,0 +1,50 @@
++package client
++
++import (
++	"errors"
++	"sync"
++	"testing"
++)
++
++func TestBINATSyncLossClosesBeforeRetryWithoutTransportLock(t *testing.T) {
++	c := &GrpcClient{}
++	want := errors.New("synthetic stream loss")
++	closed := false
++	c.SetSyncDisconnectListener(func(err error) {
++		if err != want || c.syncStreamError() != want {
++			t.Error("disconnect state not visible")
++		}
++		closed = true
++	})
++	c.setSyncStreamDisconnected(want)
++	if !closed {
++		t.Fatal("stream loss returned before local closure")
++	}
++	c.SetSyncDisconnectListener(nil)
++	closed = false
++	c.setSyncStreamDisconnected(want)
++	if closed {
++		t.Fatal("released engine listener invoked")
++	}
++}
++
++func TestBINATSyncDisconnectListenerReplacementRace(t *testing.T) {
++	c := &GrpcClient{}
++	var wg sync.WaitGroup
++	wg.Add(2)
++	go func() {
++		defer wg.Done()
++		for i := 0; i < 100; i++ {
++			c.SetSyncDisconnectListener(func(error) {})
++		}
++		c.SetSyncDisconnectListener(nil)
++	}()
++	go func() {
++		defer wg.Done()
++		for i := 0; i < 100; i++ {
++			c.setSyncStreamDisconnected(errors.New("synthetic"))
++			c.setSyncStreamConnected()
++		}
++	}()
++	wg.Wait()
++}
+diff --git a/shared/management/client/grpc.go b/shared/management/client/grpc.go
+--- a/shared/management/client/grpc.go
++++ b/shared/management/client/grpc.go
+@@ -74,6 +74,8 @@
+ 	// connection while the Sync stream keeps failing.
+ 	syncStreamMu  sync.RWMutex
+ 	syncStreamErr error
++	// Synchronous local policy closure before a failed stream is retried.
++	syncDisconnectListener func(error)
+ }
+ 
+ type ExposeRequest struct {
+@@ -813,10 +815,24 @@
+ 	c.syncStreamErr = nil
+ }
+ 
++// SetSyncDisconnectListener binds the current Engine's local DENY boundary.
++// It never copies policy or opens a gate; only a full NetworkMap can do that.
++func (c *GrpcClient) SetSyncDisconnectListener(listener func(error)) {
++	c.syncStreamMu.Lock()
++	defer c.syncStreamMu.Unlock()
++	c.syncDisconnectListener = listener
++}
++
+ func (c *GrpcClient) setSyncStreamDisconnected(err error) {
+ 	c.syncStreamMu.Lock()
+-	defer c.syncStreamMu.Unlock()
+ 	c.syncStreamErr = err
++	listener := c.syncDisconnectListener
++	c.syncStreamMu.Unlock()
++	// Do not hold transport state locks while confirming kernel closure. In
++	// particular, the callback may consult syncStreamError(). No async worker.
++	if listener != nil {
++		listener(err)
++	}
+ }
+ 
+ func (c *GrpcClient) syncStreamError() error {

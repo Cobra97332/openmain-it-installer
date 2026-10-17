@@ -35,6 +35,8 @@ def run(name, image=IMAGE, networks=(), caps=(), volumes=(), env=(), devices=(),
     actual=PREFIX+'-'+name
     cmd=['run','-d','--name',actual,'--cap-drop','ALL','--security-opt','no-new-privileges:true','--log-driver','none']
     for c in caps: cmd+=['--cap-add',c]
+    if name.startswith(('primary-', 'backup-', 'nat-')):
+        cmd+=['--sysctl','net.ipv4.ip_forward=1']
     for v in volumes: cmd+=['-v',v]
     for e in env: cmd+=['-e',e]
     for d in devices: cmd+=['--device',d]
@@ -108,7 +110,6 @@ import router as r
 e=r.configuration(json.loads(sys.argv[1])); dev=r.interface(e['EDGE_IP'])
 r.apply_rules(r.edge_rules(e,dev),['openmain_container_boundary'])
 for n in (e['VIRTUAL_NETWORK'],e['LAN_NETWORK_CIDR']): r.command('ip','route','replace',n,'via',e['NAT_IP'],'dev',dev)
-r.command('sysctl','-w','net.ipv4.ip_forward=1')
 '''
     execute(name,'python3','-c',code,payload)
     code='''import json,sys
@@ -118,7 +119,6 @@ e=json.loads(sys.argv[1]); dev=r.interface(sys.argv[2])
 r.command('ip','address','add',e['LAN_IP']+'/24','dev',dev)
 r.command('ip','route','replace','100.64.0.0/10','via',e['EDGE_IP'],'dev',r.interface(e['NAT_IP']))
 r.apply_rules(r.nat_rules(e,r.interface(e['NAT_IP']),dev),['openmain_binat','openmain_container_boundary'])
-r.command('sysctl','-w','net.ipv4.ip_forward=1')
 '''
     execute('nat-'+name,'python3','-c',code,payload,address(nat,lan_net))
     return env
@@ -140,9 +140,8 @@ def main():
     LAN_A=network('lan-a','172.30.241.0/24'); LAN_B=network('lan-b','172.30.242.0/24')
     run('init',networks=(control_net,),caps=('DAC_OVERRIDE',),volumes=(str(WORK)+':/lab',str(HERE)+':/fixtures:ro'),
         args=('python3','-c','import sys;sys.path.insert(0,"/fixtures");import controller;c=controller;c.initialize()'))
-    for _ in range(30):
-        if (WORK/'runtime/controller/config.yaml').exists(): break
-        time.sleep(1)
+    if docker('wait',PREFIX+'-init').stdout.strip() != '0':
+        raise RuntimeError('private_fixture_initialization_failed')
     run('controller',SERVER,networks=(control_net,),env=('NB_SETUP_PAT_ENABLED=true','NB_DISABLE_GEOLOCATION=true'),
         volumes=(str(WORK/'runtime/controller')+':/etc/netbird:ro',str(WORK/'runtime/server-state')+':/var/lib/netbird'),
         args=('/go/bin/netbird-server','--config','/etc/netbird/config.yaml'))

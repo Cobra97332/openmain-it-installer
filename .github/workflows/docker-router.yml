@@ -63,6 +63,14 @@ jobs:
           docker run --rm --network none --cap-drop ALL --entrypoint zabbix_agent2 openmain-router:test -V
           docker run --rm --network none --cap-drop ALL --entrypoint zabbix_proxy openmain-router:test -V
           docker run --rm --network none --cap-drop ALL --entrypoint cat openmain-router:test /usr/share/openmain-packages.txt > packages.txt
+      - name: Probe actual Debian13 ARMHF package availability (not ARMv7 support)
+        if: matrix.platform == 'linux/amd64'
+        run: |
+          docker run --rm --cap-drop ALL --entrypoint sh openmain-router:test -c '
+            dpkg --add-architecture armhf &&
+            apt-get -o APT::Sandbox::User=root update >/dev/null &&
+            apt-cache policy zabbix-agent2:armhf zabbix-proxy-sqlite3:armhf
+          ' > armhf-packages.txt
       - name: Real stock-controller and nftables gateway gates
         run: |
           sudo modprobe tun
@@ -79,9 +87,11 @@ jobs:
           name: gateway-${{ strategy.job-index }}
           path: |
             packages.txt
+            armhf-packages.txt
             gateway-report.json
             router-image.tar
             router-image.tar.sha256
+          retention-days: 7
           if-no-files-found: error
   publish:
     needs: [syntax, gateway]

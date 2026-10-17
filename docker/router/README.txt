@@ -146,7 +146,7 @@ Prüfung und Veröffentlichungsablauf
 
 Tatsächlich lokal ausgeführt (Stand des ersten Entwurfs)
 - Offizielles NetBird-Manifest abgefragt: amd64/arm64/arm/v6 vorhanden.
-- 8 neue reine Adaptertests bestanden; der zusätzliche Test schützt zentrale
+- 9 neue reine Adaptertests bestanden; der zusätzliche Test schützt zentrale
   Policy-Verschärfung bei Wiederaufnahme. Zuvor insgesamt 220 bestehende/neue
   Debian-13-Offline-Tests sowie bisherige Bash-/ShellCheck-Prüfungen bestanden.
 - Neue NAT- und Gateway-Grenzregeln im echten isolierten nftables-Kernel geladen.
@@ -156,6 +156,8 @@ Tatsächlich lokal ausgeführt (Stand des ersten Entwurfs)
 - CI a901200: Gesamtimages und Binary-Starts beider Architekturen bestanden,
   Zabbix Proxy/Agent2 7.4.15 tatsächlich verfügbar. AMD64-Netzwerkvertrag mit
   Legacy-Routen bestand; ARM64-Gatewaytest fehlgeschlagen, Ursache noch offen.
+  ARMHF-Paketkandidaten werden zusätzlich per APT im AMD64-Probecontainer
+  abgefragt; ältere Debian-Pakete sind kein Zabbix-7.4-Nachweis.
   Nach Umstellung auf das tatsächliche Networks-/Ressourcenmodell sind beide
   Nachweise erneut erforderlich. Keine Architektur bereits freigegeben.
 - Lokaler zusätzlicher Netzwerkvertrag: durch erschöpften Docker-VFS-

@@ -28,6 +28,20 @@ STATE = Path('/state')
 PRIVATE = STATE / 'private'
 CONFIG = STATE / 'zabbix'
 CHILDREN = []
+ROOT_UID = 0
+
+
+def existing_profile(root=Path('/')):
+    directory = root / 'var/lib/netbird'
+    legacy = root / 'etc/netbird'
+    # A brand-new named Docker volume exists before the client creates files.
+    # All nonempty/ambiguous states still go through the original strict guard.
+    if not legacy.exists() and directory.is_dir() and not directory.is_symlink() and not any(directory.iterdir()):
+        info = directory.stat()
+        if info.st_uid != ROOT_UID or info.st_mode & 0o022:
+            raise Invalid('EMPTY_IDENTITY_VOLUME_UNSAFE')
+        return None
+    return resolve_profile(root)
 
 
 def command(*args, **kw):
@@ -336,7 +350,7 @@ def gateway(e):
     apply_rules(edge_rules(e, transit), ['openmain_container_boundary'])
     for network in (e['VIRTUAL_NETWORK'], e['LAN_NETWORK_CIDR']):
         command('ip', 'route', 'replace', network, 'via', e['NAT_IP'], 'dev', transit)
-    existed = resolve_profile() is not None
+    existed = existing_profile() is not None
     if existed:
         from preflight import url
         config = resolve_profile()['config']

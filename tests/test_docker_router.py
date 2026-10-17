@@ -101,4 +101,17 @@ class RestartPolicyTests(unittest.TestCase):
             self.assertTrue(all(method=='GET' and '/policies' not in path for method,path in calls))
 
 
+class IdentityVolumeTests(unittest.TestCase):
+    def test_only_empty_new_identity_volume_is_admitted(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d); directory=root/'var/lib/netbird'
+            directory.mkdir(parents=True,mode=0o700)
+            with patch.object(r,'ROOT_UID',os.getuid()):
+                self.assertIsNone(r.existing_profile(root))
+            (directory/'unknown.json').write_text('{}')
+            with self.assertRaises(Exception): r.existing_profile(root)
+
+
 if __name__ == '__main__': unittest.main()

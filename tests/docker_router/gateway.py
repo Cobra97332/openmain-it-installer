@@ -198,6 +198,11 @@ while True:
         docker('exec','-d',n,'python3','-c',code,suffix.upper())
     for name in NAMES: enroll(name)
     control('c.configure(); print("NATIVE_MAP_CONFIGURED")')
+    execute('primary-a','python3','-c',
+            'import sys;sys.path.insert(0,"/opt/openmain/netbird-router/common");'
+            'from preflight import resolve_profile;assert resolve_profile() is not None;'
+            'print("STOCK_IDENTITY_LAYOUT_ACCEPTED")')
+    RESULTS['stock_profile_layout']=True
     RESULTS['stage']='packet_gates'
     for lan in ('a','b'):
         for proto in ('tcp','udp'):

@@ -46,6 +46,10 @@ def docker(*args, data=None, check=True, timeout=120):
             classified = re.search(r'RuntimeError: (lab_[a-z_0-9]+)\s*$', r.stderr)
             if classified:
                 error = classified.group(1)
+            else:
+                classified = re.search(r'(NETLINK_NETFILTER_UNAVAILABLE|KERNEL_PERMISSION_DENIED|COMMAND_(?:IP|NFT)_FAILED|INTERFACE_AMBIGUOUS|LOCAL_COMMAND_FAILED)\s*$',r.stderr)
+                if classified:
+                    error=classified.group(1).lower()
         raise RuntimeError(error)
     return r
 
@@ -178,7 +182,7 @@ def main():
         run(name,networks=(control_net,),caps=('NET_ADMIN','NET_RAW'),devices=('/dev/net/tun:/dev/net/tun',),
             env=('NB_WG_KERNEL_DISABLED=true','SSL_CERT_FILE=/lab-ca.crt','HTTP_PROXY=','HTTPS_PROXY=','ALL_PROXY='),
             volumes=(str(WORK/'runtime/ca/cert.pem')+':/lab-ca.crt:ro',str(WORK/'runtime/keys'/name)+':/lab-key:ro'))
-    for i,name in enumerate(n for n in NAMES if n not in ('peer','probe')): setup_root(name,i)
+    router_env={name:setup_root(name,i) for i,name in enumerate(n for n in NAMES if n not in ('peer','probe'))}
     RESULTS['stage']='lan_and_enrollment'
     # Two different LAN namespaces, identical real addresses, no default-LAN route.
     for suffix,net in (('a',LAN_A),('b',LAN_B)):
@@ -203,6 +207,27 @@ while True:
             'from preflight import resolve_profile;assert resolve_profile() is not None;'
             'print("STOCK_IDENTITY_LAYOUT_ACCEPTED")')
     RESULTS['stock_profile_layout']=True
+    # Real packets for the passive Agent/Proxy LAN transport, including the
+    # local Proxy polling its own LAN alias (NAT hairpin). No TLS claim here.
+    server='''import socket
+s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+s.bind((__import__('sys').argv[1],10050));s.listen()
+while True:
+ c,_=s.accept();c.sendall(c.recv(100));c.close()
+'''
+    for name,e in router_env.items():
+        docker('exec','-d',PREFIX+'-'+name,'python3','-c',server,e['EDGE_IP'])
+    transport='''import socket,json,subprocess,sys
+addresses=json.loads(subprocess.check_output(['ip','-j','-4','addr','show','dev','wt0']))
+source=[a['local'] for a in addresses[0]['addr_info'] if a['family']=='inet'][0]
+s=socket.socket();s.settimeout(3);s.bind((source,0));s.connect((sys.argv[1],10050))
+s.sendall(b'OM-MONITOR');assert s.recv(100)==b'OM-MONITOR'
+'''
+    for name,e in router_env.items():
+        execute(name,'python3','-c',transport,e['LAN_IP'])
+    execute('primary-a','python3','-c',transport,router_env['backup-a']['LAN_IP'])
+    execute('backup-a','python3','-c',transport,router_env['primary-a']['LAN_IP'])
+    RESULTS['passive_monitoring_hairpin_and_backup_transport']=True
     RESULTS['stage']='packet_gates'
     for lan in ('a','b'):
         for proto in ('tcp','udp'):

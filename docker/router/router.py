@@ -45,9 +45,15 @@ def existing_profile(root=Path('/')):
 
 
 def command(*args, **kw):
-    r = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    r = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        timeout=45, **kw)
     if r.returncode:
+        if b'Unsupported netlink protocol' in r.stderr or b'Protocol not supported' in r.stderr:
+            raise Invalid('NETLINK_NETFILTER_UNAVAILABLE')
+        if b'Operation not permitted' in r.stderr:
+            raise Invalid('KERNEL_PERMISSION_DENIED')
+        if args[0] in ('ip', 'nft'):
+            raise Invalid('COMMAND_' + args[0].upper() + '_FAILED')
         raise Invalid('LOCAL_COMMAND_FAILED')
     return r.stdout.decode()
 
@@ -98,7 +104,14 @@ def nat_rules(e, transit, lan):
     rules += f'''table ip openmain_container_boundary {{
  chain forward {{ type filter hook forward priority -10; policy accept;
   iifname "{transit}" ip saddr != {{ 100.64.0.0/10, {e['EDGE_IP']} }} drop
-  iifname "{transit}" oifname != "{lan}" drop
+  iifname "{transit}" oifname != "{lan}" oifname != "{transit}" drop
+  iifname "{transit}" oifname "{transit}" ct original ip daddr != {e['LAN_IP']} drop
+  iifname "{transit}" oifname "{transit}" ct direction original ip daddr != {e['EDGE_IP']} drop
+  iifname "{transit}" oifname "{transit}" ct direction reply ip saddr != {e['EDGE_IP']} drop
+  iifname "{transit}" oifname "{transit}" ct status & dnat != dnat drop
+  iifname "{transit}" oifname "{transit}" meta l4proto != tcp drop
+  iifname "{transit}" oifname "{transit}" ct direction original tcp dport != {{ 10050, 10051 }} drop
+  iifname "{transit}" oifname "{transit}" ct direction reply tcp sport != {{ 10050, 10051 }} drop
   iifname "{lan}" oifname != "{transit}" drop
   iifname "{lan}" oifname "{transit}" ct state != {{ established, related }} ip daddr != {e['EDGE_IP']} drop
   iifname "{lan}" ip daddr {e['EDGE_IP']} meta l4proto != tcp drop
@@ -107,9 +120,11 @@ def nat_rules(e, transit, lan):
  }}
  chain lan_monitoring {{ type nat hook prerouting priority dstnat; policy accept;
   iifname "{lan}" ip daddr {e['LAN_IP']} ip saddr {e['LAN_NETWORK_CIDR']} tcp dport {{ 10050, 10051 }} dnat to {e['EDGE_IP']}
+  iifname "{transit}" ip daddr {e['LAN_IP']} ip saddr {{ {e['EDGE_IP']}, 100.64.0.0/10 }} tcp dport {{ 10050, 10051 }} dnat to {e['EDGE_IP']}
  }}
  chain monitoring {{ type nat hook postrouting priority srcnat; policy accept;
   iifname "{transit}" oifname "{lan}" ip saddr {{ {e['EDGE_IP']}, 100.64.0.0/10 }} ip daddr {e['LAN_NETWORK_CIDR']} masquerade
+  iifname "{transit}" oifname "{transit}" ct original ip daddr {e['LAN_IP']} ip daddr {e['EDGE_IP']} ct status dnat tcp dport {{ 10050, 10051 }} snat to {e['NAT_IP']}
  }}
 }}
 '''
@@ -227,6 +242,12 @@ def directories():
     for name in ('/run/zabbix', '/var/lib/zabbix'):
         p = Path(name); p.mkdir(parents=True, exist_ok=True)
         os.chown(p, z.pw_uid, z.pw_gid); p.chmod(0o750)
+    for name in ('proxy.sqlite3','proxy.sqlite3-wal','proxy.sqlite3-shm','proxy.log','proxy.log.old','agent.log','agent.log.old'):
+        p = Path('/var/lib/zabbix') / name
+        if p.is_symlink():
+            raise Invalid('ZABBIX_DATA_SYMLINK')
+        if p.exists():
+            os.chown(p, z.pw_uid, z.pw_gid)
     return z
 
 
@@ -288,6 +309,7 @@ def monitoring(e, peer_ip):
         atomic(intent, proxy)
         atomic(psk_file, os.urandom(32).hex() + '\n', 0o640, (0, z.pw_gid))
     psk = __import__('zabbix_registration').key_bytes(psk_file).hex()
+    os.chown(psk_file, 0, z.pw_gid)  # preserve bytes across image UID/GID changes
     identity = 'PSK-' + proxy
     os.environ.update(NB_ZABBIX_PROXY_NAME=proxy,
         NB_ZABBIX_RECEIPT_FILE=str(PRIVATE / 'zabbix-registration.json'),
@@ -307,7 +329,7 @@ def monitoring(e, peer_ip):
     proxy_config = (f'ProxyMode=0\nServer={e["NB_ZABBIX_SERVER"]}\nHostname={proxy}\n'
                     f'DBName=/var/lib/zabbix/proxy.sqlite3\nLogType=file\nLogFile=/var/lib/zabbix/proxy.log\nLogFileSize=10\n'
                     f'ListenIP=0.0.0.0\nSourceIP={peer_ip}\n' + common)
-    agent_config = (f'Hostname={c["host"]}\nServer=127.0.0.1,' + ','.join(addresses) + '\n'
+    agent_config = (f'Hostname={c["host"]}\nServer=127.0.0.1,' + e['NAT_IP'] + ',' + ','.join(addresses) + '\n'
                     f'ServerActive=127.0.0.1:10051\nListenIP=0.0.0.0\n'
                     f'LogType=file\nLogFile=/var/lib/zabbix/agent.log\nLogFileSize=10\nControlSocket=/run/zabbix/agent.sock\n' + common)
     agent_config += 'UserParameter=openmain.agent.active,echo 1\n'
@@ -320,7 +342,11 @@ def monitoring(e, peer_ip):
         os.close(fd)
         temporary = Path(temporary)
         with sqlite3.connect(temporary) as sql:
-            sql.executescript(data)
+            try:
+                sql.executescript(data)
+            except Exception:
+                temporary.unlink(missing_ok=True)  # only this new, unused schema
+                raise
         os.chown(temporary, z.pw_uid, z.pw_gid); temporary.chmod(0o600)
         os.replace(temporary, db)
     command('zabbix_agent2', '-T', '-c', str(CONFIG / 'agent.conf'))

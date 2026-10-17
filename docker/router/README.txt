@@ -27,6 +27,8 @@ gateway bekommt keinen direkten LAN-Anschluss. DROP-only-Grenzen verhindern
 Umwege von Docker-Uplink/LAN in den Transitpfad. Keine ACL-Kopie, keine
 Filter-ACCEPT-Freigabe als Ersatz für NetBird. Zusätzliche NAT-Regeln stellen
 nur LAN-seitige Zabbix-TLS-Ports 10050/10051 und lokalen Monitoring-Rückweg her.
+Eigene LAN-Adresse und Backup-Proxy sind auch über kontrolliertes NAT-Hairpin
+erreichbar; daraus folgt keine Freigabe beliebiger Transitverbindungen.
 Kein Hostnetz, keine Host-Port-Publikation, kein Docker-Socket, kein privileged.
 
 Betriebsmodell und Grenzen
@@ -135,7 +137,8 @@ Prüfung und Veröffentlichungsablauf
   Das ist ein Netzwerkvertragstest. Er ersetzt NICHT den vollständigen
   Compose-Start mit echter Zabbix-7.4-Serverregistrierung/Rebootabnahme.
 - Bestehende Offline-/Legacy-Sicherheitstests werden nicht verändert/entfernt.
-- GitHub docker-router.yml: Buildx je amd64/arm64, Paketarchitektur und echte
+- GitHub docker-router.yml: Buildx auf nativen AMD64-/ARM64-Runnern
+  (ubuntu-24.04 / ubuntu-24.04-arm), Paketarchitektur und echte
   Binary-Starts, dann Gatewayvertrag. Jeder Fehler sperrt die Veröffentlichung.
 - GHCR nach erfolgreichen Gates bei Push auf diesem Arbeitsbranch, zusätzlich
   optional workflow_dispatch publish=true (sobald Workflow verfügbar ist).

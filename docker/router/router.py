@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Container adapter for existing OpenMain helpers, not another ACL engine."""
 import fcntl
+from contextlib import closing
 import gzip
 import hashlib
 import ipaddress
@@ -16,13 +17,14 @@ import subprocess
 import sys
 import time
 import tempfile
+import urllib.request
 from urllib.parse import urlsplit
 
 sys.path.insert(0, '/opt/openmain/netbird-router/common')
 from runtime import Invalid, atomic, nft_config
 from network import API, reconcile, rows, one
 from preflight import resolve_profile, connected_profile
-from zabbix_access import group_members
+from zabbix_access import group_members, NoRedirect
 
 STATE = Path('/state')
 PRIVATE = STATE / 'private'
@@ -341,9 +343,10 @@ def monitoring(e, peer_ip):
         fd, temporary = tempfile.mkstemp(prefix='.initial-schema-', dir=db.parent)
         os.close(fd)
         temporary = Path(temporary)
-        with sqlite3.connect(temporary) as sql:
+        with closing(sqlite3.connect(temporary)) as sql:
             try:
-                sql.executescript(data)
+                with sql:
+                    sql.executescript(data)
             except Exception:
                 temporary.unlink(missing_ok=True)  # only this new, unused schema
                 raise
@@ -460,6 +463,11 @@ def nat(e):
 
 def main():
     os.umask(0o077)
+    # Reused API helpers must never forward bearer tokens across redirects.
+    proxies = urllib.request.getproxies()
+    if not proxies.get('https') and proxies.get('all'):
+        os.environ['https_proxy'] = proxies['all']
+    urllib.request.install_opener(urllib.request.build_opener(NoRedirect()))
     if sys.argv[1:] == ['health']:
         pid = int((PRIVATE / 'ready').read_text())
         os.kill(pid, 0)

@@ -129,4 +129,30 @@ class ForeignIdentityTests(unittest.TestCase):
                 self.assertEqual(list(state.iterdir()),[])
 
 
+class RedirectTests(unittest.TestCase):
+    def test_no_api_authorization_forwarded_across_redirect(self):
+        import http.server
+        import threading
+        import urllib.request
+        import urllib.error
+        received=[]
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self,*args): pass
+            def do_GET(self):
+                received.append(self.path)
+                self.send_response(302)
+                self.send_header('Location','/unexpected-target')
+                self.end_headers()
+        server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        try:
+            opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),r.NoRedirect())
+            request=urllib.request.Request('http://127.0.0.1:%d/initial'%server.server_port,
+                headers={'Authorization':'Bearer synthetic-test-only'})
+            with self.assertRaises(urllib.error.HTTPError): opener.open(request,timeout=3)
+            self.assertEqual(received,['/initial'])
+        finally:
+            server.shutdown();server.server_close();thread.join()
+
+
 if __name__ == '__main__': unittest.main()

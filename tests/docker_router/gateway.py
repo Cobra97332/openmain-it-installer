@@ -61,6 +61,8 @@ def run(name, image=IMAGE, networks=(), caps=(), volumes=(), env=(), devices=(),
     if name.startswith(('primary-', 'backup-', 'nat-')):
         cmd+=['--sysctl','net.ipv4.ip_forward=1']
     for v in volumes: cmd+=['-v',v]
+    for key in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'):
+        cmd+=['-e',key+'=']
     for e in env: cmd+=['-e',e]
     for d in devices: cmd+=['--device',d]
     cmd+=['--network',networks[0], '--entrypoint', args[0],image,*args[1:]]

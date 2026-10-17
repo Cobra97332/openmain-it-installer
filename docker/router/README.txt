@@ -173,7 +173,7 @@ Runtime-Commit ef2ab99b7d9eca2712e1860604b8d02c69060918:
   ohne tatsächlichen ARMv7-Image-/Gatewaytest keine ARMv7-Freigabe.
 - Ein früherer emulierter ARM64-Lauf scheiterte bei der Netzwerkvorbereitung.
   Native ARM64-Tests bestehen; daraus wird keine emulierte Prüfung gemacht.
-- Lokal zusätzlich 10 reine Adaptertests, Compose-Validierung und echtes
+- Lokal zusätzlich 11 reine Adaptertests, Compose-Validierung und echtes
   nftables-Kernelladen bestanden. Kompletter lokaler Build: HTTP403 am
   Zabbix-Repository (Cloud-Egress); weiterer lokaler Netzwerkversuch durch
   vollen Docker-VFS-Testdatenträger blockiert. Nur eigene Testobjekte bereinigt.

@@ -175,7 +175,9 @@ class DockerEndpointTests(unittest.TestCase):
         from test_docker_router import r, ENV
         e = dict(ENV, NB_ZABBIX_API_URL=URL, NB_ZABBIX_SERVER=C['server'])
         self.assertEqual(r.configuration(e), e)
-        for changes in (dict(NB_ZABBIX_SERVER='100.64.0.10'), dict(NB_ZABBIX_API_URL=URL.replace('8083','8084'))):
+        for changes in (dict(NB_ZABBIX_SERVER='100.64.0.10'), dict(NB_ZABBIX_API_URL=URL.replace('8083','8084')),
+                        dict(NB_ZABBIX_API_URL=ENV['NB_ZABBIX_API_URL']+'?untrusted=value'),
+                        dict(NB_ZABBIX_API_URL=ENV['NB_ZABBIX_API_URL']+'#fragment')):
             with self.subTest(changes=changes), self.assertRaises(Invalid):
                 r.configuration(dict(e, **changes))
 

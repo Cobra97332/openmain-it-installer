@@ -103,7 +103,8 @@ def configuration(env=None):
         u = urlsplit(e[k])
         if u.scheme != 'https' or not u.hostname or u.username or u.password or u.query or u.fragment:
             raise Invalid('API_URL_INVALID')
-    api_endpoint(e['NB_ZABBIX_API_URL'])
+    if api_endpoint(e['NB_ZABBIX_API_URL']).query:
+        raise Invalid('API_URL_INVALID')
     if e['NB_ZABBIX_API_URL'] == PRIVATE_API and e['NB_ZABBIX_SERVER'] != '100.107.91.6':
         raise Invalid('PRIVATE_API_ENDPOINT_MISMATCH')
     v, lan, transit = [ipaddress.IPv4Network(e[k]) for k in

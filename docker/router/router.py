@@ -24,7 +24,7 @@ sys.path.insert(0, '/opt/openmain/netbird-router/common')
 from runtime import Invalid, atomic, nft_config
 from network import API, reconcile, rows, one
 from preflight import resolve_profile, connected_profile
-from zabbix_access import group_members, NoRedirect
+from zabbix_access import group_members, NoRedirect, api_endpoint, PRIVATE_API
 
 STATE = Path('/state')
 PRIVATE = STATE / 'private'
@@ -99,10 +99,13 @@ def configuration(env=None):
              e.get('NB_ZABBIX_PROXY_GROUP','Zabbix-Kunden-Proxies'))
     if len(set(names)) != 4 or any(not n or len(n)>128 or any(c in n for c in '\r\n\x00') for n in names):
         raise Invalid('CUSTOMER_GLOBAL_GROUP_COLLISION')
-    for k in ('NB_MANAGEMENT_URL', 'NB_ZABBIX_API_URL'):
+    for k in ('NB_MANAGEMENT_URL',):
         u = urlsplit(e[k])
         if u.scheme != 'https' or not u.hostname or u.username or u.password or u.query or u.fragment:
             raise Invalid('API_URL_INVALID')
+    api_endpoint(e['NB_ZABBIX_API_URL'])
+    if e['NB_ZABBIX_API_URL'] == PRIVATE_API and e['NB_ZABBIX_SERVER'] != '100.107.91.6':
+        raise Invalid('PRIVATE_API_ENDPOINT_MISMATCH')
     v, lan, transit = [ipaddress.IPv4Network(e[k]) for k in
                        ('VIRTUAL_NETWORK', 'LAN_NETWORK_CIDR', 'TRANSIT_SUBNET')]
     overlay = ipaddress.IPv4Network('100.64.0.0/10')
@@ -391,6 +394,26 @@ def monitoring(e, peer_ip):
     spawn(['zabbix_agent2', '-f', '-c', str(CONFIG / 'agent.conf')], PRIVATE / 'agent.log', 'zabbix')
 
 
+def check_binding(marker, binding):
+    if not marker.exists():
+        return
+    old = json.loads(marker.read_text())
+    if old == binding:
+        return
+    # Explicit endpoint correction after a failed access check, before any
+    # Zabbix registration. Never rebind completed/ambiguous TLS receipts.
+    previous = old.get('NB_ZABBIX_API_URL') if isinstance(old, dict) else None
+    pristine_zabbix = not any((PRIVATE / name).exists() for name in (
+        'zabbix-registration.json', 'psk.pending', 'config-hashes.json',
+        'config-intent.json', 'ready'))
+    if (binding['NB_ZABBIX_API_URL'] == PRIVATE_API
+        and isinstance(previous, str) and previous.startswith('https://')
+        and dict(old, NB_ZABBIX_API_URL=PRIVATE_API) == binding and pristine_zabbix):
+        api_endpoint(previous)
+        return
+    raise Invalid('PERSISTENT_IDENTITY_BINDING_CONFLICT')
+
+
 def gateway(e):
     if STATE.exists() and any(STATE.iterdir()) and not (PRIVATE / 'binding.json').is_file():
         raise Invalid('UNKNOWN_PERSISTENT_STATE_NO_MIGRATION')
@@ -401,8 +424,7 @@ def gateway(e):
     marker = PRIVATE / 'binding.json'
     if STATE.exists() and any(p.is_symlink() for p in STATE.rglob('*')):
         raise Invalid('STATE_FILE_SYMLINK')
-    if marker.exists() and json.loads(marker.read_text()) != binding:
-        raise Invalid('PERSISTENT_IDENTITY_BINDING_CONFLICT')
+    check_binding(marker, binding)
     profile = existing_profile()
     if profile is not None and not marker.exists():
         raise Invalid('IDENTITY_WITHOUT_CUSTOMER_BINDING_NO_ADOPTION')
@@ -424,8 +446,7 @@ def gateway(e):
     directories()
     lock = (PRIVATE / 'owner.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    if marker.exists() and json.loads(marker.read_text()) != binding:
-        raise Invalid('PERSISTENT_IDENTITY_BINDING_CONFLICT')
+    check_binding(marker, binding)
     ready = PRIVATE / 'ready'
     ready.unlink(missing_ok=True)
     atomic(marker, json.dumps(binding))

@@ -27,7 +27,7 @@ x-config: &config
   TRANSIT_SUBNET: ${TRANSIT_SUBNET:?unique per project}
   EDGE_IP: ${EDGE_IP:?required}
   NAT_IP: ${NAT_IP:?required}
-  NB_ZABBIX_API_URL: ${NB_ZABBIX_API_URL:?HTTPS URL required}
+  NB_ZABBIX_API_URL: ${NB_ZABBIX_API_URL:?Zabbix API URL required}
   NB_ZABBIX_SERVER: ${NB_ZABBIX_SERVER:?NetBird server IP required}
   NB_ZABBIX_PROXY_GROUP: ${NB_ZABBIX_PROXY_GROUP:-Zabbix-Kunden-Proxies}
   NB_ZABBIX_POLICY_NAME: ${NB_ZABBIX_POLICY_NAME:-Zabbix Proxy to Server}

@@ -11,7 +11,7 @@ import urllib.request
 from runtime import Invalid, atomic, lan
 from preflight import incomplete_agent_config
 import zabbix_registration
-from zabbix_access import context, require_access
+from zabbix_access import context, require_access, api_endpoint, PRIVATE_API, private_request, NoRedirect
 from zabbix_registration import RPCError, TLSStore, key_bytes, rpc_result
 
 
@@ -76,12 +76,11 @@ def resume_initial_agent(old, c, psk):
 
 class API:
     def __init__(self, url, token, access=None):
-        if not url.startswith('https://'):
-            raise SyncError('API_HTTPS_REQUIRED')
+        checked('API_ENDPOINT_INVALID', api_endpoint, url)
         self.url, self.token, self.access = url, token, access
 
     def __call__(self, method, params):
-        if method.endswith(('.create', '.update')):
+        if method != 'apiinfo.version':
             checked('NETBIRD_HTTPS_ACCESS_UNCONFIRMED', require_access, self.url, self.access)
         data = json.dumps({'jsonrpc': '2.0', 'method': method, 'params': params, 'id': 1}).encode()
         headers = {'Content-Type': 'application/json-rpc'}
@@ -92,8 +91,13 @@ class API:
             headers['Authorization'] = 'Bearer ' + self.token
         request = urllib.request.Request(self.url, data=data, headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                result = json.load(response)
+            if self.url == PRIVATE_API:
+                result = private_request(self.url, data, self.token if method != 'apiinfo.version' else '', self.access)
+            else:
+                with urllib.request.build_opener(NoRedirect()).open(request, timeout=30) as response:
+                    if response.status != 200:
+                        raise ValueError()
+                    result = json.load(response)
         except Exception:
             raise SyncError('API_TRANSPORT_OR_JSON_INVALID') from None
         return rpc_result(result)

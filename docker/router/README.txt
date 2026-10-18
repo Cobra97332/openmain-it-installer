@@ -87,6 +87,47 @@ Cloud-Netzpolicy erlaubt repo.zabbix.com nicht. Kein Mirror- oder TLS-Bypass.
 Solange Build UND Gateway-Nachweis fehlen: keine Plattform als unterstützt
 bewerben, keine Produktion/Migration vorhandener Kundenrouter.
 
+Private Zabbix-API: eng begrenzte HTTP-Ausnahme
+  NB_ZABBIX_API_URL=http://100.107.91.6:8083/api_jsonrpc.php
+  NB_ZABBIX_SERVER=100.107.91.6
+Nur diese exakt konfigurierte HTTP-URL ist zulässig. Andere Endpunkte bleiben
+HTTPS/443 mit unveränderten TLS-, DNS- und Proxy-Zugriffsprüfungen. Es gibt
+keinen allgemeinen Schalter zum Abschalten von TLS. Kein automatischer Fallback.
+Vor JEDEM authentifizierten GET/Create/Update werden die aktive NetBird-Identität,
+Verbindung, Router-/Server-Peer, Zabbix-Gruppenzuordnung, bestehende Policy für
+TCP/10051 sowie die tatsächliche API-Zielroute/-Freigabe geprüft. Für HTTP zählt
+TCP/8083 zum echten Server-Peer, nicht die frühere HTTPS-Service-Adresse/443.
+Es werden keine Policies geändert. Fehlt die vorhandene 8083-Freigabe, stoppt
+die Registrierung; ein erfolgreicher Enrollment allein ist keine API-Freigabe.
+HTTP nutzt keine DNS-Auflösung und keinen HTTP-/ALL_PROXY. Jeder Socket ist mit
+SO_BINDTODEVICE an das aktive Profilinterface und an die eigene NetBird-IP
+gebunden. Nach connect werden Profil/Status, Route und Socket-Adressen vor dem
+Senden von Token/PSK erneut geprüft. Fehlende Berechtigung zur Gerätebindung,
+Tunnelverlust, Routenwechsel und Redirects brechen ohne Transport-Fallback ab.
+Die bereits benötigte NET_RAW-Capability genügt; keine zusätzlichen Runtime-Rechte.
+Die ungefilterte HTTP-Strecke endet auf dem konfigurierten Server. WireGuard
+verschlüsselt den Tunnel; HTTP bietet dort keine zusätzliche TLS-Serveridentität.
+Vertrauen in NetBird-Peer-Zuordnung, Server und Containerhost bleibt erforderlich.
+Die lokale API-URL-Bindung darf bei einer eigenen, vor der Registrierung
+abgebrochenen Installation von HTTPS auf exakt diese private URL wechseln,
+wenn ALLE anderen Bindungswerte gleich sind. Vorhandene Registrierungsnachweise,
+Pending-Registrierungen, fertige Konfigurationen oder Ready-Status verbieten
+diesen Wechsel. PSK und NetBird-Identität werden dabei nicht ersetzt. Für bereits
+registrierte Bestände gibt es keine automatische Endpunktmigration.
+Der ungeauthentifizierte apiinfo.version-Probe verlangt Zabbix 7.4 mit params=[].
+Kein echter API-Zugriff auf diese Infrastruktur wird in CI ausgeführt.
+
+Nachweise für die HTTP-Ausnahme
+- Offline-Regressionen: exakte URL, abweichende IP/Port/Pfad/Userinfo, Gruppen-
+  und Policy-Entzug, Verbindungs-/Routenwechsel, Gerätebindungsfehler, Redirects,
+  Token-freie Versionsprobe, Schutz JEDES authentifizierten API-Aufrufs und
+  wiederholte Proxy-/Gruppenregistrierung ohne PSK- oder Objektduplikate.
+- tests/docker_router/private_api.py prüft echte Linux-Sockets/Interfacebindung
+  in zwei internen Docker-Netzen einschließlich eines Routenwechsels nach
+  connect. Nur NetBird-Profil/Status werden dort synthetisch bereitgestellt;
+  dies ist ausdrücklich kein echter NetBird-/Zabbix-Server-End-to-End-Nachweis.
+- Der bestehende echte Standard-NetBird-Controller-/Gateway-Test bleibt Pflicht.
+
 Vorbereitung ausschließlich in isoliertem Labor
 1. Neuen Linux-Testhost/VM nehmen. Keine alten Profile/PSKs/Volumes importieren.
    Docker Engine + Compose >=2.20 + Buildx installieren. TUN im Host prüfen.
@@ -112,7 +153,8 @@ Vorbereitung ausschließlich in isoliertem Labor
    wegen Compose-Secretbindung weiter existieren. Tokens bleiben erforderlich.
 5. NB_MANAGEMENT_URL, NB_ZABBIX_API_URL und NB_ZABBIX_SERVER ausdrücklich
    setzen. Zentrale NetBird-Policies für TCP10051 zum echten Zabbix-Server
-   und HTTPS443 zum tatsächlichen API-Zugriffsweg müssen bereits bestehen;
+   und HTTPS443 zum tatsächlichen API-Zugriffsweg (für die exakte private
+   Ausnahme stattdessen TCP8083 zum Server-Peer) müssen bereits bestehen;
    sie werden geprüft, nicht pauschal erweitert. Beispiele .lab.test sind
    keine produktiven Defaults. Eigene Lab-CA
    über CA_BUNDLE_FILE als öffentlichen root-lesbaren PEM-Bundle bereitstellen;

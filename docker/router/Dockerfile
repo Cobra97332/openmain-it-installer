@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG NETBIRD_IMAGE=netbirdio/netbird:latest
+ARG NETBIRD_IMAGE=netbirdio/netbird:0.81.3@sha256:f8a4ea01da9f2351d5c9436209ee9caf35dd118fc9c1fc2ce7859f0c6e44781c
 FROM ${NETBIRD_IMAGE} AS netbird
 FROM debian:13-slim
 ARG TARGETARCH

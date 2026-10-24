@@ -1,0 +1,95 @@
+name: ${COMPOSE_PROJECT_NAME:?unique project name required}
+x-image: &image
+  image: ${ROUTER_IMAGE:-openmain-router:local}
+  build:
+    context: ../..
+    dockerfile: docker/router/Dockerfile
+    args:
+      NETBIRD_IMAGE: ${NETBIRD_IMAGE:-netbirdio/netbird:0.81.3@sha256:f8a4ea01da9f2351d5c9436209ee9caf35dd118fc9c1fc2ce7859f0c6e44781c}
+  restart: unless-stopped
+  init: false  # tini is already the image entrypoint
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  read_only: true
+  tmpfs:
+    - /tmp:mode=1777
+    - /run:mode=0755
+  logging:
+    driver: local
+    options: {max-size: 5m, max-file: '2'}
+x-config: &config
+  CUSTOMER: ${CUSTOMER:?required}
+  ROUTER_ROLE: ${ROUTER_ROLE:?primary or backup}
+  NB_MANAGEMENT_URL: ${NB_MANAGEMENT_URL:?HTTPS URL required}
+  VIRTUAL_NETWORK: ${VIRTUAL_NETWORK:-10.30.1.0/24}
+  LAN_NETWORK_CIDR: ${LAN_NETWORK_CIDR:-192.168.178.0/24}
+  LAN_IP: ${LAN_IP:?unused LAN IP required}
+  TRANSIT_SUBNET: ${TRANSIT_SUBNET:?unique per project}
+  EDGE_IP: ${EDGE_IP:?required}
+  NAT_IP: ${NAT_IP:?required}
+  NB_ZABBIX_API_URL: ${NB_ZABBIX_API_URL:?Zabbix API URL required}
+  NB_ZABBIX_SERVER: ${NB_ZABBIX_SERVER:?NetBird server IP required}
+  NB_ZABBIX_PROXY_GROUP: ${NB_ZABBIX_PROXY_GROUP:-Zabbix-Kunden-Proxies}
+  NB_ZABBIX_POLICY_NAME: ${NB_ZABBIX_POLICY_NAME:-Zabbix Proxy to Server}
+  SSL_CERT_FILE: /run/openmain-ca.pem
+  CURL_CA_BUNDLE: /run/openmain-ca.pem
+services:
+  gateway:
+    <<: *image
+    command: [gateway]
+    environment: *config
+    depends_on:
+      nat: {condition: service_healthy, restart: true}
+    # Only this process owns the nonpersistent userspace WireGuard TUN.
+    devices: [/dev/net/tun:/dev/net/tun]
+    cap_add: [NET_ADMIN, NET_RAW, CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
+    sysctls: {net.ipv4.ip_forward: '1'}
+    networks:
+      uplink: {}
+      transit: {ipv4_address: '${EDGE_IP}'}
+    volumes:
+      - netbird:/var/lib/netbird
+      - state:/state
+      - proxy-db:/var/lib/zabbix
+      - nat-state:/nat-state:ro
+      - ${CA_BUNDLE_FILE:-/etc/ssl/certs/ca-certificates.crt}:/run/openmain-ca.pem:ro
+    secrets: [nb_setup_key, nb_api_token, zabbix_api_token]
+    healthcheck:
+      test: [CMD, python3, /opt/openmain/router.py, health]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+  nat:
+    <<: *image
+    command: [nat]
+    environment: *config
+    cap_add: [NET_ADMIN]
+    sysctls: {net.ipv4.ip_forward: '1'}
+    volumes: [nat-state:/nat-state]
+    networks:
+      transit: {ipv4_address: '${NAT_IP}'}
+      lan: {ipv4_address: '${LAN_IP}'}
+    healthcheck:
+      test: [CMD, nft, list, table, ip, openmain_binat]
+      interval: 10s
+      timeout: 5s
+      retries: 4
+    # No host networking, no Docker socket, no privileged container.
+volumes:
+  netbird: {}
+  state: {}
+  proxy-db: {}
+  nat-state: {}
+networks:
+  uplink: {}
+  transit:
+    internal: true
+    ipam:
+      config: [{subnet: '${TRANSIT_SUBNET}'}]
+  lan:
+    external: true
+    name: ${LAN_DOCKER_NETWORK:?precreated isolated LAN network required}
+secrets:
+  nb_setup_key: {file: '${SECRETS_DIR:?private directory required}/nb_setup_key'}
+  nb_api_token: {file: '${SECRETS_DIR}/nb_api_token'}
+  zabbix_api_token: {file: '${SECRETS_DIR}/zabbix_api_token'}

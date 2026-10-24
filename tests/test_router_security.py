@@ -509,6 +509,30 @@ print(json.dumps({'jsonrpc':'2.0','id':1,'result':result}))
         proxy.update(kwargs)
         self.state.write_text(json.dumps({'proxies':[proxy], 'groups':[{'proxy_groupid':'201','name':'customer','min_online':'1','failover_delay':'1m'}], 'writes':[]}))
 
+    def test_private_api_registration_routes_every_authenticated_call_through_guard(self):
+        self.env['NB_ZABBIX_API_URL']='http://100.107.91.6:8083/api_jsonrpc.php'
+        helper=Path(self.env['NB_BUNDLE_DIR'])/'netbird-router/common/zabbix_access.py'
+        helper.write_text("""import json,os,subprocess,sys
+from pathlib import Path
+if int(os.environ.get('MOCK_ACCESS_DENIED','0')):sys.exit(1)
+if sys.argv[1:]==['--private-request']:
+ payload=sys.stdin.read()
+ with (Path(os.environ['MOCK_ROOT'])/'guarded-requests').open('a') as log:
+  log.write(json.loads(payload)['method']+'\\n')
+ # Synthetic transport behind the guard; real Linux binding is tested separately.
+ result=subprocess.run(['curl','--data',payload],capture_output=True,text=True)
+ sys.stdout.write(result.stdout);sys.exit(result.returncode)
+""")
+        first=self.run_api();self.assertEqual(first.returncode,0,first.stderr)
+        before=self.psk.read_bytes()
+        second=self.run_api();self.assertEqual(second.returncode,0,second.stderr)
+        methods=(self.root/'guarded-requests').read_text().splitlines()
+        self.assertIn('proxy.get',methods);self.assertIn('proxygroup.get',methods)
+        self.assertEqual(methods.count('proxy.create'),1)
+        self.assertEqual(methods.count('proxygroup.create'),1)
+        self.assertEqual(len(json.loads(self.state.read_text())['proxies']),1)
+        self.assertEqual(self.psk.read_bytes(),before)
+
     def test_access_denied_preserves_psk_pending_and_status_without_any_api_call(self):
         self.existing();self.pending.write_text('pending');self.psk.chmod(0o600)
         status=self.root/'progress.json';status.write_text('{"phase":"netbird"}');status.chmod(0o600)

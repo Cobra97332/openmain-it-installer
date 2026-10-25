@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set +xv
 set -Eeuo pipefail
 
 BASE_URL="${OPENMAIN_GITHUB_RAW:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-prometheus}"
@@ -16,6 +17,7 @@ die() { echo "[FEHLER] $*" >&2; exit 1; }
 log() { echo "[+] $*"; }
 warn() { echo "[!] $*" >&2; }
 
+rc=0
 trap 'rc=$?; echo "[FEHLER] Unerwarteter Abbruch in Zeile $LINENO (Exit $rc)." >&2; exit $rc' ERR
 
 [[ $EUID -eq 0 ]] || die "Bitte als root ausführen."
@@ -126,8 +128,11 @@ install_detail_exporter() {
   local helper="/usr/local/sbin/openmain-netbird-client-detail-metrics"
 
   log "Installiere Relay-/Peer-Detail-Exporter..."
-  curl -fsSL "$BASE_URL/enable-client-detail-metrics.sh" -o "$helper" \
-    || die "Detail-Metrics-Helper konnte nicht geladen werden."
+  if [[ -n "${NB_BUNDLE_DIR:-}" ]]; then
+    install -m 0755 "$NB_BUNDLE_DIR/netbird-prometheus/enable-client-detail-metrics.sh" "$helper"
+  else
+    curl -fsSL "$BASE_URL/enable-client-detail-metrics.sh" -o "$helper" || die "Detail-Metrics-Helper fehlt."
+  fi
   chmod 0755 "$helper"
 
   NETBIRD_CLIENT_DETAIL_PORT="$DETAIL_PORT" \
@@ -178,6 +183,8 @@ if check_endpoint "$LOOPBACK_ENDPOINT"; then
   exit 0
 fi
 
+[[ "${NETBIRD_CLIENT_SKIP_RECONNECT:-0}" != 1 ]] || die "Metrics erfordern eine geplante Neukonfiguration; bestehende Verbindung bleibt aktiv."
+
 warn "Lokale Client Metrics sind noch nicht aktiv."
 warn "NetBird v0.80.0 beendet 'netbird up' bei einer bestehenden Verbindung mit 'Already connected'."
 warn "Deshalb ist einmalig ein kurzer 'netbird down' / 'netbird up' Zyklus erforderlich."
@@ -215,7 +222,6 @@ for (( attempt=1; attempt<=max_attempts; attempt++ )); do
 done
 
 echo "FAILED: Lokaler Metrics-Endpunkt nicht erreichbar." >&2
-journalctl -u netbird --since '-5 min' --no-pager | tail -100 >&2 || true
 exit 1
 EOF
 
@@ -239,9 +245,7 @@ if ! apply_local_metrics; then
   echo >&2
   warn "Lokaler Metrics-Endpunkt wurde innerhalb von $WAIT_SECONDS Sekunden nicht erreichbar."
   warn "NetBird Status:"
-  netbird status --detail >&2 || true
   warn "NetBird Service-Logs:"
-  journalctl -u netbird --since '-5 min' --no-pager | tail -100 >&2 || true
   die "Aktivierung fehlgeschlagen."
 fi
 

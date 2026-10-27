@@ -148,10 +148,12 @@ menuentry 'SYNTHETIC probe (not Debian Installer)' {
         if 'OPENMAIN_QA_PASS' not in output or 'OPENMAIN_QA_FAIL' in output:
             failures.append(mode)
             markers=('OPENMAIN_QA_FAIL_LINE_', 'RELEASE BLOCKED:', 'AssertionError:',
-                     'Failed QEMU release gates:')
+                     'Failed QEMU release gates:', 'FAIL:', 'ERROR:', 'FAILED (',
+                     'Traceback (most recent call last)', 'ModuleNotFoundError:',
+                     'RuntimeError:', 'Ran ')
             evidence=[line.strip() for line in output.splitlines()
                       if any(marker in line for marker in markers)]
-            print(mode+': FAIL; '+(' | '.join(evidence[-10:]) if evidence
+            print(mode+': FAIL; '+(' | '.join(evidence[-20:]) if evidence
                                    else 'inspect lab-only log'),flush=True)
             continue
         print(mode+': PASS ('+('unit lifecycle ONLY' if args.unit_only else 'real Debian 13/QEMU, mocked router services/APIs')+')',flush=True)

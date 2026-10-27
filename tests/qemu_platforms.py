@@ -40,7 +40,9 @@ def main():
     work.mkdir(mode=0o700,parents=True)
     source=Path('/src')
     names=set((source/'netbird-router/bundle.files').read_text().splitlines())
-    names.update(['build-iso.sh','preseed.cfg','tests/Dockerfile.router','netbird-prometheus/sync-client-targets.py'])
+    names.update(['build-iso.sh','preseed.cfg','tests/Dockerfile.router',
+                  'netbird-prometheus/sync-client-targets.py',
+                  'docker/router/router.py','docker/router/Dockerfile'])
     names.update(str(p.relative_to(source)) for p in (source/'tests').glob('*.py'))
     for name in sorted(names):
         src=source/name;dst=root/'src'/name

@@ -73,7 +73,7 @@ Architekturen: Freigabestatus
   arm64: dieselben Prüfungen auf nativem ARM64-Runner bestanden.
   arm/v7: NICHT unterstützt: offizielles APT bietet hier nur Zabbix 7.0.22,
   keine geforderte 7.4-Version. Dockerfile verweigert diesen Build.
-NetBird 0.80.0 Multiarch-Index geprüft:
+Historischer NetBird 0.80.0 Multiarch-Index:
  sha256:4976692ea44bb93871743d0b742b4a8f97f6425bfc458ca2d78e28fdb8bdf4ad
  enthält amd64, arm64 und arm/v6, keinen arm/v7-Eintrag. Ein ARMv6-Binary
  könnte auf ARMv7 laufen; Debian-armhf-, Zabbix- und Gateway-Kompatibilität
@@ -236,10 +236,17 @@ Historischer Netzwerk-Nachweis ef2ab99b7d9eca2712e1860604b8d02c69060918:
   nftables-Kernelladen bestanden. Kompletter lokaler Build: HTTP403 am
   Zabbix-Repository (Cloud-Egress); weiterer lokaler Netzwerkversuch durch
   vollen Docker-VFS-Testdatenträger blockiert. Nur eigene Testobjekte bereinigt.
-- Änderungen nach diesem Runtime-Commit an Dokumentation/Logausgabe benötigen
-  weiterhin ihren eigenen CI-Lauf. NetBird 0.81.3 wurde auf AMD64 und ARM64
-  im CI-Lauf zu 827be30 getestet; Dockerfile, Compose und Beispielkonfiguration
-  verwenden denselben festen Multiarch-Digest statt des beweglichen Tags "latest".
+- NetBird 0.81.3 ist in Dockerfile, Compose und Beispielkonfiguration auf
+  den Multiarch-Digest sha256:f8a4ea01da9f2351d5c9436209ee9caf35dd118fc9c1fc2ce7859f0c6e44781c
+  festgelegt. AMD64 und ARM64 bestanden den echten Standard-Controller- und
+  Gateway-Pakettest mit diesem Client, auch nach Entzug einer bereits benutzten
+  UDP-Verbindung. Ein sofortiger Entzug beliebiger etablierter Sessions wird
+  damit nicht behauptet.
+- Die Legacy-Kernel-CI bleibt an sechs P1-Gegenbeispielen rot. Nach Korrektur
+  des isolierten QEMU-Fixtures bestehen im VM-Gast 243 Python-Tests; die VM
+  erreicht dann denselben Kernelblocker. Synthetische BIOS- und UEFI-Boots
+  bestehen. Diese Gates bleiben aktiv; keine Produktionsfreigabe.
+- Änderungen nach diesem Runtime-Commit benötigen ihren eigenen CI-Lauf.
 
 Rollback
 Nur dieses Projekt docker compose ... down, ohne -v! Identität/SQLite bleiben.

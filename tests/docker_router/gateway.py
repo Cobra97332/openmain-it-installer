@@ -272,9 +272,10 @@ ready.touch()
 until=time.monotonic()+90
 while not go.exists() and time.monotonic()<until: time.sleep(0.05)
 if not go.exists(): raise RuntimeError("revocation_probe_not_released")
-s.send(b"OM-TEST")
-try: delivered=s.recv(100)==b"A:OM-TEST"
-except socket.timeout: delivered=False
+try:
+ s.send(b"OM-TEST")
+ delivered=s.recv(100)==b"A:OM-TEST"
+except OSError: delivered=False
 result.write_text("DELIVERED" if delivered else "BLOCKED")
 '''
     docker('exec','-d',PREFIX+'-peer','python3','-c',established_probe)

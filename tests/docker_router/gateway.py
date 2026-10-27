@@ -257,9 +257,36 @@ s.sendall(b'OM-MONITOR');assert s.recv(100)==b'OM-MONITOR'
     wait_for(lambda: probe('peer','b','tcp',False)); wait_for(lambda: probe('probe','b','tcp'))
     probe('probe','a','tcp',False); probe('peer','a','tcp')
     RESULTS['tenant_separation']=True
+    # Keep a replied UDP tuple open across the policy change. A fresh socket
+    # alone does not prove revocation of an established conntrack entry.
+    established_probe='''import pathlib,socket,time
+ready=pathlib.Path("/tmp/openmain-established-ready")
+go=pathlib.Path("/tmp/openmain-established-go")
+result=pathlib.Path("/tmp/openmain-established-result")
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+s.settimeout(3)
+s.connect(("10.30.1.100",8081))
+s.send(b"OM-TEST")
+assert s.recv(100)==b"A:OM-TEST"
+ready.touch()
+until=time.monotonic()+90
+while not go.exists() and time.monotonic()<until: time.sleep(0.05)
+if not go.exists(): raise RuntimeError("revocation_probe_not_released")
+s.send(b"OM-TEST")
+try: delivered=s.recv(100)==b"A:OM-TEST"
+except socket.timeout: delivered=False
+result.write_text("DELIVERED" if delivered else "BLOCKED")
+'''
+    docker('exec','-d',PREFIX+'-peer','python3','-c',established_probe)
+    wait_for(lambda: execute('peer','test','-f','/tmp/openmain-established-ready'))
     control('c.mutate({"operation":"membership","allow":False}); print("GROUP_WITHDRAWN")')
     for proto in ('tcp','udp'): wait_for(lambda: probe('peer','a',proto,False))
     RESULTS['withdrawal_new_flows']=True
+    execute('peer','touch','/tmp/openmain-established-go')
+    wait_for(lambda: execute('peer','test','-f','/tmp/openmain-established-result'))
+    if execute('peer','cat','/tmp/openmain-established-result').stdout.strip()!='BLOCKED':
+        raise RuntimeError('established_session_policy_bypass')
+    RESULTS['withdrawal_established_flow']=True
     control('c.mutate({"operation":"membership","allow":True}); print("GROUP_RESTORED")')
     wait_for(lambda: probe('peer','a'))
     # Prove selected data paths, not just successful traffic after a stop.

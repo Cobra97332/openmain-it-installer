@@ -237,7 +237,9 @@ Historischer Netzwerk-Nachweis ef2ab99b7d9eca2712e1860604b8d02c69060918:
   Zabbix-Repository (Cloud-Egress); weiterer lokaler Netzwerkversuch durch
   vollen Docker-VFS-Testdatenträger blockiert. Nur eigene Testobjekte bereinigt.
 - Änderungen nach diesem Runtime-Commit an Dokumentation/Logausgabe benötigen
-  weiterhin ihren eigenen CI-Lauf; "latest" wird nicht verwendet.
+  weiterhin ihren eigenen CI-Lauf. NetBird 0.81.3 wurde auf AMD64 und ARM64
+  im CI-Lauf zu 827be30 getestet; Dockerfile, Compose und Beispielkonfiguration
+  verwenden denselben festen Multiarch-Digest statt des beweglichen Tags "latest".
 
 Rollback
 Nur dieses Projekt docker compose ... down, ohne -v! Identität/SQLite bleiben.

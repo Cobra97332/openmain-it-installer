@@ -263,11 +263,18 @@ s.sendall(b'OM-MONITOR');assert s.recv(100)==b'OM-MONITOR'
     control('c.mutate({"operation":"membership","allow":True}); print("GROUP_RESTORED")')
     wait_for(lambda: probe('peer','a'))
     # Prove selected data paths, not just successful traffic after a stop.
-    primary_before,backup_before=route_packets('primary-a'),route_packets('backup-a')
-    probe('peer','a')
-    if not (route_packets('primary-a')>primary_before and route_packets('backup-a')==backup_before):
-        raise RuntimeError('primary_metric_not_selected')
+    def primary_path():
+        primary_before=route_packets('primary-a')
+        backup_before=route_packets('backup-a')
+        probe('peer','a')
+        if not (route_packets('primary-a')>primary_before
+                and route_packets('backup-a')==backup_before):
+            raise RuntimeError('primary_metric_not_selected')
+    # Policy and route updates are asynchronous. Require real packets on the
+    # primary path within the bounded convergence window.
+    wait_for(primary_path)
     RESULTS['primary_metric_100_selected']=True
+    backup_before=route_packets('backup-a')
     docker('stop',PREFIX+'-primary-a')
     wait_for(lambda: probe('peer','a'),seconds=90)
     if route_packets('backup-a')<=backup_before:

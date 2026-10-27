@@ -147,7 +147,12 @@ menuentry 'SYNTHETIC probe (not Debian Installer)' {
         output=log.read_text(errors='replace')
         if 'OPENMAIN_QA_PASS' not in output or 'OPENMAIN_QA_FAIL' in output:
             failures.append(mode)
-            print(mode+': FAIL; inspect lab-only log',flush=True)
+            markers=('OPENMAIN_QA_FAIL_LINE_', 'RELEASE BLOCKED:', 'AssertionError:',
+                     'Failed QEMU release gates:')
+            evidence=[line.strip() for line in output.splitlines()
+                      if any(marker in line for marker in markers)]
+            print(mode+': FAIL; '+(' | '.join(evidence[-10:]) if evidence
+                                   else 'inspect lab-only log'),flush=True)
             continue
         print(mode+': PASS ('+('unit lifecycle ONLY' if args.unit_only else 'real Debian 13/QEMU, mocked router services/APIs')+')',flush=True)
     if not args.unit_only:print('ISO result applies ONLY to the synthetic fixture, not official netinstall.',flush=True)

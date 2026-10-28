@@ -1,0 +1,50 @@
+name: PVE router beta gates
+
+on:
+  push:
+    branches:
+      - beta-pve-qnap-legacy-router
+    paths:
+      - router-install.sh
+      - netbird-router/pve/**
+      - tests/pve_native_route_kernel.py
+      - tests/Dockerfile.pve-native-route
+      - .github/workflows/pve-router-beta.yml
+
+permissions:
+  contents: read
+
+jobs:
+  syntax-and-legacy-refusal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: |
+          bash -n router-install.sh
+          bash -n netbird-router/pve/install.sh
+          bash -n zabbix-proxy-install.sh
+          bash -n zabbix-api-register.sh
+      - name: BINAT must fail before enrollment
+        run: |
+          docker build -f tests/Dockerfile.pve-native-route -t pve-router-beta .
+          docker run --rm --network none -v "$PWD:/src:ro" pve-router-beta bash -ec '
+            set +e
+            output=$(bash router-install.sh --routing-mode binat --customer Fixture --setup-key unused --api-token unused 2>&1)
+            result=$?
+            set -e
+            test "$result" -ne 0
+            printf "%s\n" "$output" | grep -F "Legacy-BINAT bleibt"
+          '
+
+  policy-kernel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build isolated Debian 13 lab
+        run: docker build -f tests/Dockerfile.pve-native-route -t pve-router-beta .
+      - name: Allow, deny, revoke, established and reply packet gates
+        run: >-
+          docker run --rm --network none --cap-add NET_ADMIN --cap-add NET_RAW
+          --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1
+          -v "$PWD:/src:ro" pve-router-beta python3 tests/pve_native_route_kernel.py

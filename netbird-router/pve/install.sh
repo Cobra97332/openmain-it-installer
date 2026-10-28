@@ -21,7 +21,8 @@ CT_PASSWORD="${NB_CT_PASSWORD:-}"
 SSH_KEY_URL="${NB_CT_SSH_KEY_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-router/pve/authorized_keys}"
 PRIMARY_METRIC="100"
 BACKUP_METRIC="200"
-COMMON_URL="${NETBIRD_ROUTER_COMMON_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/router-install.sh}"
+ROUTING_MODE="${NB_ROUTING_MODE:-native}"
+COMMON_URL="${NETBIRD_ROUTER_COMMON_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/beta-pve-qnap-legacy-router/router-install.sh}"
 ZABBIX_URL="${NETBIRD_ROUTER_ZABBIX_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/zabbix-proxy-install.sh}"
 ZABBIX_API_HELPER_URL="${NETBIRD_ROUTER_ZABBIX_API_HELPER_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/zabbix-api-register.sh}"
 ZABBIX_SERVER="${NB_ZABBIX_SERVER:-100.107.91.6}"
@@ -42,6 +43,7 @@ die(){ printf '\033[1;31m[FEHLER]\033[0m %s\n' "$*" >&2; exit 1; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --role) ROLE="$2"; shift 2;;
+    --routing-mode) ROUTING_MODE="$2"; shift 2;;
     --ctid) CTID="$2"; shift 2;;
     --hostname) HOSTNAME_CT="$2"; shift 2;;
     --customer) CUSTOMER="$2"; shift 2;;
@@ -76,6 +78,7 @@ done
 [[ $EUID -eq 0 ]] || die "Als root auf dem PVE-Host ausführen."
 command -v pct >/dev/null || die "pct fehlt."
 [[ "$ROLE" == primary || "$ROLE" == backup ]] || die "Rolle muss primary oder backup sein."
+[[ "$ROUTING_MODE" == native ]] || die "Legacy-BINAT ist in diesem Beta-Installer gesperrt."
 [[ "$METRICS_ENABLED" == 0 || "$METRICS_ENABLED" == 1 ]] || die "NB_METRICS_ENABLED muss 0 oder 1 sein."
 [[ "$METRICS_PORT" =~ ^[0-9]+$ ]] || die "Ungültiger Metrics-Port: $METRICS_PORT"
 (( METRICS_PORT >= 1 && METRICS_PORT <= 65535 )) || die "Ungültiger Metrics-Port: $METRICS_PORT"
@@ -183,6 +186,7 @@ NB_MANAGEMENT_URL=$(printf '%q' "$MGMT_URL")
 NB_ROLE=$(printf '%q' "$ROLE")
 NB_PRIMARY_METRIC=$(printf '%q' "$PRIMARY_METRIC")
 NB_BACKUP_METRIC=$(printf '%q' "$BACKUP_METRIC")
+NB_ROUTING_MODE=$(printf '%q' "$ROUTING_MODE")
 NB_ZABBIX_SERVER=$(printf '%q' "$ZABBIX_SERVER")
 NB_ZABBIX_API_TOKEN=$(printf '%q' "$ZABBIX_API_TOKEN")
 NB_ZABBIX_API_URL=$(printf '%q' "$ZABBIX_API_URL")
@@ -202,11 +206,11 @@ QC=$(printf '%q' "$CUSTOMER")
 QH=$(printf '%q' "$HOSTNAME_CT")
 pct exec "$CTID" -- /root/install-dhcp-recovery.sh || die "DHCP-Recovery konnte nicht eingerichtet werden."
 
-pct exec "$CTID" -- bash -lc "set -a; source /root/.netbird-router-secrets; set +a; /root/router-install.sh --role \"\$NB_ROLE\" --management-url \"\$NB_MANAGEMENT_URL\" --zabbix-server \"\$NB_ZABBIX_SERVER\" --customer $QC --hostname $QH; rc=\$?; rm -f /root/.netbird-router-secrets; exit \$rc"
+pct exec "$CTID" -- bash -lc "set -a; source /root/.netbird-router-secrets; set +a; /root/router-install.sh --role \"\$NB_ROLE\" --management-url \"\$NB_MANAGEMENT_URL\" --zabbix-server \"\$NB_ZABBIX_SERVER\" --customer $QC --hostname $QH --routing-mode \"\$NB_ROUTING_MODE\"; rc=\$?; rm -f /root/.netbird-router-secrets; exit \$rc"
 
 log "Fertig. Prüfen mit:"
 echo "pct exec $CTID -- netbird status"
-echo "pct exec $CTID -- nft list table ip mein_binat"
+echo "pct exec $CTID -- netbird status -d"
 echo "pct exec $CTID -- cat /proc/sys/net/ipv4/ip_forward"
 echo "pct exec $CTID -- systemctl status zabbix-proxy --no-pager"
 echo "pct exec $CTID -- systemctl status zabbix-agent2 --no-pager"

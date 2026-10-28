@@ -1,0 +1,36 @@
+# PVE/QNAP-Kundenrouter: Beta-Plan
+
+Basis: `main` 9f88ada94148bc5aa96daf8e6fcfa894d35f5870. Kein Deployment oder produktiver Einsatz durch diesen Branch.
+
+## Routing und Freigabestatus
+
+- `netbird-router/pve/install.sh` bleibt der Einstiegspunkt und erstellt den vorhandenen Debian-13-LXC mit Primary-/Backup-Metriken 100/200. Der Beta-Installer lädt die zugehörige `router-install.sh` aus diesem Beta-Branch.
+- `--routing-mode native` ist der Beta-Standard. Das tatsächliche Kunden-LAN wird als NetBird-Network-Resource `LAN-<Kunde>` veröffentlicht; NetBird bleibt Eigentümer der Forward-Policy. Die Ressource erhält nur die kundenspezifische Gruppe. Vorhandene überlappende Ressourcen und alte lokale BINAT-Regeln führen zum Abbruch. Das Verfahren setzt ein für alle beteiligten NetBird-Peers kollisionsfreies LAN-Präfix voraus.
+- `--routing-mode binat` bricht vor Host- oder API-Änderungen ab. Im alten Pfad wurde die NetBird-Firewall deaktiviert. Mit aktivierter NetBird-Firewall sieht deren Forward-ACL nach DNAT die reale statt der virtuellen Zieladresse. Der in PR #35 untersuchte asynchrone ACL-Abgleich ist wegen veralteter Freigaben und etablierter Verbindungen keine Freigabelösung.
+- Auch der native Pfad ist **nicht freigegeben**: Der isolierte Kerneltest muss nach Entzug einer Policy ebenfalls bereits bestehende Verbindungen in beide Richtungen sperren. Der bekannte NetBird-Established-Shortcut erfüllt das nach aktuellem Befund nicht. Die sechs P1-Gegenbeispiele aus PR #35 bleiben unverändert; grüne Syntax- oder API-Mocks ersetzen sie nicht.
+- Für zwei Router braucht es zwei getrennte LXC-/Host-Fehlerdomänen, dieselbe Kundenressource und eine beobachtete Umschaltung. Zwei LXC auf einem einzigen PVE-Host sind kein Host-Failover.
+
+## Optionale Überwachung, ohne neuen Proxy
+
+`zabbix-proxy-install.sh` und `zabbix-api-register.sh` bleiben unverändert. Die vorhandene aktive Proxy-Registrierung mit TLS-PSK benötigt einen Zabbix-API-Token; ein Status `pending` ist kein erfolgreicher Abschluss.
+
+1. PVE: Optionaler idempotenter API-Helfer soll den PVE-Host in der Kundengruppe anlegen oder prüfen, die vorhandene Zabbix-Vorlage *Proxmox VE by HTTP* zuordnen und den Host der Kunden-Proxy-Gruppe zuweisen. Benötigt werden die PVE-LAN-Adresse und ein PVE-API-Token mit Leserechten für System, Storage und VMs. Keine Schlüssel im Repository ablegen.
+2. QNAP: Optionaler API-Helfer soll einen SNMPv3-Host mit LAN-Adresse, Port UDP/161, Gerätevorlage und Kunden-Proxy-Gruppe anlegen oder prüfen. SNMPv3-Zugangsdaten gehören in geschützte Zabbix-Makros/Secret-Verwaltung. Die Vorlage ist mit QNAP-Modell und QTS-Version zu validieren; die von Zabbix gelisteten QNAP-Vorlagen sind Community-Beiträge.
+3. Für aktive Zabbix-Agents auf PVE können vorhandene Proxy-Gruppen-IPs mit `openmain-zabbix-agent-group.sh` gesetzt werden. Zabbix-Proxy-Gruppen unterstützen keine SNMP-Traps; QNAP zunächst per SNMP-Polling überwachen.
+
+## Proxmox-Backups
+
+Auf QNAP einen NFS-Export mit Zugriff nur für die PVE-Host-IP(s) bereitstellen. In PVE diesen als Storage für `backup`-Inhalt eintragen und reguläre PVE-Backup-Jobs (`vzdump`) für VM/LXC inklusive Router-LXC, Aufbewahrung und Wiederherstellungsprobe konfigurieren. Backup-Verkehr läuft im Kunden-LAN; der Router ist nicht Teil des Backup-Datenpfads. `pve-config-backup/` kann zusätzlich Hostkonfiguration sichern, setzt aber einen vorhandenen Proxmox Backup Server voraus und ersetzt keine VM-/LXC-Backups.
+
+## Abnahme vor einem isolierten Kundentest
+
+- Isolierter PVE-LXC mit getesteter NetBird-Version; NetBird-Management/Signal, LAN-Adresse und korrekte kundenspezifische Resource-/Policy-Zuordnung prüfen.
+- Erlaubter PVE-HTTPS- und QNAP-SNMPv3-Zugriff funktioniert; fremder Kunde, fehlende Policy und überlappendes LAN bleiben gesperrt.
+- Policy-Entzug stoppt neue **und bestehende** Anfragen/Antworten sofort. Dieser Punkt ist derzeit ein P1-Blocker.
+- Primary/Backup-Umschaltung, LXC-/Host-Neustart, NetBird-Reconnect und Zabbix-Proxy-Status `registered` im isolierten Labor prüfen.
+- PVE-Backup auf QNAP-NFS und Rücksicherung einer Test-VM nachweisen.
+
+Quellen: https://docs.netbird.io/manage/networks/how-routing-peers-work ;
+https://www.zabbix.com/integrations/proxmox ;
+https://www.zabbix.com/integrations/qnap ;
+https://pve.proxmox.com/pve-docs/pve-admin-guide.pdf

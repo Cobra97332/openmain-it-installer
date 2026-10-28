@@ -31,9 +31,18 @@ jobs:
           docker run --rm --network none -v "$PWD:/src:ro" pve-binat-beta:debian13 \
             python3 -m unittest discover -s tests -p 'test_router_entrypoints.py' -v
       - name: Customer network, staff group and BINAT policy regressions
+        run: |
+          docker run --rm --network none -v "$PWD:/src:ro" pve-binat-beta:debian13 \
+            env PYTHONPATH=tests python3 -m unittest -v \
+          test_router_platforms.NetworkTests \
+          test_router_platforms.RuntimeTests \
+          test_router_platforms.ZabbixHostTests
+
+
+      - name: Zabbix TLS-PSK and registration offline regressions
         run: >-
           docker run --rm --network none -v "$PWD:/src:ro" pve-binat-beta:debian13
-          python3 -m unittest discover -s tests -p 'test_router_platforms.py' -v
+          python3 -m unittest discover -s tests -p 'test_router_zabbix*.py' -v
 
   kernel-release-gates:
     runs-on: ubuntu-latest

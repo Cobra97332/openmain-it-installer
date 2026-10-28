@@ -98,6 +98,11 @@ elif a[0]=='exec' and a[3:5]==['python3','-c'] and os.environ.get('MOCK_PREFLIGH
  sys.exit(subprocess.run([sys.executable,'-c',code,*a[6:]]).returncode)
 elif a[0]=='exec' and a[3:5]==['python3','-c']:
  print(json.dumps({'path':os.environ.get('MOCK_PROFILE_PATH',''),'interface':'wt0'}))
+elif a[0]=='exec' and a[3:5]==['bash','/opt/openmain-router/router-install.sh'] and os.environ.get('MOCK_ACL_FAIL_ONCE'):
+ marker=p/'acl-failed-once'
+ if not marker.exists():
+  marker.write_text('1')
+  sys.exit(1)
 elif a[0] in ('push','exec','start'):pass
 else:sys.exit(98)
 ''')
@@ -160,6 +165,20 @@ esac
         self.assertNotEqual(self.run_wrapper('--ctid','110').returncode,0)
         calls=[json.loads(line) for line in journal.read_text().splitlines()]
         self.assertFalse(any(call[0] in ('push','create','start','destroy') for call in calls))
+
+    def test_retry_after_acl_abort_reuses_ct_and_connected_peer(self):
+        self.env['MOCK_ACL_FAIL_ONCE']='1'
+        first=self.run_wrapper('--ctid','112')
+        self.assertNotEqual(first.returncode,0)
+        self.assertTrue((self.root/'acl-failed-once').exists())
+        self.env['NB_SETUP_KEY']=''
+        self.env['MOCK_PROFILE_PATH']='/var/lib/netbird/default.json'
+        second=self.run_wrapper('--ctid','112')
+        self.assertEqual(second.returncode,0,second.stderr)
+        calls=[json.loads(line) for line in (self.root/'pct-calls').read_text().splitlines()]
+        self.assertEqual(len([call for call in calls if call[0]=='create']),1)
+        self.assertEqual(len([call for call in calls if call[0]=='start']),1)
+        self.assertEqual({call[1] for call in calls if call[0]=='exec'},{'112'})
 
     def test_new_container_requires_real_key_before_creation(self):
         self.env['NB_SETUP_KEY']=''

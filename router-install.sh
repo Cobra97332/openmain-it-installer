@@ -482,31 +482,39 @@ setup_metrics(){
 }
 
 validate_monitoring_assignment(){
-  local peers marker peer_groups missing=()
-
-  marker="${CUSTOMER_MARKER_PREFIX}${CUSTOMER}"
-  peers=$(api GET "/peers")
-
-  peer_groups=$(jq -r --arg p "$PEER_ID" '
-    (if type=="array" then . else [] end)[]
-    | select(.id==$p)
-    | (.groups // [])[]
-    | if type=="object" then .name else empty end
-  ' <<<"$peers")
-
-  grep -Fxq "$GLOBAL_GROUP" <<<"$peer_groups" || missing+=("$GLOBAL_GROUP")
-  grep -Fxq "$CUSTOMER" <<<"$peer_groups" || missing+=("$CUSTOMER")
-  grep -Fxq "$marker" <<<"$peer_groups" || missing+=("$marker")
-
+  local peers marker attempt missing=() gid name
+  local expected_ids=("$GLOBAL_GROUP_ID" "$COMPANY_GROUP_ID" "$CUSTOMER_MARKER_GROUP_ID")
+  local expected_names=("$GLOBAL_GROUP" "$CUSTOMER" "${CUSTOMER_MARKER_PREFIX}${CUSTOMER}")
   if [[ "$METRICS_ENABLED" == 1 ]]; then
-    grep -Fxq "$METRICS_GROUP" <<<"$peer_groups" || missing+=("$METRICS_GROUP")
+    expected_ids+=("$METRICS_GROUP_ID")
+    expected_names+=("$METRICS_GROUP")
   fi
 
-  if (( ${#missing[@]} > 0 )); then
-    die "Monitoring-/Kundenzuordnung unvollständig. Fehlende Gruppen: ${missing[*]}"
-  fi
-
-  log "Zuordnung validiert: Kunde=$CUSTOMER / Marker=$marker / Metrics=$([[ "$METRICS_ENABLED" == 1 ]] && echo "$METRICS_GROUP" || echo deaktiviert)"
+  # The group endpoint confirms the write; /peers is a separate API view
+  # that can lag behind it. Do not proceed until both agree on this peer.
+  for ((attempt=1; attempt<=15; attempt++)); do
+    peers=$(api GET "/peers")
+    jq -e --arg p "$PEER_ID" '
+      type=="array" and ([.[] | select(.id==$p)] | length)==1
+    ' <<<"$peers" >/dev/null || die "NetBird-API: Router-Peer nicht eindeutig auffindbar; Gruppenzuordnung nicht verifiziert."
+    missing=()
+    for ((i=0; i<${#expected_ids[@]}; i++)); do
+      gid="${expected_ids[i]}"
+      name="${expected_names[i]}"
+      if ! jq -e --arg p "$PEER_ID" --arg gid "$gid" --arg name "$name" '
+        [.[] | select(.id==$p)][0].groups // [] |
+        any(.[]; if type=="object" then .id==$gid and .name==$name else .==$gid end)
+      ' <<<"$peers" >/dev/null; then
+        missing+=("$name")
+      fi
+    done
+    if (( ${#missing[@]} == 0 )); then
+      log "NetBird-API: Router-Peer in globaler Kunden-, kundenspezifischer und Markergruppe wirksam; Metrics=$([[ "$METRICS_ENABLED" == 1 ]] && echo "$METRICS_GROUP" || echo deaktiviert)."
+      return 0
+    fi
+    (( attempt == 15 )) || sleep 2
+  done
+  die "NetBird-API: Gruppenzuordnung nicht wirksam. Fehlende Gruppen fuer Router-Peer $PEER_ID: ${missing[*]}"
 }
 
 allocate_mapping(){
@@ -522,6 +530,34 @@ allocate_mapping(){
 
 ensure_network(){
   [[ -n "$NETWORK_ID" && -n "$RESOURCE_ID" && -n "$ROUTER_ID" ]] || die "Netzwerkabgleich unvollstaendig."
+}
+
+wait_binat_acl(){
+  local ok=0 probe_status attempt
+  # Group/API state and local client policy are independent. Wait only for the
+  # exact BINAT route ACL and its NetBird source set, never for an arbitrary
+  # established/related rule or a second allow path.
+  for ((attempt=1; attempt<=24; attempt++)); do
+    probe_status=0
+    python3 /usr/local/lib/openmain-router/binat_acl.py --probe >/dev/null 2>&1 || probe_status=$?
+    case "$probe_status" in
+      0)
+        if systemctl start openmain-binat-acl-sync.service >/dev/null 2>&1; then
+          ok=1
+          break
+        fi
+        # A refresh can race with reconciliation. Recheck before diagnosing.
+        probe_status=0
+        python3 /usr/local/lib/openmain-router/binat_acl.py --probe >/dev/null 2>&1 || probe_status=$?
+        [[ "$probe_status" == 2 ]] || die "BINAT-ACL-Synchronisierung trotz geladener Routing-Policy fehlgeschlagen; NetBird-nftables-Regel/Serviceprotokoll pruefen. Keine Zusatzfreigabe."
+        ;;
+      2) ;;
+      3) die "NetBird-nftables-Regel fuer BINAT inkompatibel; keine Zusatzfreigabe. ACL-Sync-Serviceprotokoll pruefen." ;;
+      *) die "BINAT-ACL-Pruefung fehlgeschlagen (Status $probe_status); keine Zusatzfreigabe." ;;
+    esac
+    (( attempt == 24 )) || sleep 5
+  done
+  [[ "$ok" == 1 ]] || die "NetBird-Routing-Policy fuer BINAT nach 120 s lokal nicht geladen; Gruppen/Policy im Management und NetBird-Client pruefen. Keine Zusatzfreigabe."
 }
 
 write_nft(){
@@ -595,15 +631,7 @@ UNIT
   systemctl daemon-reload
   systemctl enable --now openmain-binat.service >/dev/null
   systemctl enable --now openmain-binat-acl-sync.timer >/dev/null
-  local ok=0
-  for _ in {1..12}; do
-    if systemctl start openmain-binat-acl-sync.service >/dev/null 2>&1; then
-      ok=1
-      break
-    fi
-    sleep 5
-  done
-  [[ "$ok" == 1 ]] || die "NetBird-Routing-Freigabe fuer BINAT fehlt oder ist inkompatibel; kein ACL-Bypass. Bestand bleibt erhalten."
+  wait_binat_acl
 }
 
 setup_zabbix(){

@@ -269,10 +269,11 @@ setup_zabbix_access
             r=self.run_function('ensure_group',groups,('Bauer-PR30',))
             self.assertNotEqual(r.returncode,0);self.assertFalse((self.root/'writes').exists())
 
-    def test_setup_groups_reuses_all_three_groups_without_losing_inventory(self):
+    def test_setup_groups_assigns_router_groups_and_leaves_staff_group_empty(self):
         groups=[dict(self.empty_group(),id='company'),dict(self.empty_group(),id='marker',name='Kunde:Bauer-PR30'),
                 dict(self.empty_group(),id='global',name='Kunden',peers=['old-a','old-b','old-c'],peers_count=3,
-                     resources=[dict(id='resource',type='network')],resources_count=1)]
+                     resources=[dict(id='resource',type='network')],resources_count=1),
+                dict(self.empty_group(),id='staff',name='OpenMain-IT:Bauer-PR30')]
         state=self.root/'groups.json';state.write_text(json.dumps(groups))
         self.executable('group-api',"""#!/usr/bin/env python3
 import json,os,sys
@@ -297,16 +298,96 @@ PEER_ID=new-peer
 GLOBAL_GROUP=Kunden
 CUSTOMER=Bauer-PR30
 CUSTOMER_MARKER_PREFIX=Kunde:
+REMOTE_ACCESS_GROUP=
 setup_groups
 setup_groups
 """)
         self.clean_output(result);self.assertEqual(result.returncode,0,result.stderr)
-        current=json.loads(state.read_text());self.assertEqual(len(current),3)
+        current=json.loads(state.read_text());self.assertEqual(len(current),4)
         for before,after in zip(groups,current):
             self.assertEqual(before['id'],after['id']);self.assertEqual(before['name'],after['name'])
-            self.assertEqual(set(after['peers']),set(before['peers'] or [])|{'new-peer'})
+            expected=set(before['peers'] or [])
+            if after['id']!='staff':
+                expected.add('new-peer')
+            self.assertEqual(set(after['peers']),expected)
             self.assertEqual(after['resources'],before['resources'] or [])
         self.assertEqual(len((self.root/'writes').read_text().splitlines()),3)
+
+    def test_peer_group_assignment_waits_for_api_visibility_and_fails_on_missing_group(self):
+        def peer(groups):
+            return [dict(id='new-peer', groups=[dict(id=gid, name=name) for gid,name in groups])]
+        required=[('global','Kunden'),('company','Bauer-PR30'),('marker','Kunde:Bauer-PR30')]
+        body=functions('router-install.sh',['die','validate_monitoring_assignment'])
+        setup=r'''
+api(){
+  [[ "$1" == GET && "$2" == /peers ]] || exit 97
+  local index
+  index=$(wc -l < "$MOCK_ROOT/reads")
+  printf 'read\n' >> "$MOCK_ROOT/reads"
+  jq -c --argjson index "$index" '.[if $index < length then $index else length-1 end]' "$MOCK_ROOT/peer-responses.json"
+}
+sleep(){ :; }
+log(){ :; }
+PEER_ID=new-peer
+GLOBAL_GROUP=Kunden
+GLOBAL_GROUP_ID=global
+CUSTOMER=Bauer-PR30
+COMPANY_GROUP_ID=company
+CUSTOMER_MARKER_PREFIX=Kunde:
+CUSTOMER_MARKER_GROUP_ID=marker
+METRICS_ENABLED=0
+validate_monitoring_assignment
+'''
+        for responses,expected in (([peer(required[1:]),peer(required)],0),
+                                   ([peer(required[:2])],1),
+                                   ([peer([('global','Other'),*required[1:]])],1)):
+            with self.subTest(responses=responses):
+                (self.root/'reads').write_text('')
+                (self.root/'peer-responses.json').write_text(json.dumps(responses))
+                result=self.bash('set -Eeuo pipefail\n'+body+setup)
+                self.clean_output(result)
+                self.assertEqual(result.returncode,expected,result.stderr)
+                self.assertEqual(len((self.root/'reads').read_text().splitlines()),
+                                 2 if expected==0 else 15)
+                if expected:
+                    self.assertIn('Gruppenzuordnung nicht wirksam',result.stderr)
+
+    def test_acl_wait_accepts_only_required_policy_and_distinguishes_failures(self):
+        body=functions('router-install.sh',['die','wait_binat_acl'])
+        shell=r'''
+python3(){
+  local index status
+  index=$(wc -l < "$MOCK_ROOT/probe-calls")
+  printf 'probe\n' >> "$MOCK_ROOT/probe-calls"
+  status=$(jq -r --argjson index "$index" '.[if $index < length then $index else length-1 end]' "$MOCK_ROOT/probe-status.json")
+  return "$status"
+}
+systemctl(){
+  printf 'start\n' >> "$MOCK_ROOT/service-calls"
+  return "${MOCK_SERVICE_STATUS:-0}"
+}
+sleep(){ :; }
+wait_binat_acl
+'''
+        for statuses,service_status,expected_calls,needle in (
+            ([2,2,0],0,1,''),
+            ([3],0,0,'inkompatibel'),
+            ([2],0,0,'Routing-Policy'),
+            ([0,0],1,1,'Serviceprotokoll')):
+            with self.subTest(statuses=statuses,service_status=service_status):
+                for name in ('probe-calls','service-calls'):
+                    (self.root/name).write_text('')
+                (self.root/'probe-status.json').write_text(json.dumps(statuses))
+                self.env['MOCK_SERVICE_STATUS']=str(service_status)
+                result=self.bash('set -Eeuo pipefail\n'+body+shell)
+                self.clean_output(result)
+                self.assertEqual(result.returncode,0 if not needle else 1,result.stderr)
+                self.assertEqual(len((self.root/'service-calls').read_text().splitlines()),
+                                 expected_calls)
+                if needle:
+                    self.assertIn(needle,result.stderr)
+                else:
+                    self.assertEqual(len((self.root/'probe-calls').read_text().splitlines()),3)
 
     def test_multiple_json_documents_are_rejected_before_update(self):
         group=self.empty_group()

@@ -39,6 +39,11 @@ jobs:
           test_router_platforms.ZabbixHostTests
 
 
+      - name: Router group membership and retry regressions
+        run: >-
+          docker run --rm --network none -v "$PWD:/src:ro" pve-binat-beta:debian13
+          python3 -m unittest discover -s tests -p 'test_router_security.py' -v
+
       - name: BINAT ACL reconciliation unit regressions
         run: >-
           docker run --rm --network none -v "$PWD:/src:ro" pve-binat-beta:debian13

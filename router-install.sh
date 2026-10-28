@@ -26,7 +26,7 @@ PROMETHEUS_NETBIRD_IP="${NB_PROMETHEUS_NETBIRD_IP:-100.107.91.6}"
 METRICS_POLICY_NAME="${NB_METRICS_POLICY_NAME:-OpenMain Prometheus -> NetBird Client Metrics}"
 METRICS_HELPER_URL="${NB_METRICS_HELPER_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-prometheus/enable-client-metrics.sh}"
 LAN_IF_OVERRIDE="${NB_LAN_INTERFACE:-}"
-ROUTING_MODE="${NB_ROUTING_MODE:-native}"
+ROUTING_MODE="${NB_ROUTING_MODE:-binat}"
 SSH_PUBLIC_KEY="${NB_SSH_PUBLIC_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJc8VZvZ7o/8emKoGC7UXPiOMP8PSxch6P2rUGNio8Vi Stefan}"
 GLOBAL_GROUP="Kunden"
 CUSTOMER_MARKER_PREFIX="${NB_CUSTOMER_MARKER_PREFIX:-Kunde:}"
@@ -51,7 +51,7 @@ NetBird Kundenrouter
   --zabbix-proxy-group NAME
   --zabbix-server-group NAME
   --lan-interface IFACE
-  --routing-mode native|binat
+  --routing-mode binat
   --metrics-port PORT
   --metrics-detail-port PORT
   --prometheus-netbird-ip IP
@@ -89,12 +89,10 @@ done
 
 [[ $EUID -eq 0 ]] || die "Bitte als root ausführen."
 [[ "$ROLE" == primary || "$ROLE" == backup ]] || die "--role muss primary oder backup sein."
-[[ "$ROUTING_MODE" == native || "$ROUTING_MODE" == binat ]] || die "--routing-mode muss native oder binat sein."
-# NetBird's route ACL matches the packet destination in FORWARD. Prefix DNAT
-# has already changed that destination there. The old --disable-firewall path
-# bypasses policies; asynchronous ACL copies leave stale grants and flows.
-# Refuse BINAT before touching the host or controller.
-[[ "$ROUTING_MODE" == native ]] || die "Legacy-BINAT bleibt bis zu einer synchronen NetBird-Policy-Durchsetzung gesperrt."
+[[ "$ROUTING_MODE" == binat ]] || die "Ausschließlich BINAT ist zulässig."
+# Legacy-DNAT im selben Namespace kann native NetBird-ACLs und den Entzug
+# bestehender Verbindungen nicht durchsetzen. Vor jeder Änderung abbrechen.
+die "PVE-LXC-BINAT gesperrt: Policy-Entzug für bestehende Verbindungen ist nicht nachgewiesen."
 [[ "$METRICS_ENABLED" == 0 || "$METRICS_ENABLED" == 1 ]] || die "NB_METRICS_ENABLED muss 0 oder 1 sein."
 [[ "$METRICS_PORT" =~ ^[0-9]+$ ]] || die "Ungültiger Metrics-Port: $METRICS_PORT"
 (( METRICS_PORT >= 1 && METRICS_PORT <= 65535 )) || die "Ungültiger Metrics-Port: $METRICS_PORT"
@@ -312,13 +310,7 @@ setup_groups(){
   # Nur die bestehenden Zugriffsgruppen an Netzwerk-Ressourcen hängen.
   # Die Kunde:<Name>-Gruppe dient ausschließlich als eindeutiges Metadaten-
   # Merkmal für Monitoring/Inventar und erhält keine zusätzlichen Rechte.
-  # A direct LAN resource belongs only to this customer's resource group.
-  # The shared "Kunden" peer group must not distribute access to all LANs.
-  if [[ "$ROUTING_MODE" == native ]]; then
-    GROUP_IDS=$(jq -nc --arg b "$COMPANY_GROUP_ID" '[$b]')
-  else
-    GROUP_IDS=$(jq -nc --arg a "$GLOBAL_GROUP_ID" --arg b "$COMPANY_GROUP_ID" '[$a,$b]')
-  fi
+  GROUP_IDS=$(jq -nc --arg a "$GLOBAL_GROUP_ID" --arg b "$COMPANY_GROUP_ID" '[$a,$b]')
   log "Gruppen: $GLOBAL_GROUP + $CUSTOMER + $marker_group (Monitoring-Marker)"
 }
 
@@ -522,49 +514,8 @@ validate_monitoring_assignment(){
 }
 
 allocate_mapping(){
-  local resources used networks nid rs addr network_name conflicts
+  local resources used networks nid rs addr
   networks=$(api GET "/networks")
-
-  if [[ "$ROUTING_MODE" == native ]]; then
-    # No automatic migration of a legacy BINAT router or overlapping resource.
-    if nft list table ip mein_binat >/dev/null 2>&1; then
-      die "Vorhandene Legacy-BINAT-Regeln gefunden. Keine automatische Migration."
-    fi
-    used=$(mktemp)
-    : > "$used"
-    while read -r nid; do
-      [[ -n "$nid" ]] || continue
-      network_name=$(jq -r --arg id "$nid" '.[] | select(.id==$id) | .name' <<<"$networks")
-      api GET "/networks/$nid/resources" |
-        jq -c --arg owner "$network_name" '.[] | {owner:$owner,name,address,enabled}' >> "$used"
-    done < <(jq -r '(if type=="array" then . else [] end)[]?.id // empty' <<<"$networks")
-    conflicts=$(python3 - "$LAN_NET" "$CUSTOMER" "$used" <<'PY'
-import ipaddress, json, sys
-lan = ipaddress.ip_network(sys.argv[1], strict=True)
-customer = sys.argv[2]
-bad = []
-for line in open(sys.argv[3], encoding='utf-8'):
-    item = json.loads(line)
-    owner, name = item.get('owner'), item.get('name')
-    if owner == customer and name == 'BINAT-' + customer:
-        bad.append('existing legacy BINAT resource')
-        continue
-    try:
-        network = ipaddress.ip_network(item['address'], strict=True)
-    except (ValueError, KeyError, TypeError):
-        continue  # Domain resources cannot overlap an IPv4 LAN.
-    if network.version == 4 and network.overlaps(lan):
-        if not (owner == customer and name == 'LAN-' + customer and network == lan):
-            bad.append(f'{owner}/{name}: {network}')
-print('; '.join(bad))
-PY
-)
-    rm -f "$used"
-    [[ -z "$conflicts" ]] || die "Kollidierende NetBird-Ressourcen: $conflicts"
-    VIRTUAL_NET="$LAN_NET"
-    log "Native NetBird-Ressource ohne BINAT: $LAN_NET"
-    return 0
-  fi
 
   # Vorhandenes Mapping immer wiederverwenden. Das macht den Installer
   # bei First-Boot-Retries idempotent und verhindert Mapping-Wechsel.
@@ -616,7 +567,7 @@ PY
 }
 
 ensure_network(){
-  local networks payload resp resources rid routers router_id resource_name
+  local networks payload resp resources rid routers router_id
   networks=$(api GET "/networks")
   NETWORK_ID=$(jq -r --arg n "$CUSTOMER" '(if type=="array" then . else [] end)[] | select(.name==$n) | .id' <<<"$networks" | head -n1)
   if [[ -z "$NETWORK_ID" ]]; then
@@ -626,13 +577,8 @@ ensure_network(){
   fi
 
   resources=$(api GET "/networks/$NETWORK_ID/resources")
-  if [[ "$ROUTING_MODE" == native ]]; then
-    resource_name="LAN-$CUSTOMER"
-  else
-    resource_name="BINAT-$CUSTOMER"
-  fi
-  rid=$(jq -r --arg n "$resource_name" '(if type=="array" then . else [] end)[] | select(.name==$n) | .id' <<<"$resources" | head -n1)
-  payload=$(jq -nc --arg n "$resource_name" --arg a "$VIRTUAL_NET" --argjson g "$GROUP_IDS" '{name:$n,address:$a,enabled:true,groups:$g}')
+  rid=$(jq -r --arg n "BINAT-$CUSTOMER" '(if type=="array" then . else [] end)[] | select(.name==$n) | .id' <<<"$resources" | head -n1)
+  payload=$(jq -nc --arg n "BINAT-$CUSTOMER" --arg a "$VIRTUAL_NET" --argjson g "$GROUP_IDS" '{name:$n,address:$a,enabled:true,groups:$g}')
   if [[ -z "$rid" ]]; then
     resp=$(api POST "/networks/$NETWORK_ID/resources" "$payload")
     RESOURCE_ID=$(jq -r '.id' <<<"$resp")
@@ -644,7 +590,7 @@ ensure_network(){
   routers=$(api GET "/networks/$NETWORK_ID/routers")
   router_id=$(jq -r --arg p "$PEER_ID" '(if type=="array" then . else [] end)[] | select(.peer==$p) | .id' <<<"$routers" | head -n1)
   if [[ -z "$router_id" ]]; then
-    payload=$(jq -nc --arg p "$PEER_ID" --argjson m "$ROUTER_METRIC" --argjson masquerade "$([[ "$ROUTING_MODE" == native ]] && echo true || echo false)" '{peer:$p,metric:$m,masquerade:$masquerade,enabled:true}')
+    payload=$(jq -nc --arg p "$PEER_ID" --argjson m "$ROUTER_METRIC" '{peer:$p,metric:$m,masquerade:false,enabled:true}')
     resp=$(api POST "/networks/$NETWORK_ID/routers" "$payload")
     ROUTER_ID=$(jq -r '.id' <<<"$resp")
   else
@@ -653,7 +599,6 @@ ensure_network(){
 }
 
 write_nft(){
-  [[ "$ROUTING_MODE" == native ]] && return 0
   local nbif="wt0" cfg
   if [[ -S "$JSON_SOCKET" ]]; then
     cfg=$(curl -s --unix-socket "$JSON_SOCKET" -X POST -H 'Content-Type: application/json' -d '{}' http://localhost/daemon.DaemonService/GetConfig || true)
@@ -703,10 +648,9 @@ setup_zabbix(){
 
 save_state(){
   install -d -m 0700 "$(dirname "$STATE_FILE")"
-  jq -nc     --arg customer "$CUSTOMER"     --arg role "$ROLE"     --arg routing_mode "$ROUTING_MODE"     --arg lan "$LAN_NET"     --arg virtual "$VIRTUAL_NET"     --arg peer "$PEER_ID"     --arg network "$NETWORK_ID"     --arg resource "$RESOURCE_ID"     --arg router "$ROUTER_ID"     --arg metrics_target "${METRICS_TARGET:-}"     --arg metrics_group "$METRICS_GROUP"     --arg metrics_detail_port "$METRICS_DETAIL_PORT"     --argjson metric "$ROUTER_METRIC"     --argjson metrics_enabled "$METRICS_ENABLED"     '{
+  jq -nc     --arg customer "$CUSTOMER"     --arg role "$ROLE"     --arg lan "$LAN_NET"     --arg virtual "$VIRTUAL_NET"     --arg peer "$PEER_ID"     --arg network "$NETWORK_ID"     --arg resource "$RESOURCE_ID"     --arg router "$ROUTER_ID"     --arg metrics_target "${METRICS_TARGET:-}"     --arg metrics_group "$METRICS_GROUP"     --arg metrics_detail_port "$METRICS_DETAIL_PORT"     --argjson metric "$ROUTER_METRIC"     --argjson metrics_enabled "$METRICS_ENABLED"     '{
       customer:$customer,
       role:$role,
-      routing_mode:$routing_mode,
       lan:$lan,
       virtual:$virtual,
       peer_id:$peer,
@@ -726,7 +670,6 @@ main(){
   install_packages
   setup_access
   detect_lan
-  allocate_mapping
   enable_forwarding
   connect_netbird
   find_peer
@@ -734,6 +677,7 @@ main(){
   setup_zabbix_access
   setup_metrics
   validate_monitoring_assignment
+  allocate_mapping
   ensure_network
   write_nft
   save_state

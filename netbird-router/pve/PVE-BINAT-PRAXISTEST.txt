@@ -1,0 +1,77 @@
+# Isolierter PVE-Praxistest für den bestehenden BINAT-Router
+
+Stand: Branch `beta-pve-qnap-legacy-router`, Basis `15581e3`. **Vorbereitung, noch nicht ausgeführt.** Die Installationsbefehle unten erst nach ausdrücklicher Freigabe auf einem isolierten PVE-Laborhost ausführen. Weder produktive NetBird-/Zabbix-Dienste noch Kunden-PVE/QNAP verwenden. CT-IDs 110/111 waren historische Referenzen und werden hier nicht vorausgesetzt.
+
+## Vorbedingungen
+
+- PVE-Laborhost (amd64), eigener Test-Bridge mit Internetzugang, frische freie CT-IDs und zwei erreichbare LAN-Testziele: PVE-HTTPS:8006 und QNAP-HTTPS:443. Für den P1-Test zusätzlich ein dedizierter TCP-Echo-Dienst im Test-LAN. Keine vorhandenen NetBird-Clients in den CTs.
+- Separater NetBird-Management-Tenant bzw. isolierte Testgruppen mit zwei Mitarbeitern/Testpeers (einer berechtigt, einer fremd), Test-Setup-Key und API-Token. Test-Zabbix mit API-Token, Serveradresse und TLS-PSK-Unterstützung. Alle anderen aktiven Policies zum virtuellen Testnetz vorher prüfen; keine breite Fremd- oder Kundenfreigabe.
+- Dieses Repository auf dem PVE-Testhost genau bei `15581e3` oder einem geprüften Nachfolger dieses Beta-Branches. Eigene, nur für das Labor gültige Namen und Adressen einsetzen. Keine Secrets in Shell-Argumente, Terminalausgabe oder Testprotokoll schreiben.
+
+## Konfiguration und Installation (erst nach Freigabe)
+
+Auf dem PVE-Testhost als root, im Repository:
+
+```bash
+test "$(git branch --show-current)" = beta-pve-qnap-legacy-router
+git merge-base --is-ancestor 15581e3 HEAD
+export LAB_PRIMARY_CTID="<freie-primary-ctid>"
+export LAB_BACKUP_CTID="<freie-backup-ctid>"
+export LAB_BRIDGE="<isolierte-test-bridge>"
+export LAB_STORAGE="<test-rootfs-storage>"
+export LAB_TEMPLATE_STORAGE="<test-template-storage>"
+test ! -e "/etc/pve/lxc/$LAB_PRIMARY_CTID.conf"
+test ! -e "/etc/pve/lxc/$LAB_BACKUP_CTID.conf"
+```
+
+Zwei Dateien `/root/openmain-lab-primary.json` und `/root/openmain-lab-backup.json` mit `umask 077` erstellen (`chmod 600`). Beispiel für Primary; Backup hat denselben Kunden, dieselben Labor-Endpunkte, `NB_ROLE=backup`, eigenen Hostnamen und eigenen Setup-Key. **`NB_VIRTUAL_NETWORK` weglassen**, damit der vorhandene Code das virtuelle Präfix zuweist.
+
+```json
+{
+  "NB_CUSTOMER_NAME": "LAB-PVE-QNAP-<eindeutige-id>",
+  "NB_ROLE": "primary",
+  "NB_HOSTNAME": "lab-router-primary",
+  "NB_MANAGEMENT_URL": "https://<lab-netbird-management>",
+  "NB_SETUP_KEY": "<lab-setup-key>",
+  "NB_API_TOKEN": "<lab-netbird-api-token>",
+  "NB_ZABBIX_API_URL": "https://<lab-zabbix>/api_jsonrpc.php",
+  "NB_ZABBIX_API_TOKEN": "<lab-zabbix-api-token>",
+  "NB_ZABBIX_SERVER": "<lab-zabbix-server-ip>",
+  "NB_LAN_INTERFACE": "eth0",
+  "NB_REMOTE_ACCESS_GROUP": "OpenMain-IT:LAB-PVE-QNAP-<eindeutige-id>",
+  "NB_ZABBIX_ENABLED": "1"
+}
+```
+
+```bash
+bash netbird-router/pve/install.sh --config /root/openmain-lab-primary.json --ctid "$LAB_PRIMARY_CTID" --bridge "$LAB_BRIDGE" --storage "$LAB_STORAGE" --template-storage "$LAB_TEMPLATE_STORAGE"
+bash netbird-router/pve/install.sh --config /root/openmain-lab-backup.json --ctid "$LAB_BACKUP_CTID" --bridge "$LAB_BRIDGE" --storage "$LAB_STORAGE" --template-storage "$LAB_TEMPLATE_STORAGE"
+```
+
+Falls nur ein Testcontainer möglich ist, den zweiten Befehl auslassen und Failover als **nicht geprüft** protokollieren. Das Skript lädt bei Bedarf ein Debian-13-amd64-LXC-Template, erstellt einen unprivilegierten CT mit TUN und installiert Router/Zabbix. Es ist derzeit kein ARM64-PVE-Gasttest.
+
+## Abnahmebefehle und Erfolgskriterien
+
+Auf dem PVE-Testhost, für beide vorhandenen CTs:
+
+```bash
+for CTID in "$LAB_PRIMARY_CTID" "$LAB_BACKUP_CTID"; do
+  pct config "$CTID" | grep -E '^(ostype|arch|unprivileged|features|dev0|net0|onboot):'
+  pct exec "$CTID" -- sh -c 'systemctl is-active netbird zabbix-proxy zabbix-agent2; pgrep -xc netbird; netbird status; netbird status --ipv4'
+  pct exec "$CTID" -- jq '{customer,role,lan,virtual,network_id,resource_id,router_id,metric}' /var/lib/netbird-kundenrouter/state.json
+  pct exec "$CTID" -- nft list table ip openmain_binat
+  pct exec "$CTID" -- sh -c 'grep -E "^(TLSConnect|TLSPSKIdentity|TLSPSKFile)=" /etc/zabbix/zabbix_proxy.conf; test -s /etc/zabbix/zabbix_proxy.psk; test -s /var/lib/netbird-kundenrouter/zabbix-registration.json'
+done
+```
+
+**PASS 1–3, 6:** Beide CTs sind Debian 13, amd64, unprivilegiert, `onboot=1`, mit `firewall=1` und TUN. Genau ein laufender `netbird`-Daemon je CT, beide mit dem Labor-Management verbunden. `virtual` ist automatisch gesetzt, für beide Router identisch und zum `lan` gleich groß; `network_id`/`resource_id` sind dieselben, `router_id` verschieden; Metrik 100/200. `openmain_binat` enthält die Abbildung. Zabbix-Dienste aktiv, `TLSConnect=psk`, nichtleere PSK-Datei und Registrierungsbeleg vorhanden; im Labor-Zabbix beide aktiven Proxies als online und mit aktuellem `lastaccess` prüfen. PSK-Wert niemals ausgeben. Für die automatische Registrierung genügt der lokale Beleg allein nicht: Labor-Zabbix muss den passenden Proxy samt PSK-Identität bestätigen.
+
+**Zugriff 4–5:** Im Labor-NetBird zunächst leere Gruppe `OpenMain-IT:LAB-PVE-QNAP-<id>` und Zielgruppe/Policy kontrollieren. Von beiden Testpeers aus `curl --cacert <lab-ca.pem> --connect-timeout 5 --max-time 10 --resolve <pve-fqdn>:8006:<virtuelle-pve-ip> https://<pve-fqdn>:8006/api2/json/version` und entsprechend QNAP auf Port 443 ausführen. Vor Aufnahme in die Zugriffsgruppe darf keiner die Dienste erreichen. Danach **nur** den berechtigten OpenMain-IT-Testpeer in die Zugriffsgruppe aufnehmen: PVE und QNAP müssen über ihre virtuellen Adressen erreichbar sein, der fremde Peer weiterhin nicht. HTTP-401/403 zählt als erreichbarer Dienst, nicht als NetBird-Verweigerung; bei verweigertem Peer darf am LAN-Testziel kein SYN eintreffen (zeitgleich `tcpdump -ni <lab-lan-if> host <ziel-ip> and tcp` auf dem Testziel).
+
+**Failover 7 (nur zwei CTs):** Vom berechtigten Peer kontinuierlich neue TCP-Verbindungen zu beiden virtuellen Zielen öffnen. Auf dem Test-PVE `pct stop "$LAB_PRIMARY_CTID"`, innerhalb von 60 s erneute erfolgreiche Verbindungen über Backup nachweisen; NetBird-Routen zeigen Metrik 200 als aktiven Pfad. `pct start "$LAB_PRIMARY_CTID"`, innerhalb von 60 s neue Verbindungen über Primary mit Metrik 100 nachweisen. Bereits laufende TCP-Sitzungen müssen beim Routerwechsel nicht erhalten bleiben.
+
+**Neustart 8:** `pct reboot "$LAB_PRIMARY_CTID"` (danach ggf. Backup). Innerhalb von 120 s wieder `netbird status`, Dienste, `state.json` und PVE-/QNAP-Zugriff prüfen. Kundenname, virtuelles Präfix, Netzwerk-/Ressourcen-ID und PSK-Identität müssen gegenüber vor dem Neustart unverändert bleiben. Einen PVE-Hostneustart nur im dedizierten Labor und nach separater Betriebsfreigabe prüfen.
+
+**P1 Policy-Entzug 9, separat und release-blockierend:** Auf einem dedizierten LAN-Echo-Ziel eine lange TCP-Verbindung vom berechtigten Peer zur virtuellen Ziel-IP eröffnen und fortlaufend Nutzdaten mit Antwort prüfen (z. B. `socat TCP-LISTEN:18080,reuseaddr,fork EXEC:/bin/cat` am Ziel, `socat - TCP:<virtuelle-echo-ip>:18080` am Peer). Dann diesen Peer aus der **Labor**-Zugriffsgruppe entfernen. Sobald ein neuer Verbindungsversuch nach Policy-Konvergenz verweigert wird, muss auch die bestehende TCP-Verbindung in beiden Richtungen keine weiteren Nutzdaten übertragen; auf dem LAN-Ziel keine weiteren Pakete. Dasselbe für UDP/Conntrack gemäß `tests/nft_kernel.py` und `tests/pve_binat_policy_kernel.py` im isolierten Kernel-Test. Jede nach Entzug fortlaufende Antwort ist **FAIL/P1**. Keinen Sicherheitstest überspringen oder Erwartung abschwächen.
+
+Für jeden Schritt Zeit, CT-ID, Peer-ID, virtuelles Ziel, Befehl, Ergebnis und PASS/FAIL protokollieren; keine Tokens oder PSK. Bei einem P1-FAIL bleibt der Router Beta und ohne Produktivfreigabe.

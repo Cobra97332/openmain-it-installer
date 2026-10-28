@@ -1,80 +1,47 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-
-# OpenMain-IT NetBird Router
-# Basis: offizielles Debian 13 Netinst.
-# Der Build verwendet bewusst den bereits getesteten V8-ISO-Weg:
-# ISO mounten -> kompletten ISO-Baum kopieren -> Dateien/Bootparameter
-# patchen -> ISO mit xorriso neu erzeugen.
-#
-# Keine Secrets werden benötigt oder in die ISO geschrieben.
-
-REPO="Cobra97332/openmain-it-installer"
-REF="main"
-RAW_BASE="https://raw.githubusercontent.com/$REPO/$REF"
-
-ARCH="${ARCH:-amd64}"
-WORKDIR="${WORKDIR:-$PWD/build-netbird-router}"
-BUILD_DIR="$WORKDIR/build"
-ISO_DIR="$BUILD_DIR/iso"
-MNT_DIR="$BUILD_DIR/mnt"
-TMP_DIR="$BUILD_DIR/tmp"
-OUTPUT_ISO="${OUTPUT_ISO:-$PWD/netbird-router-debian13-$ARCH.iso}"
-
-log(){ printf '\033[1;32m[+]\033[0m %s\n' "$*"; }
-die(){ printf '\033[1;31m[FEHLER]\033[0m %s\n' "$*" >&2; exit 1; }
-
-[[ $EUID -eq 0 ]] || die "Bitte als root ausführen."
-[[ "$ARCH" == amd64 ]] || die "Aktuell unterstützt: amd64."
-command -v curl >/dev/null 2>&1 || die "curl fehlt."
-
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y \
-  curl wget rsync xorriso isolinux syslinux-utils python3 ca-certificates
-
-rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR" "$ISO_DIR" "$MNT_DIR" "$TMP_DIR"
-
-log "Ermittle aktuelles offizielles Debian-13-Netinst-ISO ..."
-DEBIAN_ISO="$(
-  wget -qO- https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/ |
-    grep -o 'debian-[0-9.]*-amd64-netinst.iso' |
-    sort -V |
-    tail -n1
-)"
-
-[[ -n "$DEBIAN_ISO" ]] || die "Konnte Debian-13-Netinst-ISO nicht ermitteln."
-
-ISO_URL="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/$DEBIAN_ISO"
-ISO_FILE="$BUILD_DIR/$DEBIAN_ISO"
-
-log "Nutze ISO: $DEBIAN_ISO"
-
-if [[ ! -s "$ISO_FILE" ]]; then
-  log "Lade Debian-Netinst herunter ..."
-  wget -O "$ISO_FILE" "$ISO_URL"
-else
-  log "Debian-Netinst ist bereits vorhanden."
-fi
-
-log "Bereite kompletten Debian-ISO-Baum vor ..."
-mount -o loop "$ISO_FILE" "$MNT_DIR"
-rsync -a "$MNT_DIR/" "$ISO_DIR/"
-umount "$MNT_DIR"
-
-for f in preseed.cfg firstboot-router.sh openmain-router-firstboot.service authorized_keys; do
-  log "Lade $f aus dem öffentlichen GitHub-Repository ..."
-  curl -fsSL "$RAW_BASE/$f" -o "$ISO_DIR/$f"
+# Build a Debian 13 amd64 NETINSTALL image; never copy runtime config/secrets.
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+OUTPUT_ISO="${OUTPUT_ISO:-$PWD/openmain-debian13-amd64-netinst.iso}"
+[[ ! -e "$OUTPUT_ISO" ]] || { echo 'Ausgabe existiert; neuen Dateinamen verwenden.' >&2; exit 1; }
+for tool in curl xorriso python3 sha512sum; do
+  command -v "$tool" >/dev/null || { printf 'Build-Voraussetzung fehlt: %s\n' "$tool" >&2; exit 1; }
 done
-
+BUILD_DIR=$(mktemp -d)
+trap 'rm -rf -- "$BUILD_DIR"' EXIT
+ISO_DIR="$BUILD_DIR/iso"
+mkdir "$ISO_DIR"
+log(){ printf '%s\n' "$*"; }
+die(){ printf '%s\n' "$*" >&2; exit 1; }
+BASE=https://cdimage.debian.org/debian-cd/current/amd64/iso-cd
+if [[ -n "${DEBIAN_ISO:-}" ]]; then
+  [[ -n "${DEBIAN_ISO_SHA512:-}" ]] || die 'Lokales ISO benoetigt vertrauenswuerdige DEBIAN_ISO_SHA512.'
+  ISO_FILE=$(realpath "$DEBIAN_ISO")
+  [[ "$(sha512sum "$ISO_FILE" | cut -d ' ' -f1)" == "$DEBIAN_ISO_SHA512" ]] || die 'ISO-Pruefsumme falsch.'
+else
+  command -v gpgv >/dev/null || die 'Build-Voraussetzung fehlt: gpgv (Signaturpruefung erforderlich).'
+  KEYRING="${DEBIAN_CD_KEYRING:-/usr/share/keyrings/debian-role-keys.gpg}"
+  [[ -r "$KEYRING" ]] || die 'Debian-CD-Signaturschluesselring fehlt (debian-keyring installieren / DEBIAN_CD_KEYRING setzen).'
+  curl -fsSL --max-time 60 "$BASE/SHA512SUMS" -o "$BUILD_DIR/SHA512SUMS"
+  curl -fsSL --max-time 60 "$BASE/SHA512SUMS.sign" -o "$BUILD_DIR/SHA512SUMS.sign"
+  gpgv --keyring "$KEYRING" "$BUILD_DIR/SHA512SUMS.sign" "$BUILD_DIR/SHA512SUMS"
+  DEBIAN_NAME=$(awk '$2 ~ /^debian-13[.][0-9.]+-amd64-netinst.iso$/ {print $2}' "$BUILD_DIR/SHA512SUMS")
+  [[ -n "$DEBIAN_NAME" && "$DEBIAN_NAME" != *$'\n'* ]] || die 'Kein eindeutiges Debian-13-Netinst in signiertem Manifest.'
+  ISO_FILE="$BUILD_DIR/$DEBIAN_NAME"
+  curl -fSL --retry 3 "$BASE/$DEBIAN_NAME" -o "$ISO_FILE"
+  (cd "$BUILD_DIR"; awk -v n="$DEBIAN_NAME" '$2==n' SHA512SUMS | sha512sum -c -)
+fi
+xorriso -osirrox on -indev "$ISO_FILE" -extract / "$ISO_DIR" >/dev/null 2>&1
+chmod -R u+w "$ISO_DIR"
+grep -Eq 'Debian GNU/Linux 13[.]' "$ISO_DIR/.disk/info" || die 'ISO ist kein Debian 13.'
+cp "$ROOT/preseed.cfg" "$ISO_DIR/preseed.cfg"
 mkdir -p "$ISO_DIR/openmain-installer"
-cp "$ISO_DIR/firstboot-router.sh" "$ISO_DIR/openmain-installer/firstboot-router.sh"
-cp "$ISO_DIR/openmain-router-firstboot.service" "$ISO_DIR/openmain-installer/openmain-router-firstboot.service"
-
-chmod 0644 "$ISO_DIR/preseed.cfg" "$ISO_DIR/authorized_keys"
-chmod 0755 "$ISO_DIR/firstboot-router.sh"
-chmod 0644 "$ISO_DIR/openmain-router-firstboot.service"
-
+while IFS= read -r file; do
+  [[ -n "$file" && "$file" != /* && "$file" != *..* ]] || die 'Ungueltiges Bundle-Manifest.'
+  [[ -f "$ROOT/$file" && ! -L "$ROOT/$file" ]] || die 'Bundle-Datei fehlt/ist Symlink.'
+  mkdir -p "$ISO_DIR/openmain-installer/$(dirname "$file")"
+  cp "$ROOT/$file" "$ISO_DIR/openmain-installer/$file"
+done < "$ROOT/netbird-router/bundle.files"
 log "Patche BIOS-Bootmenü ..."
 
 python3 - "$ISO_DIR/isolinux" <<'PY'
@@ -178,31 +145,13 @@ PY
   fi
 done
 
-log "Aktualisiere md5sum.txt ..."
-cd "$ISO_DIR"
-if [[ -f md5sum.txt ]]; then
-  find . -type f ! -path './isolinux/boot.cat' ! -name 'md5sum.txt' -print0 |
-    xargs -0 md5sum | sed 's# ./#  ./#' > md5sum.txt
-fi
-cd "$WORKDIR"
 
-log "Baue ISO und übernehme BIOS-/UEFI-Bootstruktur des Debian-Originals ..."
-
-rm -f "$OUTPUT_ISO"
-xorriso \
-  -indev "$ISO_FILE" \
-  -outdev "$OUTPUT_ISO" \
-  -overwrite on \
-  -update_r "$ISO_DIR" / \
-  -volid "DEBIAN_NB_AUTO" \
-  -append_partition all revoke - \
-  -boot_image any replay \
-  -commit
-
-[[ -s "$OUTPUT_ISO" ]] || die "ISO wurde nicht erzeugt."
-
-sha256sum "$OUTPUT_ISO" | tee "$OUTPUT_ISO.sha256"
-
-log "Fertig: $OUTPUT_ISO"
-log "Basis: offizielles Debian 13 Netinst"
-log "Methode: Debian-Bootstruktur per xorriso replay erhalten (BIOS + UEFI)"
+(cd "$ISO_DIR"; find . -type f ! -path './isolinux/boot.cat' ! -name md5sum.txt -print0 | xargs -0 md5sum > "$BUILD_DIR/md5sum.txt")
+mv "$BUILD_DIR/md5sum.txt" "$ISO_DIR/md5sum.txt"
+xorriso -indev "$ISO_FILE" -outdev "$OUTPUT_ISO" -overwrite on \
+  -update_r "$ISO_DIR" / -volid OPENMAIN_DEBIAN13 \
+  -boot_image any replay -commit
+[[ -s "$OUTPUT_ISO" ]] || die 'ISO-Build fehlgeschlagen.'
+xorriso -indev "$OUTPUT_ISO" -report_el_torito plain
+sha512sum "$OUTPUT_ISO" > "$OUTPUT_ISO.sha512"
+log "Netinstall-ISO erstellt: $OUTPUT_ISO (keine Kundendaten/Zugangsdaten enthalten)."

@@ -1,0 +1,9 @@
+FROM debian:13-slim
+# Preparation contacts Debian package mirrors only; all execution is network-none.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 jq shellcheck nftables iproute2 ifupdown gnupg gpgv ca-certificates \
+    qemu-system-x86 qemu-user-static ovmf xorriso grub-pc-bin grub-efi-amd64-bin \
+    linux-image-amd64 e2fsprogs curl debootstrap systemd procps cpio mtools \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+ENV PYTHONDONTWRITEBYTECODE=1

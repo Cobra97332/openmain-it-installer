@@ -1,0 +1,86 @@
+name: Router platform and security tests
+
+on:
+  push:
+    paths:
+      - 'router-install.sh'
+      - 'zabbix-*.sh'
+      - 'firstboot-router.sh'
+      - 'netbird-router/**'
+      - 'netbird-prometheus/sync-client-targets.py'
+      - 'netbird-prometheus/enable-client*.sh'
+      - 'tests/**'
+      - 'build-iso.sh'
+      - 'preseed.cfg'
+      - 'openmain-router-firstboot.service'
+      - 'grafana-zabbix/install*.sh'
+      - '.github/workflows/router-security-ci.yml'
+  pull_request:
+    paths:
+      - 'router-install.sh'
+      - 'zabbix-*.sh'
+      - 'firstboot-router.sh'
+      - 'netbird-router/**'
+      - 'netbird-prometheus/sync-client-targets.py'
+      - 'netbird-prometheus/enable-client*.sh'
+      - 'tests/**'
+      - 'build-iso.sh'
+      - 'preseed.cfg'
+      - 'openmain-router-firstboot.service'
+      - 'grafana-zabbix/install*.sh'
+      - '.github/workflows/router-security-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  offline-regressions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install static analysis tools
+        run: sudo apt-get update && sudo apt-get install -y shellcheck jq gnupg
+      - name: Syntax, ShellCheck and offline mocks
+        run: bash tests/check-router.sh
+      - name: Build Debian 13 test environment
+        run: docker build -f tests/Dockerfile.router -t openmain-router-test:debian13 .
+      - name: Debian 13 offline regression tests
+        run: docker run --rm --network none -v "$PWD:/src:ro" openmain-router-test:debian13
+      - name: Debian 13 bootstrap with jq absent
+        run: |
+          docker run --rm --network none -v "$PWD:/src:ro" openmain-router-test:debian13 bash -c \
+            'dpkg --remove jq >/dev/null && ! command -v jq && python3 -m unittest discover -s tests -p test_router_bootstrap.py -v'
+      - name: Isolated real nftables packet and rollback tests
+        run: >-
+          docker run --rm --network none --cap-add NET_ADMIN
+          --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1
+          -v "$PWD:/src:ro" openmain-router-test:debian13 python3 tests/nft_kernel.py
+
+  platform-lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build QEMU lab tools
+        run: docker build -f tests/Dockerfile.platform-lab -t openmain-platform-lab:debian13 .
+      - name: Prepare Debian 13 lab roots (Debian package mirrors only)
+        run: |
+          mkdir -p "$RUNNER_TEMP/openmain-platform-lab"
+          docker run --rm -v "$RUNNER_TEMP/openmain-platform-lab:/lab" openmain-platform-lab:debian13 \
+            debootstrap --variant=minbase \
+            --include=systemd-sysv,kmod,procps,python3,jq,nftables,iproute2,ifupdown,curl,gnupg,shellcheck,ca-certificates \
+            trixie /lab/amd64 http://deb.debian.org/debian
+          docker run --rm -v "$RUNNER_TEMP/openmain-platform-lab:/lab" openmain-platform-lab:debian13 \
+            debootstrap --foreign --arch=arm64 --variant=minbase --include=python3,jq \
+            trixie /lab/arm64 http://deb.debian.org/debian
+      - name: Actual QEMU VM and synthetic ISO BIOS/UEFI boots (offline APIs)
+        run: >-
+          docker run --rm --network none -e OPENMAIN_ISOLATED_TEST=1
+          -v "$RUNNER_TEMP/openmain-platform-lab:/lab" -v "$PWD:/src:ro"
+          openmain-platform-lab:debian13 python3 tests/qemu_platforms.py
+      - name: Actual ARM64 Python with simulated router APIs
+        if: ${{ !cancelled() }}
+        run: >-
+          docker run --rm --network none -e OPENMAIN_ISOLATED_TEST=1
+          -v "$RUNNER_TEMP/openmain-platform-lab:/lab" -v "$PWD:/src:ro"
+          openmain-platform-lab:debian13 python3 tests/arm64_platforms.py

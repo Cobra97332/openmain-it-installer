@@ -1,31 +1,26 @@
-# PVE-/QNAP-Router: BINAT-Beta, keine Freigabe
+# PVE-LXC-Kundenrouter: wiederhergestellter BINAT-Beta-Stand
 
-Basis: main 9f88ada94148bc5aa96daf8e6fcfa894d35f5870. Dieser Beta-Branch ändert weder PR #35 noch produktive Systeme.
+Basis für PVE-Installer, gemeinsamen Routerkern und Zabbix-Skripte: 694c428cf3d8744dec90e68bf27f63a780efa913 (11.10.2026). Das PVE-Template-Cache-Fix stammt aus 0013abbc5ffee4fa7db123a6cef16267aff24b6c. Gezielte spätere ACL-, Zustands- und Regressionsergänzungen stammen aus der PR-33-Linie bis f0d8738b982bdd68090ffd3c1f1cd821b03f982c. Der Beta-Branch verändert weder main noch PR #35.
 
-## Architektur und aktueller Blocker
+## Wiederverwendeter Pfad
 
-Jeder Kunde erhält ausschließlich ein virtuelles NetBird-Präfix mit Adressübersetzung zum eigenen LAN. Direktes Routing wird nicht eingesetzt. Der Einstiegspunkt bleibt netbird-router/pve/install.sh mit Debian-13-LXC, AMD64/ARM64 und Primary-/Backup-Metriken 100/200. Beide Installer akzeptieren nur BINAT und brechen vor pct create, NetBird-Enrollment, API-Aufrufen und Host-Netzänderungen ab.
+netbird-router/pve/install.sh erstellt den Debian-13-LXC und bündelt router-install.sh, netbird-router/common/ und die vorhandenen Zabbix-Skripte. Ein bereits eindeutig zugeordneter NetBird-Client wird weiterverwendet; der Installer startet keinen zweiten Client. Der Router verwendet ausschließlich BINAT: virtuelles, kollisionsfrei zugewiesenes Präfix, Prefix-DNAT zum Kunden-LAN, conntrack-Antwortpfad und NetBird-Routermetriken 100 (Primary) und 200 (Backup). Kein direkter LAN-Routenmodus.
 
-Im Legacy-Pfad geschieht DNAT im selben Netzwerk-Namensraum vor NetBird FORWARD. Die native NetBird-Regel sieht danach das echte LAN-Ziel statt der virtuellen Ressourcenadresse. Ein asynchroner ACL-Abgleich lässt nach Policy-Entzug alte Freigaben kurzzeitig bestehen. NetBird 0.81.3 akzeptiert etablierte Verbindungen und Rückverkehr über Established-Regeln. Die alte Option --disable-firewall wurde aus der Beta-Codebasis entfernt; das allein löst die P1-Probleme nicht. Der Kerneltest hält die zwei Gegenbeispiele für bestehende Verbindungen und Rückverkehr als rote Release-Gates fest. Die sechs P1-Gegenbeispiele aus PR #35 bleiben unverändert.
+Die Kundenressource bleibt der Kundengruppe zugeordnet. Neue Fernzugriffs-Policies verwenden als Quelle eine eigene Gruppe OpenMain-IT:<Kunde> (über NB_REMOTE_ACCESS_GROUP änderbar) und als Ziel die Kundengruppe. Diese Zugriffsgruppe wird bei Bedarf leer angelegt; der Installer fügt weder Router noch sonstige Peers automatisch hinzu. Nur nach bewusstem Zuordnen und Prüfen berechtigter OpenMain-IT-Peers kann Fernzugriff funktionieren. Vor Testbeginn alle anderen aktiven NetBird-Policies auf zusätzliche Freigaben zum Kundenziel prüfen. Bereits bestehende abweichende Kundenpolicy wird abgelehnt, nicht ersetzt. Gruppenname allein beweist keine Mitarbeiteridentität; die tatsächlichen Mitglieder sind im NetBird-Management zu prüfen.
 
-PR #35 trennt NetBird-Gateway und Prefix-NAT in zwei Docker-Netzwerk-Namensräume. Nur das Gateway startet NetBird und prüft das virtuelle Ziel vor NAT. Die NAT-Seite besitzt kein Overlay-Interface. Die vorhandenen Module netbird-router/common/network.py und runtime.py liefern Ressourcen-/Metriklogik und nft_config. Eine PVE-Portierung soll genau diese Komponenten wiederverwenden; keine zweite BINAT- oder ACL-Implementierung.
+zabbix-proxy-install.sh und zabbix-api-register.sh bleiben die gemeinsame Zabbix-7.4-Installation: aktiver Proxy, TLS-PSK und automatische API-Registrierung. PVE und QNAP werden nicht vom Router-Installer selbst als Geräte registriert.
 
-PR #35 ist auf Linux Docker Engine geprüft, aber ausdrücklich nicht für Docker in LXC freigegeben. Der aktuelle PVE-Installer erzeugt nur einen LXC mit einem LAN-Interface. Docker-in-LXC, Transitnetz, LAN-Anbindung, TUN-Rechte und Restart-Lebenszyklus sind dort nicht nachgewiesen. Der PR-35-Test belegt keinen sofortigen Entzug etablierter Sitzungen. Sein NAT-Pfad belegt VPN-initiierte Verbindungen samt Antworten; allein vom Kunden-LAN initiierte Overlay-Verbindungen und vollständige bidirektionale 1:1-Adressübersetzung sind noch nicht belegt. Deshalb ist die Übernahme in PVE-LXC derzeit weder implementiert noch freigegeben.
+## Offene Policy-Entzugsfehler
 
-## Bestehende Dienste und optionale Integration
+Der Legacy-Pfad führt DNAT vor NetBird FORWARD aus und gleicht deshalb native ACL-Regeln auf die ursprüngliche virtuelle Adresse um. Die übernommenen Korrekturen entfernen erkannte veraltete OpenMain-Regeln bei einer beobachteten Policy-Generation. Das ist kein synchroner Nachweis für einen Entzug unmittelbar nach der letzten Beobachtung. Der NetBird-Established-Shortcut kann vorhandene Request- und Reply-Pakete nach Entzug weiter akzeptieren. tests/nft_kernel.py und tests/pve_binat_policy_kernel.py sind verpflichtende, rote Release-Gates. Der funktionierende PVE-/BINAT-Datenpfad darf wegen dieser P1s nicht produktiv freigegeben werden.
 
-zabbix-proxy-install.sh und zabbix-api-register.sh bleiben unverändert: aktiver Zabbix-Proxy mit TLS-PSK und automatischer Registrierung. Im isolierten Labor muss ein tatsächlich registrierter Proxy samt TLS-Verbindung nachgewiesen werden; pending genügt nicht.
+## PVE, QNAP und Backups
 
-PVE-Monitoring: PVE-LAN-Adresse im lokalen Proxy registrieren, Vorlage Proxmox VE by HTTP verwenden und einen lesebeschränkten PVE-API-Token hinterlegen. QNAP-Monitoring: QNAP-LAN-Adresse per SNMPv3 über denselben Proxy abfragen und eine zum Modell passende Vorlage verwenden. API-/SNMP-Geheimnisse gehören in geschützte Zabbix-Makros oder einen Secret-Store. Diese Integration ist geplant; es gab keine echten API-Aufrufe.
+- PVE über seine Kunden-LAN-IP mit der vorhandenen Zabbix-Vorlage Proxmox VE by HTTP am lokalen Proxy überwachen. PVE-API-Token mit Leserechten separat und geschützt hinterlegen.
+- QNAP über seine Kunden-LAN-IP per SNMPv3-Polling am selben Proxy überwachen. Modell/QTS-kompatible Vorlage und geschützte SNMPv3-Zugangsdaten verwenden.
+- QNAP-NFS-Export nur für die PVE-Host-IP(s) freigeben; in Proxmox als Storage mit Inhalt backup eintragen. Vorhandene vzdump-Jobs mit Aufbewahrung nutzen und eine Test-VM zurücksichern. Keine eigene Backup-Engine.
+- PVE-LXC-Installer und Template-Auswahl sind in diesem Referenzpfad auf amd64 festgelegt. ARM64-Gastbetrieb ist damit nicht nachgewiesen.
 
-Backups: QNAP-NFS-Export nur für PVE-Host-IP(s) freigeben, in PVE als Storage für backup einbinden, reguläre vzdump-Jobs samt Aufbewahrung konfigurieren und eine Test-VM zurücksichern. Der Backup-Datenpfad bleibt im Kunden-LAN; keine eigene Backup-Engine.
+## Noch erforderliche isolierte Prüfungen
 
-## Offene Abnahme im isolierten PVE-Labor
-
-1. PR-35-Gateway-/NAT-Container in frischem Debian-13-LXC auf AMD64 und ARM64 mit getrenntem Transit- und LAN-Netz starten; genau eine NetBird-Instanz pro Router nachweisen.
-2. Für PVE HTTPS und QNAP SNMPv3 erlaubte, verweigerte und kundenfremde Quellen prüfen; virtuelle Ziele und Adressübersetzung mit Paketmitschnitten belegen. Vom Kunden-LAN initiierte Overlay-Verbindungen separat prüfen, falls benötigt.
-3. Nach Policy-Entzug neue und laufende TCP-/UDP-Verbindungen sowie Antworten sperren. Management-Ausfall und fehlende/ungültige Policy müssen fail-closed sein. Alle P1-Gates ohne Testabschaltung grün bekommen.
-4. Primary/Backup mit Metriken 100/200, LXC-/Host-Neustart, NetBird-Reconnect und Persistenz prüfen. Zwei LXC auf einem PVE-Host ersetzen keinen Host-Failover.
-5. Zabbix-Proxy-TLS-PSK und Registrierung, PVE-HTTP-API- und QNAP-SNMPv3-Abfragen sowie QNAP-NFS-vzdump und Rücksicherung belegen.
-
-Bis dahin: kein Deployment, keine Freigabe, kein Merge.
+Debian-13-Offline-Tests, PVE-Installer-Mocks und Kernel-Pakettests müssen bestehen; alle P1-Release-Gates müssen ohne Teständerung grün werden. Danach im isolierten PVE-Labor: frische CTs für Primary/Backup, berechtigter und unberechtigter Overlay-Peer, fremder Kunde, PVE HTTPS und QNAP SNMPv3 über virtuelle Adressen, bereits bestehende TCP-/UDP-Flows nach Policy-Entzug, NetBird-Management-Ausfall, Failover, LXC-/Host-Neustart, genau ein NetBird-Profil je Router, TLS-PSK-Handshake/Proxy-Registrierung und NFS-Backup samt Rücksicherung. Keine Änderungen an Kundensystemen, kein Merge oder Deployment aus diesem Branch.

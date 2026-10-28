@@ -1,4 +1,4 @@
-name: PVE router beta gates
+name: PVE BINAT beta gates
 
 on:
   push:
@@ -6,16 +6,16 @@ on:
       - beta-pve-qnap-legacy-router
     paths:
       - router-install.sh
-      - netbird-router/pve/**
-      - tests/pve_binat_policy_kernel.py
-      - tests/Dockerfile.pve-binat-policy
+      - zabbix-*.sh
+      - netbird-router/**
+      - tests/**
       - .github/workflows/pve-router-beta.yml
 
 permissions:
   contents: read
 
 jobs:
-  syntax-and-unsafe-binat-refusal:
+  pve-installer:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,32 +25,41 @@ jobs:
           bash -n netbird-router/pve/install.sh
           bash -n zabbix-proxy-install.sh
           bash -n zabbix-api-register.sh
-      - name: BINAT and direct routing must fail before enrollment
+      - name: Debian 13 isolated installer regressions
         run: |
-          docker build -f tests/Dockerfile.pve-binat-policy -t pve-router-beta .
-          docker run --rm --network none -v "$PWD:/src:ro" pve-router-beta bash -ec '
-            set +e
-            expect_reject() {
-              pattern=$1; shift
-              output=$("$@" 2>&1)
-              result=$?
-              if [ "$result" -eq 0 ]; then printf "Unexpected success: %s\n" "$*"; exit 1; fi
-              printf "%s\n" "$output" | grep -F "$pattern" || exit 1
-            }
-            expect_reject "PVE-LXC-BINAT gesperrt" bash router-install.sh --routing-mode binat --customer Fixture --setup-key unused --api-token unused
-            expect_reject "Ausschließlich BINAT" bash router-install.sh --routing-mode native --customer Fixture --setup-key unused --api-token unused
-            expect_reject "PVE-LXC-BINAT gesperrt" bash netbird-router/pve/install.sh --routing-mode binat
-            expect_reject "Ausschließlich BINAT" bash netbird-router/pve/install.sh --routing-mode native
-          '
+          docker build -f tests/Dockerfile.router -t pve-binat-beta:debian13 .
+          docker run --rm --network none -v "$PWD:/src:ro" pve-binat-beta:debian13 \
+            python3 -m unittest discover -s tests -p 'test_router_entrypoints.py' -v
+      - name: Customer network, staff group and BINAT policy regressions
+        run: >-
+          docker run --rm --network none -v "$PWD:/src:ro" pve-binat-beta:debian13
+          python3 -m unittest discover -s tests -p 'test_router_platforms.py' -v
 
-  policy-kernel:
+  kernel-release-gates:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build isolated Debian 13 lab
-        run: docker build -f tests/Dockerfile.pve-binat-policy -t pve-router-beta .
-      - name: Allow, deny, revoke, established and reply packet gates
+        run: docker build -f tests/Dockerfile.router -t pve-binat-beta:debian13 .
+      - name: Legacy BINAT six P1 counterexamples
+        id: legacy
+        continue-on-error: true
         run: >-
           docker run --rm --network none --cap-add NET_ADMIN --cap-add NET_RAW
           --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1
-          -v "$PWD:/src:ro" pve-router-beta python3 tests/pve_binat_policy_kernel.py
+          -v "$PWD:/src:ro" pve-binat-beta:debian13 python3 tests/nft_kernel.py
+      - name: Existing and return traffic after revocation
+        id: withdrawal
+        continue-on-error: true
+        run: >-
+          docker run --rm --network none --cap-add NET_ADMIN --cap-add NET_RAW
+          --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1
+          -v "$PWD:/src:ro" pve-binat-beta:debian13 python3 tests/pve_binat_policy_kernel.py
+      - name: Keep release blocked on either failure
+        if: always()
+        env:
+          LEGACY: ${{ steps.legacy.outcome }}
+          WITHDRAWAL: ${{ steps.withdrawal.outcome }}
+        run: |
+          test "$LEGACY" = success
+          test "$WITHDRAWAL" = success

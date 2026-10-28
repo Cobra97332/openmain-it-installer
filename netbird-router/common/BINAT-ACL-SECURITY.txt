@@ -1,0 +1,182 @@
+# PR #33: release blocked — P1 remains open
+
+No complete safe BINAT fix is claimed. Do not deploy this branch or merge PR #33.
+The new kernel release gates intentionally fail on the current implementation.
+Installer behavior is unchanged: this is evidence and a release block, not a
+runtime remediation or an automatic migration of existing routers.
+
+## Verified dependency and packet path
+
+Source analysis uses NetBird **v0.80.0**, Git tree/commit
+`fca64287cf51a85552a41b022013abbfdb335452`. No management server, real daemon,
+production credentials or customer router was contacted.
+
+- [Native route destination matching](https://github.com/netbirdio/netbird/blob/fca64287cf51a85552a41b022013abbfdb335452/client/firewall/nftables/filter_linux.go#L156)
+  reads the IP packet's current destination, not the original conntrack tuple.
+- [Forward dispatch](https://github.com/netbirdio/netbird/blob/fca64287cf51a85552a41b022013abbfdb335452/client/firewall/nftables/chains_linux.go#L688)
+  jumps from `netbird-acl-forward-filter` to `netbird-rt-fwd`, then drops ingress
+  from the NetBird interface if no rule accepts it.
+- [Established acceptance](https://github.com/netbirdio/netbird/blob/fca64287cf51a85552a41b022013abbfdb335452/client/firewall/nftables/manager_linux.go#L766)
+  inserts an unconditional `ct state established,related counter accept` at
+  the start of regular chains, including the route chain. It is not limited
+  to the reply direction. Therefore even deleting a native ACL or removing
+  its source-group member does not enforce immediate withdrawal of a
+  bidirectional established connection.
+- [External filter chain handling](https://github.com/netbirdio/netbird/blob/fca64287cf51a85552a41b022013abbfdb335452/client/firewall/nftables/chains_linux.go#L308)
+  can insert interface ACCEPTs in other filter/input/forward chains. A new
+  independent FORWARD guard must account for this lifecycle, not just its own
+  initial rules. NetBird also writes packet marks and conntrack marks in its
+  mangle chains; neither is an implicitly reserved OpenMain authorization bit.
+
+Current OpenMain path: conntrack attaches in PREROUTING; prefix DNAT at priority
+-101 maps virtual -> LAN; routing selects the LAN interface; NetBird FORWARD at
+priority 0 then sees the LAN destination. Thus its ordinary virtual-resource ACL
+cannot match. OpenMain replaces that ACL with a source-set-bound ACCEPT matching
+`ct original daddr`. POSTROUTING masquerade and conntrack implement reply NAT.
+NAT entries persist; rewriting a NAT table is not a policy revocation or a
+conntrack flush. nft batch atomicity covers only that batch, not another writer.
+
+## Two independent security failures
+
+1. After the last successful observation, NetBird can publish another native
+   generation while a previous rewritten rule remains active. Until another
+   reconciliation, the old source group or explicit primary/backup peer can
+   still access BINAT. Three retries cannot close the interval after return.
+2. The native ESTABLISHED rule can accept a fully bidirectional flow even after
+   its current source-group member is removed and reconciliation has completed.
+   Earlier tests reused a one-way UDP tuple; that does not exercise this path.
+   The new gate confirms the native route shortcut on requests. Replies
+   bypass that route chain; they are accepted by NetBird's separate external
+   filter rule (`oifname wt0 ct state established,related accept`) and its
+   native forward base chain's default acceptance. The reply fixture has a
+   foreign DROP policy and checks the external rule's counter, proving that
+   path rather than attributing replies to the ingress-only route dispatch.
+
+These problems apply on both primary and backup routers (metrics 100/200 only
+select paths). Multiple ACL source groups and policy transitions increase the
+number of stale grants; they do not provide serialization between writers.
+
+## Alternatives assessed; none certified here
+
+- Shorter timers, additional reads/retries, `nft monitor`/netlink notifications
+  or management events: asynchronous notification comes after the policy
+  commit. Packets can pass before the handler runs. Event loss, process death
+  and a missed complete table replacement also need fail-closed handling.
+  Event-driven *availability recovery* is useful; it is not an authorization
+  boundary and is not a complete security fix.
+- Temporarily restoring the virtual destination around native FORWARD avoids
+  cached ACL copies, but leaves the established fast path and missing-table
+  behavior unresolved. Cross-table nft jumps are not available.
+- A lab-only pre-conntrack native-chain jump was explored with a per-packet
+  proof and a persistent missing-chain gate. The `meta priority` prototype
+  did NOT pass the forwarding test: IPv4 forwarding does not preserve that
+  proof. Packet marks/conntrack marks have NetBird writers; persisting a proof
+  in connection state risks authorizing later packets without current policy.
+  Reply authorization, related traffic, external-chain insertion, restarts
+  and table recreation are additional unresolved requirements. The prototype
+  is not part of the installer and must not be represented as a verified fix.
+
+A suitable integration must give **one policy owner** the native route ACL's
+original-destination matching and its lifecycle. A pinned, reviewed NetBird
+implementation could emit the original-tuple-aware routed ACLs itself, without
+external replacement/copies. For the requested immediate withdrawal, it must
+also evaluate current routed authorization before any established shortcut,
+including reply/related traffic, or revoke affected conntrack entries in a
+provably ordered transaction. Broad conntrack flushing or disabling NetBird's
+firewall is not acceptable. Retain unrelated host/peer ACLs and foreign rules.
+
+This requires an isolated real NetBird controller/client lab and a supported,
+reviewed integration. Source inspection and nft fixtures alone cannot certify
+that change. It is an implementation proposal, not a proven working alternative.
+
+The demonstrably safe release decision **now** is to keep BINAT deployment
+blocked. Native routing to nonoverlapping real LANs avoids this compatibility
+rewrite, but does not meet overlapping-LAN BINAT requirements or by itself
+prove immediate established-flow withdrawal. No automatic fallback is added.
+
+## Tests and release criteria
+
+`tests/nft_kernel.py` now injects the new policy *after* reconciliation returns,
+then sends new and existing tuples before any timer/extra read. It also installs
+the real native established-rule shape, observes a reply, removes the current
+group member and checks both traffic directions. Reply delivery must increment
+the NetBird-style external established rule in a filter chain with DROP policy;
+reply packets do not jump into the ingress-only native route chain. Actual sockets, NAT,
+conntrack, rules and forwarding run in disposable network-none Docker / no-NIC
+QEMU. Policy writers and server APIs remain controlled fixtures.
+
+Earlier rollback, current-set/new-flow denial, recovery, multiple-source and
+foreign-rule-preservation checks still execute before the blocking assertions.
+No expected-failure annotation, success override or insecure opt-out is used.
+The QEMU harness collects VM failure and still executes synthetic BIOS/UEFI
+fixtures; CI runs the independent ARM64 checks even after a QEMU failure.
+
+Merge is forbidden until these gates pass with a reviewed architecture, complete
+native NetBird lifecycle tests, and a new Codex review of the resulting commit.
+A green mock/static/boot test does not override a failed kernel release gate.
+
+## Follow-up: native identity / packet-proof design also rejected (2026-10-12)
+
+Current reviewed starting head was dd4acb5904ef154d635b3437dd1a662a9022e0ce,
+not an older review commit. All four failed Actions were inspected: two offline
+jobs reproduced the four P1 gates; both platform jobs failed VM acceptance while
+synthetic BIOS/UEFI and 24 ARM64 tests passed. All five inline review threads
+were unresolved, including outdated comments. No P1 thread is marked fixed.
+
+Additional pinned v0.80.0 source evidence:
+- client/internal/acl/id/id.go: RuleID is destination.String() plus a 16-hex
+  content-hash suffix, not an arbitrary OpenMain comment.
+- client/firewall/nftables/filter_linux.go: AddFilterRule stores []byte(ruleID)
+  in raw nft userdata. DeleteFilterRule refreshes an initially-zero handle.
+- client/firewall/nftables/chains_linux.go: refreshRuleHandles indexes its
+  filter map by the EXACT raw userdata. Replacing it with an nft comment can
+  orphan a native rule from controller deletion. A cached nonzero handle is
+  another deletion path; neither may be changed by a compatibility layer.
+- client/internal/acl/manager.go: applyRouteACLs adds new identities, THEN
+  removes obsolete ones. An added rule alone is not proof that every older
+  independent source-group policy is obsolete. Preserve multiple live policies.
+- shared/management/types/policyrule.go: DROP, TCP/UDP/ICMP and port ranges are
+  supported actions/protocols. An ALL/ACCEPT-only proof is insufficient.
+
+A TEST-ONLY netlink experiment preserves opaque userdata AND numeric handles
+and uses NFNL_BATCH_GENID for atomic compare-and-replace. Real kernel tests
+confirm stale generations are rejected without partial changes. The parser has
+bounded bytes/messages and an overall deadline; diagnostics contain no payloads.
+
+A second lab-only design cleared a reserved per-packet proof before native ACL
+processing, matched current source groups using the original conntrack tuple,
+and required that proof in POSTROUTING. It successfully withdrew existing
+bidirectional group access and failed closed when the native table disappeared,
+without deleting any conntrack entry. Persistent PREROUTING/POSTROUTING hooks
+also avoid NetBird's insertion of ACCEPTs into external FORWARD/INPUT chains.
+
+However, a NEW higher-priority native DROP added after reconciliation still
+matches the packet's virtual payload destination, while DNAT has already made
+that destination real. It misses; an older converted original-tuple grant emits
+its proof and forwards both a previously used and a new tuple. The packet-proof
+design therefore DOES NOT solve all live-policy races. Tests now record this
+as P1_REJECTED_PROOF_DESIGN_BYPASSES_NEW_NATIVE_DROP. This is a rejected-prototype
+finding; no such implementation is shipped in the installer.
+
+Native identity preservation / generation CAS are useful prerequisites, NOT a
+complete security boundary. Retiring selected conntrack tuples asynchronously
+would leave the same interval and cannot prevent a new tuple being admitted.
+Header rewriting must also preserve protocol/ports, related ICMP and reply data;
+no such complete implementation is certified here. Configurable NB_FWMARK_BASE
+and foreign mark users require collision/lifecycle analysis before reserving bits.
+
+Attempted runtime edits were reverted. tests/nft_netlink_experiment.py and
+nft_acl_research.py are NOT in the installer bundle or imported by runtime code.
+The existing blocking assertions are retained and additional counterexamples
+are appended; no expected-failure marker, weakened assertion or skip was added.
+
+Required next architecture: authorization and BINAT tuple-aware matching must
+share the native controller's policy publication/lifecycle, including new DENY
+rules and protocol/port constraints. A tested native integration or a proven
+synchronous publication interlock is needed; retries/event notification alone
+cannot supply it. This remains a proposal, not an implemented release fix.
+
+Actual Proxmox VM/LXC, physical Raspberry Pi, live controller/client reboot and
+real two-router failover are unavailable in this workspace. Offline contracts,
+QEMU VM/synthetic boots, ARM64 userspace and namespace-local policy changes are
+separately reported. No real systems, identities or secrets were accessed.

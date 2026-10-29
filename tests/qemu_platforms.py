@@ -144,12 +144,19 @@ menuentry 'SYNTHETIC probe (not Debian Installer)' {
             command+=['-drive','if=pflash,format=raw,readonly=on,file='+str(firmware/'OVMF_CODE_4M.fd'),
                       '-drive','if=pflash,format=raw,file='+str(variables)]
         log=work/(mode+'.log')
+        timed_out=False
         with log.open('wb') as stream:
-            subprocess.run(command,check=True,timeout=600,stdout=stream,stderr=subprocess.STDOUT)
+            try:
+                subprocess.run(command,check=True,timeout=600,stdout=stream,stderr=subprocess.STDOUT)
+            except subprocess.TimeoutExpired:
+                timed_out=True
         output=log.read_text(errors='replace')
-        if 'OPENMAIN_QA_PASS' not in output or 'OPENMAIN_QA_FAIL' in output:
+        if timed_out or 'OPENMAIN_QA_PASS' not in output or 'OPENMAIN_QA_FAIL' in output:
             failures.append(mode)
-            print(mode+': FAIL; bounded tail of isolated synthetic boot log:',flush=True)
+            print(mode+(': TIMEOUT' if timed_out else ': FAIL')+'; isolated boot markers and bounded tail:',flush=True)
+            for line in output.splitlines():
+                if 'OPENMAIN_QA_' in line or 'OPENMAIN_UNIT_' in line or 'Failed to start openmain-qa' in line:
+                    print(line[:400],flush=True)
             for line in output.splitlines()[-30:]:
                 print(line[:400],flush=True)
             continue

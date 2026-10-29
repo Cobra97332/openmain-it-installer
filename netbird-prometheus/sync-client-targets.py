@@ -69,10 +69,9 @@ def api_request(base_url, token, method, path, payload=None):
                 return None
             return json.loads(body.decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "replace")
-        raise RuntimeError(f"{method} {path} -> HTTP {exc.code}: {body}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"{method} {path} fehlgeschlagen: {exc}") from exc
+        raise RuntimeError(f"{method} {path} -> HTTP {exc.code}; Antwortinhalt unterdrueckt") from None
+    except urllib.error.URLError:
+        raise RuntimeError(f"{method} {path} fehlgeschlagen; Transportdetails unterdrueckt") from None
 
 
 def group_id(group):
@@ -208,14 +207,9 @@ def ensure_policy(
         return False
 
     if existing:
-        policy_id = str(existing.get("id") or "")
-        if not policy_id:
-            raise RuntimeError(f"Policy '{policy_name}' hat keine ID.")
-        api_request(base_url, token, "PUT", f"/policies/{policy_id}", payload)
-        log(f"NetBird-Policy aktualisiert: {policy_name}")
-    else:
-        api_request(base_url, token, "POST", "/policies", payload)
-        log(f"NetBird-Policy erstellt: {policy_name}")
+        raise RuntimeError(f"Policy '{policy_name}' weicht ab; keine automatische Aenderung.")
+    api_request(base_url, token, "POST", "/policies", payload)
+    log(f"NetBird-Policy erstellt: {policy_name}")
     return True
 
 

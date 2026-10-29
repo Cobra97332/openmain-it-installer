@@ -16,7 +16,12 @@ die() { echo "[FEHLER] $*" >&2; exit 1; }
 log() { echo "[+] $*"; }
 warn() { echo "[!] $*" >&2; }
 
-trap 'rc=$?; echo "[FEHLER] Unerwarteter Abbruch in Zeile $LINENO (Exit $rc)." >&2; exit $rc' ERR
+on_error() {
+  local rc=$?
+  echo "[FEHLER] Unerwarteter Abbruch in Zeile $1 (Exit $rc)." >&2
+  exit "$rc"
+}
+trap 'on_error "$LINENO"' ERR
 
 [[ $EUID -eq 0 ]] || die "Bitte als root ausführen."
 

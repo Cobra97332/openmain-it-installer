@@ -309,7 +309,7 @@ setup_groups
             expected=set(before['peers'] or [])
             if after['id']!='admins':
                 expected.add('new-peer')
-            self.assertEqual(set(after['peers']),expected)
+            self.assertEqual(set(after['peers'] or []),expected)
             self.assertEqual(after['resources'],before['resources'] or [])
         self.assertEqual(len((self.root/'writes').read_text().splitlines()),3)
 
@@ -421,7 +421,7 @@ wait_binat_acl
         self.executable('locale',r'''#!/bin/sh
 if [ "$1" = -a ]; then cat "$MOCK_ROOT/locales"; exit 0; fi
 if [ "$1" = charmap ]; then
- case "$LC_ALL" in C.UTF-8|de_DE.UTF-8|en_US.UTF-8) echo UTF-8;; *) echo ANSI_X3.4-1968;; esac
+ case "${LC_ALL:-$LANG}" in C.UTF-8|de_DE.UTF-8|en_US.UTF-8) echo UTF-8;; *) echo ANSI_X3.4-1968;; esac
  exit 0
 fi
 exit 97
@@ -511,7 +511,7 @@ sys.exit(int(os.environ.get('MOCK_CURL_EXIT','0')))
         fixture.progress.chmod(0o600)
         status=dict(management=dict(connected=True,url='https://api.invalid'),profileName='default',netbirdIp='100.107.35.72/16',daemonStatus='Connected')
         (fixture.root/'status.json').write_text(json.dumps(status))
-        for name in ('awk','mktemp','rm','cat','sleep','jq'):
+        for name in ('awk','mktemp','rm','cat','sleep','jq','locale'):
             (fixture.bin/name).symlink_to(shutil.which(name))
         fixture.executable('netbird',"""#!/bin/sh
 printf '%s\\n' "$*" >> "$MOCK_ROOT/netbird-calls"
@@ -975,7 +975,8 @@ class PrometheusSyncTests(unittest.TestCase):
         policy = NetBirdTests.policy()
         before = copy.deepcopy(policy)
         with patch.object(self.module, 'api_request') as api:
-            self.assertFalse(self.module.ensure_policy('', TOKEN, [policy], 'metrics', 'monitor', 'metrics', [9191,9192]))
+            with self.assertRaises(RuntimeError):
+                self.module.ensure_policy('', TOKEN, [policy], 'metrics', 'monitor', 'metrics', [9191,9192])
             self.assertEqual(policy, before)
             policy['enabled'] = False
             with self.assertRaises(RuntimeError):

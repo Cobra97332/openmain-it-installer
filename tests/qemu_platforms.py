@@ -53,7 +53,7 @@ def main():
     unit=root/'etc/systemd/system/openmain-qa.service'
     unit.write_text('''[Unit]
 Description=Isolated OpenMain VM test (no production connections)
-After=basic.target
+After=basic.target openmain-router-firstboot.service getty@tty1.service
 [Service]
 Type=oneshot
 ExecStart=/bin/bash /root/qa.sh
@@ -73,6 +73,7 @@ WantedBy=multi-user.target
     firstboot=(source/'openmain-router-firstboot.service').read_text().replace(
         '/usr/local/sbin/netbird-router-firstboot','/root/firstboot-unit-fixture.sh')
     (unit.parent/'openmain-router-firstboot.service').write_text(firstboot)
+    (wants/'openmain-router-firstboot.service').symlink_to('../openmain-router-firstboot.service')
     (root/'root/qa.sh').write_text('''set -Eeuo pipefail
 trap 'echo OPENMAIN_QA_FAIL_LINE_${LINENO}; systemctl --no-block poweroff' ERR
 export PYTHONDONTWRITEBYTECODE=1
@@ -90,12 +91,7 @@ else
 fi
 echo OPENMAIN_UNIT_VERIFY
 systemd-analyze verify /etc/systemd/system/openmain-router-firstboot.service
-echo OPENMAIN_UNIT_START
-systemctl start --no-block openmain-router-firstboot.service
-for attempt in {1..50}; do
-  test -f /var/lib/openmain-router-firstboot.done && break
-  sleep 0.2
-done
+echo OPENMAIN_UNIT_BOOT
 if ! test -f /var/lib/openmain-router-firstboot.done; then
   echo OPENMAIN_UNIT_DIAG
   systemctl status --no-pager openmain-router-firstboot.service getty@tty1.service || true

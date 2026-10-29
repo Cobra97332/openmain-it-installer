@@ -1,6 +1,7 @@
 [Unit]
 Description=OpenMain-IT NetBird Router First Boot
 After=network-online.target
+Before=getty@tty1.service
 Wants=network-online.target
 ConditionPathExists=!/var/lib/openmain-router-firstboot.done
 

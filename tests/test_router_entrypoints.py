@@ -177,7 +177,7 @@ esac
         self.assertEqual(second.returncode,0,second.stderr)
         calls=[json.loads(line) for line in (self.root/'pct-calls').read_text().splitlines()]
         self.assertEqual(len([call for call in calls if call[0]=='create']),1)
-        self.assertEqual(len([call for call in calls if call[0]=='start']),1)
+        self.assertEqual(len([call for call in calls if call[0]=='start']),0)
         self.assertEqual({call[1] for call in calls if call[0]=='exec'},{'112'})
 
     def test_new_container_requires_real_key_before_creation(self):

@@ -534,7 +534,7 @@ setup_metrics(){
 }
 
 validate_monitoring_assignment(){
-  local peers marker attempt missing=() gid name
+  local peers attempt missing=() gid name
   local expected_ids=("$GLOBAL_GROUP_ID" "$COMPANY_GROUP_ID" "$CUSTOMER_MARKER_GROUP_ID")
   local expected_names=("$GLOBAL_GROUP" "$CUSTOMER" "${CUSTOMER_MARKER_PREFIX}${CUSTOMER}")
   if [[ "$METRICS_ENABLED" == 1 ]]; then

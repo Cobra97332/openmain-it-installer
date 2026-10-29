@@ -513,7 +513,7 @@ sys.exit(int(os.environ.get('MOCK_CURL_EXIT','0')))
         fixture.progress.chmod(0o600)
         status=dict(management=dict(connected=True,url='https://api.invalid'),profileName='default',netbirdIp='100.107.35.72/16',daemonStatus='Connected')
         (fixture.root/'status.json').write_text(json.dumps(status))
-        for name in ('awk','mktemp','rm','cat','sleep','jq','locale'):
+        for name in ('awk','mktemp','rm','cat','sleep','jq'):
             (fixture.bin/name).symlink_to(shutil.which(name))
         fixture.executable('netbird',"""#!/bin/sh
 printf '%s\\n' "$*" >> "$MOCK_ROOT/netbird-calls"

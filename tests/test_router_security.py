@@ -269,11 +269,11 @@ setup_zabbix_access
             r=self.run_function('ensure_group',groups,('Bauer-PR30',))
             self.assertNotEqual(r.returncode,0);self.assertFalse((self.root/'writes').exists())
 
-    def test_setup_groups_assigns_router_groups_and_leaves_staff_group_empty(self):
+    def test_setup_groups_assigns_router_groups_and_leaves_admins_group_untouched(self):
         groups=[dict(self.empty_group(),id='company'),dict(self.empty_group(),id='marker',name='Kunde:Bauer-PR30'),
                 dict(self.empty_group(),id='global',name='Kunden',peers=['old-a','old-b','old-c'],peers_count=3,
                      resources=[dict(id='resource',type='network')],resources_count=1),
-                dict(self.empty_group(),id='staff',name='OpenMain-IT:Bauer-PR30')]
+                dict(self.empty_group(),id='admins',name='Admins')]
         state=self.root/'groups.json';state.write_text(json.dumps(groups))
         self.executable('group-api',"""#!/usr/bin/env python3
 import json,os,sys
@@ -290,7 +290,7 @@ elif method=='PUT':
  print(json.dumps(g))
 else:sys.exit(97)
 """)
-        body=functions('router-install.sh',['die','valid_group','ensure_group','ensure_peer_in_group','setup_groups'])
+        body=functions('router-install.sh',['die','valid_group','ensure_group','require_existing_group','ensure_peer_in_group','setup_groups'])
         result=self.bash('set -Eeuo pipefail\n'+body+"""
 api(){ group-api "$@"; }
 log(){ :; }
@@ -298,7 +298,7 @@ PEER_ID=new-peer
 GLOBAL_GROUP=Kunden
 CUSTOMER=Bauer-PR30
 CUSTOMER_MARKER_PREFIX=Kunde:
-REMOTE_ACCESS_GROUP=
+REMOTE_ACCESS_GROUP=Admins
 setup_groups
 setup_groups
 """)
@@ -307,7 +307,7 @@ setup_groups
         for before,after in zip(groups,current):
             self.assertEqual(before['id'],after['id']);self.assertEqual(before['name'],after['name'])
             expected=set(before['peers'] or [])
-            if after['id']!='staff':
+            if after['id']!='admins':
                 expected.add('new-peer')
             self.assertEqual(set(after['peers']),expected)
             self.assertEqual(after['resources'],before['resources'] or [])
@@ -335,6 +335,7 @@ CUSTOMER=Bauer-PR30
 COMPANY_GROUP_ID=company
 CUSTOMER_MARKER_PREFIX=Kunde:
 CUSTOMER_MARKER_GROUP_ID=marker
+ADMIN_GROUP_ID=admins
 METRICS_ENABLED=0
 validate_monitoring_assignment
 '''
@@ -351,6 +352,29 @@ validate_monitoring_assignment
                                  2 if expected==0 else 15)
                 if expected:
                     self.assertIn('Gruppenzuordnung nicht wirksam',result.stderr)
+
+    def test_router_in_admins_is_rejected_before_network_setup(self):
+        body=functions('router-install.sh',['die','validate_monitoring_assignment'])
+        groups=[dict(id=gid,name=name) for gid,name in
+                [('global','Kunden'),('company','Bauer-PR30'),
+                 ('marker','Kunde:Bauer-PR30'),('admins','Admins')]]
+        (self.root/'peer.json').write_text(json.dumps([dict(id='new-peer',groups=groups)]))
+        result=self.bash('set -Eeuo pipefail\n'+body+r'''
+api(){ cat "$MOCK_ROOT/peer.json"; }
+log(){ :; }
+PEER_ID=new-peer
+GLOBAL_GROUP=Kunden
+GLOBAL_GROUP_ID=global
+CUSTOMER=Bauer-PR30
+COMPANY_GROUP_ID=company
+CUSTOMER_MARKER_PREFIX=Kunde:
+CUSTOMER_MARKER_GROUP_ID=marker
+ADMIN_GROUP_ID=admins
+METRICS_ENABLED=0
+validate_monitoring_assignment
+''')
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('Mitglied von Admins',result.stderr)
 
     def test_acl_wait_accepts_only_required_policy_and_distinguishes_failures(self):
         body=functions('router-install.sh',['die','wait_binat_acl'])
@@ -388,6 +412,39 @@ wait_binat_acl
                     self.assertIn(needle,result.stderr)
                 else:
                     self.assertEqual(len((self.root/'probe-calls').read_text().splitlines()),3)
+
+    def test_locale_bootstrap_generates_de_de_and_preserves_valid_existing_locale(self):
+        body=functions('router-install.sh',
+                       ['die','locale_available','utf8_locale_available','setup_guest_locale'])
+        body=body.replace('/etc/locale.gen','$MOCK_ROOT/locale.gen')
+        self.executable('apt-get','#!/bin/sh\necho apt >> "$MOCK_ROOT/effects"\n')
+        self.executable('locale',r'''#!/bin/sh
+if [ "$1" = -a ]; then cat "$MOCK_ROOT/locales"; exit 0; fi
+if [ "$1" = charmap ]; then
+ case "$LC_ALL" in C.UTF-8|de_DE.UTF-8|en_US.UTF-8) echo UTF-8;; *) echo ANSI_X3.4-1968;; esac
+ exit 0
+fi
+exit 97
+''')
+        self.executable('locale-gen','#!/bin/sh\necho de_DE.utf8 >> "$MOCK_ROOT/locales"; echo generated >> "$MOCK_ROOT/effects"\n')
+        self.executable('update-locale','#!/bin/sh\necho "$*" >> "$MOCK_ROOT/updates"\n')
+        (self.root/'locale.gen').write_text('# de_DE.UTF-8 UTF-8\n')
+        (self.root/'locales').write_text('C\nC.utf8\nen_US.utf8\n')
+        (self.root/'effects').write_text('')
+        (self.root/'updates').write_text('')
+        result=self.bash('set -Eeuo pipefail\n'+body+'''
+ORIGINAL_LANG=de_DE.UTF-8
+ORIGINAL_LC_ALL=
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+setup_guest_locale
+[[ "$LANG" == de_DE.UTF-8 ]]
+setup_guest_locale
+''')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((self.root/'effects').read_text().splitlines(),
+                         ['apt','generated','apt'])
+        self.assertEqual((self.root/'updates').read_text().splitlines(),
+                         ['LANG=de_DE.UTF-8','LANG=de_DE.UTF-8'])
 
     def test_multiple_json_documents_are_rejected_before_update(self):
         group=self.empty_group()

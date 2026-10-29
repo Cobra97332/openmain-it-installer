@@ -311,7 +311,7 @@ if [[ "${NB_ZABBIX_REGISTER_HOST:-0}" == 1 ]]; then
   [[ "$ZABBIX_API_REGISTRATION_STATUS" == registered ]] || die "Vollstaendige API-Registrierung erforderlich."
   LAN_NETWORK=$(ip -4 -o addr show dev "$LAN_IF" scope global | awk 'NR==1{print $4}')
   LAN_NETWORK=$(python3 -c 'import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network)' "$LAN_NETWORK")
-  export SYNC_CUSTOMER="$CUSTOMER" SYNC_HOST="${NB_ZABBIX_AGENT_HOST:-$HOSTNAME_LOCAL}" SYNC_PROXY="$PROXY_NAME"
+  export SYNC_CUSTOMER="$CUSTOMER" SYNC_ROLE="$ROLE" SYNC_HOST="${NB_ZABBIX_AGENT_HOST:-$HOSTNAME_LOCAL}" SYNC_PROXY="$PROXY_NAME"
   export SYNC_IDENTITY="$PSK_IDENTITY" SYNC_PSK_FILE="$PSK_FILE" SYNC_INTERFACE="$LAN_IF" SYNC_NETWORK="$LAN_NETWORK" SYNC_AGENT_CONFIG="$AGENT_CONF"
   python3 "$NB_BUNDLE_DIR/netbird-router/common/zabbix_sync.py" install || die "Zabbix-Abgleich abgebrochen; Fehlerklasse siehe oben. Kein Dienststart."
   install -d -m 0755 /usr/local/lib/openmain-router

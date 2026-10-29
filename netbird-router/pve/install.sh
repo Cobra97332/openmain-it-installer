@@ -155,7 +155,7 @@ done
 [[ "$ready" == 1 ]] || { echo "CT $CTID: Netzwerk ausstehend. Erneut mit gleicher Konfiguration starten." >&2; exit 1; }
 if ! pct exec "$CTID" -- python3 --version >/dev/null 2>&1; then
   [[ "$EXISTING_CT" == 0 ]] || exit 1
-  pct exec "$CTID" -- bash -c 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y python3'
+  pct exec "$CTID" -- bash -c 'export LANG=C.UTF-8 LC_ALL=C.UTF-8; apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y python3'
 fi
 pct exec "$CTID" -- bash /opt/openmain-router/router-install.sh --config /root/openmain-customer.json
 pct exec "$CTID" -- rm -f /root/openmain-customer.json

@@ -3,6 +3,13 @@
 set +xv
 set -Eeuo pipefail
 umask 077
+ORIGINAL_LANG="${LANG:-}"
+ORIGINAL_LC_ALL="${LC_ALL:-}"
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+[[ "$(locale charmap 2>/dev/null)" == UTF-8 ]] || {
+  echo 'Debian C.UTF-8 Bootstrap-Locale fehlt; kein APT-Start.' >&2
+  exit 1
+}
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 RUNTIME="$SCRIPT_DIR/netbird-router/common/runtime.py"
 PROFILE_EXISTED=0
@@ -43,7 +50,7 @@ LAN_IF_OVERRIDE="${NB_LAN_INTERFACE:-}"
 SSH_PUBLIC_KEY="${NB_SSH_PUBLIC_KEY:-}"
 GLOBAL_GROUP="Kunden"
 CUSTOMER_MARKER_PREFIX="${NB_CUSTOMER_MARKER_PREFIX:-Kunde:}"
-REMOTE_ACCESS_GROUP="${NB_REMOTE_ACCESS_GROUP:-}"
+REMOTE_ACCESS_GROUP="${NB_REMOTE_ACCESS_GROUP:-Admins}"
 STATE_FILE="/var/lib/netbird-kundenrouter/state.json"
 NFT_FILE="/etc/nftables.d/openmain-binat.nft"
 
@@ -65,7 +72,7 @@ NetBird Kundenrouter
   --zabbix-proxy-group NAME
   --zabbix-server-group NAME
   --lan-interface IFACE
-  --remote-access-group NAME (nur berechtigte OpenMain-IT-Peers)
+  --remote-access-group Admins (zentrale, bestehende Admin-Gruppe)
   --metrics-port PORT
   --metrics-detail-port PORT
   --prometheus-netbird-ip IP
@@ -155,6 +162,43 @@ install_packages(){
     apt-get update -y
     DEBIAN_FRONTEND=noninteractive apt-get install -y netbird
   fi
+}
+
+
+locale_available(){
+  local name
+  name=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/\.utf-8$/.utf8/')
+  [[ -n "$name" ]] && locale -a | tr '[:upper:]' '[:lower:]' | grep -Fxq -- "$name"
+}
+
+utf8_locale_available(){
+  locale_available "$1" && [[ "$(LC_ALL="$1" locale charmap 2>/dev/null)" == UTF-8 ]]
+}
+
+setup_guest_locale(){
+  DEBIAN_FRONTEND=noninteractive apt-get install -y locales
+  [[ -f /etc/locale.gen ]] || die "Locale-Konfiguration im Debian-Gast fehlt."
+  if ! grep -Eq '^de_DE\.UTF-8[[:space:]]+UTF-8[[:space:]]*$' /etc/locale.gen; then
+    sed -i -E 's/^[[:space:]#]*de_DE\.UTF-8[[:space:]]+UTF-8[[:space:]]*$/de_DE.UTF-8 UTF-8/' /etc/locale.gen
+    grep -Eq '^de_DE\.UTF-8[[:space:]]+UTF-8[[:space:]]*$' /etc/locale.gen ||
+      printf '%s\n' 'de_DE.UTF-8 UTF-8' >> /etc/locale.gen
+  fi
+  if ! locale_available de_DE.UTF-8; then
+    locale-gen de_DE.UTF-8 >/dev/null || die "de_DE.UTF-8 konnte nicht generiert werden."
+  fi
+  locale_available de_DE.UTF-8 || die "de_DE.UTF-8 ist nach locale-gen nicht verfuegbar."
+  if utf8_locale_available "$ORIGINAL_LANG"; then
+    export LANG="$ORIGINAL_LANG"
+  else
+    update-locale LANG=de_DE.UTF-8 || die "Debian-Gast-Locale konnte nicht gespeichert werden."
+    export LANG=de_DE.UTF-8
+  fi
+  if utf8_locale_available "$ORIGINAL_LC_ALL"; then
+    export LC_ALL="$ORIGINAL_LC_ALL"
+  else
+    unset LC_ALL
+  fi
+  [[ "$(locale charmap 2>/dev/null)" == UTF-8 ]] || die "Aktive Gast-Locale ist nicht UTF-8."
 }
 
 setup_access(){
@@ -325,26 +369,34 @@ ensure_peer_in_group(){
   ' <<<"$current" >/dev/null || die "Gruppenzuordnung nicht vollstaendig erhalten/verifiziert."
 }
 
+require_existing_group(){
+  local name="$1" groups gid
+  groups=$(api GET "/groups")
+  gid=$(jq -er --arg n "$name" '
+    if type=="array" then
+      [.[] | select(type=="object" and .name==$n)] |
+      if length==1 then .[0].id else error("missing or duplicate group") end
+    else error("invalid groups") end |
+    select(type=="string" and length>0 and (test("[^A-Za-z0-9_-]")|not))
+  ' <<<"$groups") || die "NetBird-Gruppe $name fehlt oder ist nicht eindeutig; keine Admin-Gruppe angelegt."
+  printf '%s' "$gid"
+}
+
 setup_groups(){
   local marker_group
-
   marker_group="${CUSTOMER_MARKER_PREFIX}${CUSTOMER}"
-  [[ -n "$REMOTE_ACCESS_GROUP" ]] || REMOTE_ACCESS_GROUP="OpenMain-IT:${CUSTOMER}"
-  [[ "$REMOTE_ACCESS_GROUP" != "$GLOBAL_GROUP" && "$REMOTE_ACCESS_GROUP" != "$CUSTOMER" && "$REMOTE_ACCESS_GROUP" != "$marker_group" ]] || die "Fernzugriffsgruppe darf keine gemeinsame Router-/Kundengruppe sein."
+  [[ "$REMOTE_ACCESS_GROUP" == Admins ]] || die "Nur die bestehende Admins-Gruppe ist als Fernzugriffsquelle zugelassen."
 
   GLOBAL_GROUP_ID=$(ensure_group "$GLOBAL_GROUP")
   COMPANY_GROUP_ID=$(ensure_group "$CUSTOMER")
   CUSTOMER_MARKER_GROUP_ID=$(ensure_group "$marker_group")
-  REMOTE_ACCESS_GROUP_ID=$(ensure_group "$REMOTE_ACCESS_GROUP")
+  ADMIN_GROUP_ID=$(require_existing_group Admins)
 
   ensure_peer_in_group "$GLOBAL_GROUP_ID"
   ensure_peer_in_group "$COMPANY_GROUP_ID"
   ensure_peer_in_group "$CUSTOMER_MARKER_GROUP_ID"
-
-  # Nur die bestehenden Zugriffsgruppen an Netzwerk-Ressourcen hängen.
-  # Die Kunde:<Name>-Gruppe dient ausschließlich als eindeutiges Metadaten-
-  # Merkmal für Monitoring/Inventar und erhält keine zusätzlichen Rechte.
-  log "Gruppen: Router=$CUSTOMER; Fernzugriff=$REMOTE_ACCESS_GROUP (Mitglieder separat freigeben)"
+  # Admins is a source group. A customer router must never join it.
+  log "Gruppen: Router=$GLOBAL_GROUP/$CUSTOMER/$marker_group; Fernzugriff=Admins (Router kein Mitglied)"
 }
 
 setup_zabbix_access(){
@@ -497,6 +549,12 @@ validate_monitoring_assignment(){
     jq -e --arg p "$PEER_ID" '
       type=="array" and ([.[] | select(.id==$p)] | length)==1
     ' <<<"$peers" >/dev/null || die "NetBird-API: Router-Peer nicht eindeutig auffindbar; Gruppenzuordnung nicht verifiziert."
+    if jq -e --arg p "$PEER_ID" --arg gid "$ADMIN_GROUP_ID" '
+      [.[] | select(.id==$p)][0].groups // [] |
+      any(.[]; if type=="object" then .id==$gid else .==$gid end)
+    ' <<<"$peers" >/dev/null; then
+      die "NetBird-API: Kundenrouter ist Mitglied von Admins; keine Aktivierung."
+    fi
     missing=()
     for ((i=0; i<${#expected_ids[@]}; i++)); do
       gid="${expected_ids[i]}"
@@ -520,7 +578,7 @@ validate_monitoring_assignment(){
 allocate_mapping(){
   local result
   result=$(NB_MANAGEMENT_URL="$MGMT_URL" NB_API_TOKEN="$API_TOKEN" \
-    python3 "$SCRIPT_DIR/netbird-router/common/network.py" "$CUSTOMER" "$ROLE" "$LAN_NET" "$PEER_ID" "$COMPANY_GROUP_ID" "$REMOTE_ACCESS_GROUP_ID") \
+    python3 "$SCRIPT_DIR/netbird-router/common/network.py" "$CUSTOMER" "$ROLE" "$LAN_NET" "$PEER_ID" "$COMPANY_GROUP_ID" "$GLOBAL_GROUP_ID" "$ADMIN_GROUP_ID") \
     || die "NetBird-Netzwerkabgleich fehlgeschlagen; vorhandene Zuordnungen bleiben erhalten."
   VIRTUAL_NET=$(jq -r .virtual <<<"$result")
   NETWORK_ID=$(jq -r .network <<<"$result")
@@ -647,19 +705,37 @@ setup_zabbix(){
 
   [[ -n "$helper" ]] || die "Zabbix-Helferskript fehlt. Erwartet: /usr/local/sbin/zabbix-proxy-install"
 
-  if [[ ! -e "${STATE_FILE%/*}/zabbix-intent.json" ]]; then
-    local intent_tmp
+  local intent="${STATE_FILE%/*}/zabbix-intent.json"
+  local proxy_name host_name slug role_label intent_tmp
+  if [[ -e "$intent" || -L "$intent" ]]; then
+    [[ -f "$intent" && ! -L "$intent" && "$(stat -c '%u:%a' "$intent")" == '0:600' ]] ||
+      die "Zabbix-Intent nicht sicher lesbar; keine Namensmigration."
+    jq -e --arg customer "$CUSTOMER" '
+      type=="object" and .customer==$customer and
+      (.proxy|type=="string" and length>0) and
+      (.host|type=="string" and length>0)
+    ' "$intent" >/dev/null || die "Zabbix-Intent widerspricht Kundenbestand."
+    proxy_name=$(jq -r .proxy "$intent")
+    host_name=$(jq -r .host "$intent")
+  else
+    [[ ! -e /etc/zabbix/zabbix_proxy.conf && ! -e /etc/zabbix/zabbix_agent2.conf ]] ||
+      die "Vorhandener Zabbix-Bestand ohne OpenMain-Intent; keine automatische Namensmigration."
+    slug=$(python3 -c 'import re,sys,unicodedata; x=unicodedata.normalize("NFKD",sys.argv[1]).encode("ascii","ignore").decode(); print(re.sub(r"[^A-Za-z0-9]+","-",x).strip("-")[:48])' "$CUSTOMER")
+    [[ -n "$slug" ]] || die "Kundenname nicht Zabbix-konform normalisierbar."
+    role_label=Primary
+    [[ "$ROLE" == backup ]] && role_label=Backup
+    proxy_name="${slug}-Proxy-${role_label}"
+    host_name="${slug}-Router-${role_label}"
     intent_tmp=$(mktemp "${STATE_FILE%/*}/.zabbix-intent.XXXXXXXX") || die "Sicheres Intent-Tempfile fehlt."
-    if ! jq -nc --arg customer "$CUSTOMER" --arg proxy "proxy-${COMPANY_GROUP_ID}-${ROLE}" \
-      --arg host "router-${COMPANY_GROUP_ID}-${ROLE}" '{customer:$customer,proxy:$proxy,host:$host}' > "$intent_tmp"; then
+    if ! jq -nc --arg customer "$CUSTOMER" --arg proxy "$proxy_name" --arg host "$host_name" '{customer:$customer,proxy:$proxy,host:$host}' > "$intent_tmp"; then
       rm -f -- "$intent_tmp"
       die "Zabbix-Intent konnte nicht geschrieben werden."
     fi
     chmod 600 "$intent_tmp"
-    mv -- "$intent_tmp" "${STATE_FILE%/*}/zabbix-intent.json"
+    mv -- "$intent_tmp" "$intent"
   fi
   NB_MANAGEMENT_URL="$MGMT_URL" NB_API_TOKEN="$API_TOKEN" NB_ZABBIX_SERVER="$ZABBIX_SERVER" NB_ZABBIX_PROXY_GROUP="$ZABBIX_PROXY_GROUP" NB_ZABBIX_POLICY_NAME="$ZABBIX_POLICY_NAME" \
-  NB_LAN_INTERFACE="$LAN_IF" NB_BUNDLE_DIR="$SCRIPT_DIR" NB_ZABBIX_REGISTER_HOST=1 NB_ZABBIX_PROXY_NAME="proxy-${COMPANY_GROUP_ID}-${ROLE}" NB_ZABBIX_AGENT_HOST="router-${COMPANY_GROUP_ID}-${ROLE}" bash "$helper" \
+  NB_LAN_INTERFACE="$LAN_IF" NB_BUNDLE_DIR="$SCRIPT_DIR" NB_ZABBIX_REGISTER_HOST=1 NB_ZABBIX_PROXY_NAME="$proxy_name" NB_ZABBIX_AGENT_HOST="$host_name" bash "$helper" \
     --customer "$CUSTOMER" --role "$ROLE" \
     --server "$ZABBIX_SERVER" --hostname "$HOSTNAME_LOCAL"
 }
@@ -726,6 +802,7 @@ main(){
   trap 'installation_exit "$?"' EXIT
   checkpoint preflight
   install_packages
+  setup_guest_locale
   setup_access
   checkpoint netbird
   connect_netbird

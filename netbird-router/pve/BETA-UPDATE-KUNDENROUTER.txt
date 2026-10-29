@@ -1,0 +1,18 @@
+# Sichere Aktualisierung bereits installierter PVE-Kundenrouter
+
+Stand: Beta-Branch `beta-pve-qnap-legacy-router`. Diese Anleitung ist **nicht ausgeführt**. Produktivänderungen an Luxon CT 112 erfordern eine eigene Freigabe und ein Wartungsfenster. Die bekannten Policy-Entzugs-P1-Tests bleiben release-blockierend.
+
+## Vor jeder Änderung (nur lesend)
+
+1. Repository-Commit und LXC-Eigentümermarker prüfen: `git rev-parse HEAD`, `pct config 112`, `pct status 112`.
+2. Im CT den vorhandenen Peer, die BINAT-Zuordnung und Zabbix-Identitäten erfassen: `pct exec 112 -- netbird status --json`, `pct exec 112 -- cat /var/lib/netbird-kundenrouter/state.json`, `pct exec 112 -- cat /var/lib/netbird-kundenrouter/zabbix-intent.json`, `pct exec 112 -- grep -E '^(Hostname|TLSConnect|TLSPSKIdentity)=' /etc/zabbix/zabbix_proxy.conf`. PSK-Datei und Tokens nicht ausgeben.
+3. Im NetBird-Management die Peer-ID von `nb-luxon-1`, die Gruppen `Kunden`, `Luxon`, `Kunde:Luxon` und `Admins`, die Ressource `BINAT-Luxon` und **alle aktiven Policies** für deren Gruppen prüfen. Die zentrale Policy `Admin → Kunden` muss einseitig sein und ausschließlich `Admins` als Quelle und `Kunden` als Ziel verwenden.
+4. Die ältere `OpenMain customer Luxon`-Policy und andere zusätzliche Freigaben werden vom neuen Installer **nicht** gelöscht. Solange sie aktiv Zugriff auf die Ressource gewähren, bricht der Abgleich vor weiteren Netzwerkschreibvorgängen ab. Manuelle Bereinigung nur nach gesonderter Prüfung/Freigabe.
+
+## Erst nach ausdrücklicher Freigabe
+
+1. Snapshot/Backup von CT 112 und NetBird-/Zabbix-Bestandsprotokoll anlegen; Wiederherstellung vorher festlegen.
+2. Dieselbe rootgeschützte Kundenkonfiguration und dieselbe CT-ID verwenden. Eine ältere `NB_REMOTE_ACCESS_GROUP=OpenMain-IT:Luxon`-Angabe nach Prüfung auf `Admins` ändern. Keine neuen Setup-Keys oder Peer-Instanzen erzeugen.
+3. Den vorhandenen `netbird-router/pve/install.sh --config <rootgeschützte-datei> --ctid 112 ...` erneut ausführen. Der Bestandscheck muss denselben LXC und das bereits verbundene NetBird-Profil übernehmen. Der vorhandene Zabbix-Intent hält technische Host-/Proxy-Namen und TLS-PSK-Identität stabil.
+4. Nach Abschluss API-Zuordnung von Peer **und** Ressource, lokale NetBird-ACL, BINAT-Paketpfad, Zabbix-Proxy/Agent, TLS-PSK und Wiederverbindung prüfen. Zugriff von `Admins` und Verweigerung eines fremden Peers getrennt messen. Fehlerstatus bedeutet keine Freigabe.
+5. Policy-Entzug mit bestehender Verbindung im isolierten Test nach `PVE-BINAT-PRAXISTEST.txt` prüfen. Solange die P1-Gates rot sind, keine Produktivfreigabe aus diesem Beta-Branch.

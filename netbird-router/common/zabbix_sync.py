@@ -160,8 +160,12 @@ def register_host(api, c, address, psk):
         if not item:
             api('item.create', {'hostid': active['templateid'], 'name': 'OpenMain active agent heartbeat',
                 'key_': 'openmain.agent.active', 'type': 7, 'value_type': 3, 'delay': '1m'})
-        api('host.create', {'host': c['host'], 'name': c['host'], 'monitored_by': 2,
-            'proxy_groupid': gid, 'groups': [{'groupid': ensure_group(api, c['customer'])}],
+        role = c.get('role', 'primary')
+        if role not in ('primary', 'backup'):
+            raise SyncError('HOST_ROLE_INVALID')
+        display = c['customer'] + ' \u2013 NetBird Router ' + ('1' if role == 'primary' else '2')
+        api('host.create', {'host': c['host'], 'name': display, 'monitored_by': 2,
+            'proxy_groupid': gid, 'groups': [{'groupid': ensure_group(api, 'OpenMain customer: ' + c['customer'])}],
             'templates': [template, active], 'tags': [{'tag': 'OpenMain customer', 'value': c['customer']}, {'tag': 'OpenMain registration', 'value': marker}],
             'interfaces': [{'type': 1, 'main': 1, 'useip': 1, 'ip': address, 'dns': '', 'port': '10050'}],
             'tls_connect': 2, 'tls_accept': 2, 'tls_psk_identity': c['identity'], 'tls_psk': psk})
@@ -285,6 +289,7 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == 'install':
         c = {key: os.environ['SYNC_' + key.upper()] for key in (
             'customer', 'host', 'proxy', 'identity', 'psk_file', 'interface', 'network', 'agent_config')}
+        c['role'] = os.environ.get('SYNC_ROLE', 'primary')
         c.update(url=os.environ.get('NB_ZABBIX_API_URL', 'https://zabbix.openmain-it.de/api_jsonrpc.php'),
                  token=os.environ['NB_ZABBIX_API_TOKEN'])
         c['receipt_file'] = os.environ.get('NB_ZABBIX_RECEIPT_FILE', '/var/lib/netbird-kundenrouter/zabbix-registration.json')

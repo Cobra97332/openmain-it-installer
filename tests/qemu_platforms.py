@@ -66,10 +66,12 @@ WantedBy=multi-user.target
     wants=unit.parent/'multi-user.target.wants';wants.mkdir(exist_ok=True)
     (wants/unit.name).unlink(missing_ok=True)
     (wants/unit.name).symlink_to('../'+unit.name)
-    (root/'root/firstboot-unit-fixture.sh').write_text('umask 077; touch /var/lib/openmain-router-firstboot.done\n')
+    firstboot_fixture=root/'root/firstboot-unit-fixture.sh'
+    firstboot_fixture.write_text('#!/bin/sh\numask 077; touch /var/lib/openmain-router-firstboot.done\n')
+    firstboot_fixture.chmod(0o755)
     # Only ExecStart is replaced for this unit lifecycle test. No live core run.
     firstboot=(source/'openmain-router-firstboot.service').read_text().replace(
-        '/opt/openmain-router/firstboot-router.sh','/root/firstboot-unit-fixture.sh')
+        '/usr/local/sbin/netbird-router-firstboot','/root/firstboot-unit-fixture.sh')
     (unit.parent/'openmain-router-firstboot.service').write_text(firstboot)
     (root/'root/qa.sh').write_text('''set -Eeuo pipefail
 trap 'echo OPENMAIN_QA_FAIL_LINE_${LINENO}; systemctl --no-block poweroff' ERR

@@ -84,3 +84,15 @@ jobs:
           docker run --rm --network none -e OPENMAIN_ISOLATED_TEST=1
           -v "$RUNNER_TEMP/openmain-platform-lab:/lab" -v "$PWD:/src:ro"
           openmain-platform-lab:debian13 python3 tests/arm64_platforms.py
+
+  pve-policy-revocation-risk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build isolated Debian 13 lab
+        run: docker build -f tests/Dockerfile.router -t openmain-router-test:debian13 .
+      - name: Existing and return traffic after policy revocation
+        run: >-
+          docker run --rm --network none --cap-add NET_ADMIN --cap-add NET_RAW
+          --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1
+          -v "$PWD:/src:ro" openmain-router-test:debian13 python3 tests/pve_binat_policy_kernel.py

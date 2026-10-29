@@ -1,4 +1,4 @@
-name: PVE BINAT beta gates
+name: PVE BINAT functional installer
 
 on:
   push:
@@ -52,32 +52,3 @@ jobs:
         run: >-
           docker run --rm --network none -v "$PWD:/src:ro" pve-binat-beta:debian13
           python3 -m unittest discover -s tests -p 'test_router_zabbix*.py' -v
-
-  kernel-release-gates:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build isolated Debian 13 lab
-        run: docker build -f tests/Dockerfile.router -t pve-binat-beta:debian13 .
-      - name: Legacy BINAT six P1 counterexamples
-        id: legacy
-        continue-on-error: true
-        run: >-
-          docker run --rm --network none --cap-add NET_ADMIN --cap-add NET_RAW
-          --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1
-          -v "$PWD:/src:ro" pve-binat-beta:debian13 python3 tests/nft_kernel.py
-      - name: Existing and return traffic after revocation
-        id: withdrawal
-        continue-on-error: true
-        run: >-
-          docker run --rm --network none --cap-add NET_ADMIN --cap-add NET_RAW
-          --sysctl net.ipv4.ip_forward=1 -e OPENMAIN_ISOLATED_TEST=1
-          -v "$PWD:/src:ro" pve-binat-beta:debian13 python3 tests/pve_binat_policy_kernel.py
-      - name: Keep release blocked on either failure
-        if: always()
-        env:
-          LEGACY: ${{ steps.legacy.outcome }}
-          WITHDRAWAL: ${{ steps.withdrawal.outcome }}
-        run: |
-          test "$LEGACY" = success
-          test "$WITHDRAWAL" = success

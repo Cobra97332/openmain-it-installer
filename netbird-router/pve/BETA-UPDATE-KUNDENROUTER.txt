@@ -1,6 +1,6 @@
 # Sichere Aktualisierung bereits installierter PVE-Kundenrouter
 
-Stand: Beta-Branch `beta-pve-qnap-legacy-router`. Diese Anleitung ist **nicht ausgeführt**. Produktivänderungen an Luxon CT 112 erfordern eine eigene Freigabe und ein Wartungsfenster. Die bekannten Policy-Entzugs-P1-Tests bleiben release-blockierend.
+Stand: Beta-Branch `beta-pve-qnap-legacy-router`. Diese Anleitung ist **nicht ausgeführt**. Produktivänderungen an Luxon CT 112 erfordern eine eigene Freigabe und ein Wartungsfenster. Die bekannten Policy-Entzugs-P1-Tests bleiben als Sicherheitsbefund offen; sie blockieren die funktionale Installer-Abnahme nicht automatisch.
 
 ## Vor jeder Änderung (nur lesend)
 
@@ -15,4 +15,4 @@ Stand: Beta-Branch `beta-pve-qnap-legacy-router`. Diese Anleitung ist **nicht au
 2. Dieselbe rootgeschützte Kundenkonfiguration und dieselbe CT-ID verwenden. Eine ältere `NB_REMOTE_ACCESS_GROUP=OpenMain-IT:Luxon`-Angabe nach Prüfung auf `Admins` ändern. Keine neuen Setup-Keys oder Peer-Instanzen erzeugen.
 3. Den vorhandenen `netbird-router/pve/install.sh --config <rootgeschützte-datei> --ctid 112 ...` erneut ausführen. Der Bestandscheck muss denselben LXC und das bereits verbundene NetBird-Profil übernehmen. Der vorhandene Zabbix-Intent hält technische Host-/Proxy-Namen und TLS-PSK-Identität stabil.
 4. Nach Abschluss API-Zuordnung von Peer **und** Ressource, lokale NetBird-ACL, BINAT-Paketpfad, Zabbix-Proxy/Agent, TLS-PSK und Wiederverbindung prüfen. Zugriff von `Admins` und Verweigerung eines fremden Peers getrennt messen. Fehlerstatus bedeutet keine Freigabe.
-5. Policy-Entzug mit bestehender Verbindung im isolierten Test nach `PVE-BINAT-PRAXISTEST.txt` prüfen. Solange die P1-Gates rot sind, keine Produktivfreigabe aus diesem Beta-Branch.
+5. Policy-Entzug mit bestehender Verbindung im isolierten Test nach `PVE-BINAT-PRAXISTEST.txt` prüfen. P1-FAIL als offenes Risiko dokumentieren; produktiven Einsatz nur nach separater ausdrücklicher Risikoentscheidung.

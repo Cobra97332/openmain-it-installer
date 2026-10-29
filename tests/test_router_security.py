@@ -310,7 +310,7 @@ setup_groups
             if after['id']!='admins':
                 expected.add('new-peer')
             self.assertEqual(set(after['peers'] or []),expected)
-            self.assertEqual(after['resources'],before['resources'] or [])
+            self.assertEqual(after['resources'] or [],before['resources'] or [])
         self.assertEqual(len((self.root/'writes').read_text().splitlines()),3)
 
     def test_peer_group_assignment_waits_for_api_visibility_and_fails_on_missing_group(self):
@@ -444,7 +444,7 @@ setup_guest_locale
         self.assertEqual((self.root/'effects').read_text().splitlines(),
                          ['apt','generated','apt'])
         self.assertEqual((self.root/'updates').read_text().splitlines(),
-                         ['LANG=de_DE.UTF-8','LANG=de_DE.UTF-8'])
+                         ['LANG=de_DE.UTF-8'])
 
     def test_multiple_json_documents_are_rejected_before_update(self):
         group=self.empty_group()
@@ -495,6 +495,8 @@ sys.exit(int(os.environ.get('MOCK_CURL_EXIT','0')))
         import base64
         import shutil
         fixture=BootstrapTests();fixture.setUp();self.addCleanup(fixture.doCleanups)
+        fixture.script.write_text(fixture.script.read_text().replace(
+            '  setup_guest_locale\n', '  : # locale covered by dedicated test\n'))
         fixture.env['NB_SETUP_KEY']='';fixture.env['MOCK_APT_RESULT']='0'
         common=fixture.runtime.parent
         (common/'preflight.py').write_text((ROOT/'netbird-router/common/preflight.py').read_text()

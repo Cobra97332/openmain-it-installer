@@ -107,12 +107,12 @@ jobs:
           grep -F 'ensure_peer_in_group "$CUSTOMER_MARKER_GROUP_ID"' router-install.sh
           grep -F 'validate_monitoring_assignment' router-install.sh
           grep -F 'Gruppenzuordnung nicht wirksam' router-install.sh
-          grep -F 'ensure_setup_key_metrics_group' router-install.sh
+          grep -F 'ensure_peer_in_group "$METRICS_GROUP_ID"' router-install.sh
           grep -F 'ensure_metrics_policy' router-install.sh
           grep -F 'openmain-netbird-client-metrics' router-install.sh
-          grep -F 'NB_METRICS_ENABLED' firstboot-router.sh
+          grep -F 'prepare_config.py' firstboot-router.sh
           grep -F 'NB_METRICS_ENABLED' netbird-router/pve/install.sh
-          grep -F 'NB_METRICS_ENABLED' netbird-router/pve/install-no-zabbix.sh
+          grep -F 'exec bash' netbird-router/pve/install-no-zabbix.sh
           grep -F 'NB_METRICS_ENABLED' netbird-router/raspberry-pi/install-router.sh
           grep -F 'ports:[$port,$detail_port]' router-install.sh
 

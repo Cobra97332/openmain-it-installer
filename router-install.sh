@@ -176,6 +176,8 @@ utf8_locale_available(){
 }
 
 setup_guest_locale(){
+  local original_valid=0
+  utf8_locale_available "$ORIGINAL_LANG" && original_valid=1
   DEBIAN_FRONTEND=noninteractive apt-get install -y locales
   [[ -f /etc/locale.gen ]] || die "Locale-Konfiguration im Debian-Gast fehlt."
   if ! grep -Eq '^de_DE\.UTF-8[[:space:]]+UTF-8[[:space:]]*$' /etc/locale.gen; then
@@ -187,7 +189,7 @@ setup_guest_locale(){
     locale-gen de_DE.UTF-8 >/dev/null || die "de_DE.UTF-8 konnte nicht generiert werden."
   fi
   locale_available de_DE.UTF-8 || die "de_DE.UTF-8 ist nach locale-gen nicht verfuegbar."
-  if utf8_locale_available "$ORIGINAL_LANG"; then
+  if [[ "$original_valid" == 1 ]]; then
     export LANG="$ORIGINAL_LANG"
   else
     update-locale LANG=de_DE.UTF-8 || die "Debian-Gast-Locale konnte nicht gespeichert werden."

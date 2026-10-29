@@ -91,9 +91,20 @@ fi
 echo OPENMAIN_UNIT_VERIFY
 systemd-analyze verify /etc/systemd/system/openmain-router-firstboot.service
 echo OPENMAIN_UNIT_START
-systemctl start openmain-router-firstboot.service
+systemctl start --no-block openmain-router-firstboot.service
+for attempt in {1..50}; do
+  test -f /var/lib/openmain-router-firstboot.done && break
+  sleep 0.2
+done
+if ! test -f /var/lib/openmain-router-firstboot.done; then
+  echo OPENMAIN_UNIT_DIAG
+  systemctl status --no-pager openmain-router-firstboot.service getty@tty1.service || true
+  systemctl list-jobs --no-pager || true
+  false
+fi
 echo OPENMAIN_UNIT_STATE
-test "$(systemctl show -p ActiveState --value openmain-router-firstboot.service)" = inactive
+test "$(systemctl show -p Result --value openmain-router-firstboot.service)" = success
+test "$(systemctl show -p ActiveState --value openmain-router-firstboot.service)" = active
 echo OPENMAIN_UNIT_GETTY
 for attempt in {1..50}; do
   systemctl is-active --quiet getty@tty1.service && break

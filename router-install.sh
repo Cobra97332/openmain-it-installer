@@ -574,7 +574,7 @@ validate_monitoring_assignment(){
     fi
     (( attempt == 15 )) || sleep 2
   done
-  die "NetBird-API: Gruppenzuordnung nicht wirksam. Fehlende Gruppen fuer Router-Peer $PEER_ID: ${missing[*]}"
+  die "Monitoring-/Kundenzuordnung unvollständig: NetBird-API meldet fehlende Gruppen fuer Router-Peer $PEER_ID: ${missing[*]}"
 }
 
 allocate_mapping(){

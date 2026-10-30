@@ -22,7 +22,6 @@ GROUP_NAME="${NB_ZABBIX_PROXYGROUP_NAME:-$CUSTOMER}"
 [[ -n "$GROUP_NAME" ]] || { echo "Zabbix Proxy-Gruppenname fehlt." >&2; exit 1; }
 [[ "$LAN_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Keine gueltige LAN-IPv4: $LAN_IP" >&2; exit 1; }
 
-[[ "$API_URL" == https://* ]] || { echo 'Zabbix API benoetigt HTTPS.' >&2; exit 1; }
 python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$LAN_IP" >/dev/null 2>&1 \
   || { echo 'Ungueltige LAN-Adresse.' >&2; exit 1; }
 
@@ -41,12 +40,18 @@ registration check || exit 1
 
 api(){
   local method="$1" params="$2" payload
-  if [[ "$method" == *.create || "$method" == *.update ]]; then
+  if [[ "$API_URL" != http://* ]]; then
     python3 "$ACCESS_HELPER" || { echo 'Zabbix-Aenderung abgebrochen: NetBird-/HTTPS-Freigabe nicht bestaetigt; Bestand bleibt erhalten.' >&2; return 1; }
   fi
   payload=$(jq -nc --arg method "$method" --argjson params "$params" '{jsonrpc:"2.0",method:$method,params:$params,id:1}')
+  if [[ "$API_URL" == http://* ]]; then
+    # Exact endpoint admission, fresh status/route checks and device-bound
+    # transport are shared with Agent/host registration. No HTTP proxy/DNS.
+    python3 "$ACCESS_HELPER" --private-request <<<"$payload"
+    return $?
+  fi
   # A server/proxy error can echo request secrets. Never relay raw diagnostics.
-  curl -fsS --connect-timeout 8 --max-time 30 "$API_URL" \
+  curl --disable --no-insecure --no-proxy-insecure --location --max-redirs 0 --proto '=https' --proto-redir '=https' -fsS --connect-timeout 8 --max-time 30 "$API_URL" \
     -H 'Content-Type: application/json-rpc' -H "Authorization: Bearer $API_TOKEN" --data "$payload" 2>/dev/null \
     || { echo "Zabbix-API-Transportfehler bei $method (Details unterdrueckt)." >&2; return 1; }
 }

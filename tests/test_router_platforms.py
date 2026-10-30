@@ -126,11 +126,22 @@ class NetBirdMock:
 
 
 class NetworkTests(unittest.TestCase):
-    def setUp(self):self.api=NetBirdMock()
+    def setUp(self):
+        self.api=NetBirdMock()
+        self.api.data['/policies']=[dict(id='central',name='Admin \u2192 Kunden',enabled=True,
+            rules=[dict(enabled=True,action='accept',protocol='all',bidirectional=False,
+                        sources=['admins'],destinations=['global'],ports=[])])]
     def run_router(self,role='primary',peer='p1',customer='Example'):
-        return network.reconcile(self.api,customer,role,'192.168.50.0/24',peer,'customer-group',[])
+        return network.reconcile(self.api,customer,role,'192.168.50.0/24',peer,
+                                 'customer-group','global','admins',[])
     def test_fresh_repeat_backup_and_metric_repair(self):
         first=self.run_router();writes=len(self.api.writes)
+        policy=self.api.data['/policies'][0]['rules'][0]
+        self.assertEqual(policy['sources'],['admins'])
+        self.assertEqual(policy['destinations'],['global'])
+        self.assertFalse(any(path=='/policies' for _,path,_ in self.api.writes))
+        self.assertEqual(set(self.api.data['/networks/1/resources'][0]['groups']),
+                         {'global','customer-group'})
         self.assertEqual(self.run_router(),first)
         self.assertEqual(len(self.api.writes),writes)
         backup=self.run_router('backup','p2')
@@ -141,6 +152,12 @@ class NetworkTests(unittest.TestCase):
         self.run_router()
         self.assertEqual(routers[0]['metric'],100)
         with self.assertRaises(runtime.Invalid):self.run_router('primary','duplicate-primary')
+    def test_staff_group_required_and_customer_group_not_a_source(self):
+        with self.assertRaises(runtime.Invalid):
+            network.reconcile(self.api,'Example','primary','192.168.50.0/24',
+                              'p1','customer-group','customer-group','admins',[])
+        self.assertEqual(self.api.writes,[])
+
     def test_backup_before_primary_and_partial_api_failures(self):
         with self.assertRaises(runtime.Invalid):self.run_router('backup','p2')
         self.api.fail=('POST','/networks/1/routers')
@@ -160,8 +177,47 @@ class NetworkTests(unittest.TestCase):
         self.run_router()
         self.assertEqual(self.api.data,before)
         resource['groups']=['foreign']
-        with self.assertRaises(runtime.Invalid):self.run_router()
-        self.assertEqual(resource['groups'],['foreign'])
+        self.run_router()
+        self.assertEqual(set(resource['groups']),{'foreign','global','customer-group'})
+    def test_conflicting_customer_policy_blocks_without_deletion(self):
+        self.api.data['/policies'].append(dict(id='old',name='OpenMain customer Example',
+            enabled=True,rules=[dict(enabled=True,action='accept',protocol='all',
+                bidirectional=True,sources=['staff'],destinations=['customer-group'])]))
+        with self.assertRaises(runtime.Invalid):
+            self.run_router()
+        self.assertEqual(self.api.writes,[])
+        self.assertEqual(len(self.api.data['/policies']),2)
+
+    def test_missing_or_bidirectional_central_policy_fails_before_writes(self):
+        for policies in ([],[dict(self.api.data['/policies'][0],enabled=False)],
+                         [dict(self.api.data['/policies'][0],rules=[
+                             dict(self.api.data['/policies'][0]['rules'][0],bidirectional=True)])]):
+            with self.subTest(policies=policies):
+                self.api.data['/policies']=copy.deepcopy(policies)
+                with self.assertRaises(runtime.Invalid):
+                    self.run_router()
+                self.assertEqual(self.api.writes,[])
+
+    def test_central_policy_with_port_range_is_not_all_protocol_access(self):
+        self.api.data['/policies'][0]['rules'][0]['port_ranges']=[{'start': 443, 'end': 443}]
+        with self.assertRaises(runtime.Invalid):
+            self.run_router()
+        self.assertEqual(self.api.writes,[])
+
+    def test_resource_group_write_must_be_visible_on_api_readback(self):
+        self.run_router()
+        resource=self.api.data['/networks/1/resources'][0]
+        resource['groups']=['customer-group']
+        original=self.api.__call__
+        def stale(method,path,data=None):
+            if method=='PUT' and path.endswith('/resources/'+resource['id']):
+                return dict(resource,groups=data['groups'])
+            return original(method,path,data)
+        with self.assertRaises(runtime.Invalid):
+            network.reconcile(stale,'Example','primary','192.168.50.0/24','p1',
+                              'customer-group','global','admins',[])
+        self.assertEqual(resource['groups'],['customer-group'])
+
     def test_duplicate_and_disabled_resources_fail_closed(self):
         self.run_router()
         resource=self.api.data['/networks/1/resources'][0]
@@ -171,10 +227,10 @@ class NetworkTests(unittest.TestCase):
         with self.assertRaises(runtime.Invalid):self.run_router()
     def test_other_customer_and_local_routes_cannot_overlap(self):
         self.run_router()
-        result=network.reconcile(self.api,'Other','primary','192.168.60.0/24','p3','g2',[])
+        result=network.reconcile(self.api,'Other','primary','192.168.60.0/24','p3','g2','global','admins',[])
         self.assertEqual(result['virtual'],'10.30.1.0/24')
         with self.assertRaises(runtime.Invalid):
-            network.reconcile(self.api,'Example','primary','192.168.50.0/24','p1','customer-group',[{'dst':'10.30.0.0/24','dev':'eth1'}])
+            network.reconcile(self.api,'Example','primary','192.168.50.0/24','p1','customer-group','global','admins',[{'dst':'10.30.0.0/24','dev':'eth1'}])
     def test_malformed_lists_and_api_error_redacted(self):
         self.api.data['/networks']={}
         with self.assertRaises(runtime.Invalid):self.run_router()
@@ -218,6 +274,9 @@ class ZabbixHostTests(unittest.TestCase):
         self.assertEqual(peers,['192.168.50.10'])
         self.assertEqual(self.host['monitored_by'],2)
         self.assertEqual(self.host['tls_connect'],2)
+        self.assertEqual(self.host['name'],'Example \u2013 NetBird Router 1')
+        self.assertTrue(any(m=='hostgroup.get' and p['filter']['name']==['OpenMain customer: Example']
+                            for m,p in self.calls))
         count=len(self.calls)
         zabbix_sync.register_host(self.api,self.c,'192.168.50.10','ab'*32)
         self.assertFalse(any(m.endswith(('create','update')) for m,p in self.calls[count:]))
@@ -227,6 +286,12 @@ class ZabbixHostTests(unittest.TestCase):
         self.assertIn('ServerActive=192.168.50.10:10051;192.168.50.11:10051',conf)
         self.assertIn('Server=127.0.0.1,192.168.50.10,192.168.50.11',conf)
         self.assertIn('TLSAccept=psk',conf)
+    def test_backup_display_name_is_distinct_without_changing_tls_binding(self):
+        self.c['role']='backup'
+        zabbix_sync.register_host(self.api,self.c,'192.168.50.10','ab'*32)
+        self.assertEqual(self.host['name'],'Example \u2013 NetBird Router 2')
+        self.assertEqual(self.host['tls_psk_identity'],self.c['identity'])
+
     def test_host_get_extra_tag_metadata_is_idempotent_and_wrong_customer_denied(self):
         zabbix_sync.register_host(self.api,self.c,'192.168.50.10','ab'*32)
         self.host['tags'] = [dict(tag=tag['tag'],value=tag['value'],

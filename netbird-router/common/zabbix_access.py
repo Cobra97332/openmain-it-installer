@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Read-only NetBird admission and authenticated-TLS reachability, without PSKs."""
+"""Read-only NetBird admission and scoped Zabbix transport; no secret diagnostics."""
+import http.client
 import ipaddress
 import json
 import os
@@ -14,6 +15,11 @@ from urllib.parse import urlsplit
 
 from preflight import connected_profile, resolve_profile
 from runtime import Invalid
+
+
+# Deliberately not a generic insecure-HTTP opt-in. Explicit URL configuration
+# is still required; every socket is bound to the verified NetBird interface.
+PRIVATE_API = 'http://100.107.91.6:8083/api_jsonrpc.php'
 
 
 class Pending(Invalid):
@@ -141,6 +147,8 @@ def resolve(host, port):
 
 
 def api_endpoint(api_url):
+    if api_url == PRIVATE_API:
+        return urlsplit(api_url)
     endpoint = urlsplit(api_url)
     if endpoint.scheme != 'https' or not endpoint.hostname or endpoint.username or endpoint.password or endpoint.fragment or endpoint.port not in (None, 443) or any(ord(ch) < 33 for ch in api_url):
         raise Invalid('Zabbix-API benoetigt einen eindeutigen HTTPS/443-Endpunkt ohne URL-Zugangsdaten.')
@@ -185,6 +193,8 @@ def service_access(api, api_url, ip, port, interface, device, source, resolver):
 
 def endpoints(api_url, proxies=None, bypass=None, resolver=resolve):
     endpoint = api_endpoint(api_url)
+    if api_url == PRIVATE_API:
+        return {(endpoint.hostname, endpoint.port)}  # numeric, no DNS/proxy
     proxies = urllib.request.getproxies() if proxies is None else proxies
     bypass = urllib.request.proxy_bypass if bypass is None else bypass
     proxy = None if bypass(endpoint.hostname) else proxies.get('https') or proxies.get('all')
@@ -206,6 +216,82 @@ def route(ip):
         return value[0]['dev']
     except Exception:
         raise Invalid('Zabbix-API-Route nicht eindeutig; kein geratenes Ziel-Peer-Mapping.') from None
+
+
+def active_identity(c):
+    profile = resolve_profile()
+    if not profile:
+        raise Invalid('Aktives NetBird-Profil fehlt; keine Zabbix-Registrierung.')
+    connected_profile(profile, c['management'])
+    peer_ip = subprocess.check_output(['netbird', 'status', '--ipv4'],
+        stderr=subprocess.DEVNULL, text=True, timeout=5).strip().split('/')[0]
+    if ipaddress.IPv4Address(peer_ip) not in ipaddress.IPv4Network('100.64.0.0/10'):
+        raise Invalid('NETBIRD_SOURCE_INVALID')
+    return peer_ip, profile['interface']
+
+
+def private_request(api_url, data, token='', c=None):
+    """No proxy, DNS, redirect or default-route fallback; Linux device binding.
+
+    The bound socket remains constrained even if the route changes after the
+    checks. Recheck the connected profile and route after connect, before any
+    request bytes (including the bearer token or PSK) are sent.
+    """
+    c = c or context()
+    if api_url != PRIVATE_API or c.get('api_url') != api_url or c.get('server') != '100.107.91.6':
+        raise Invalid('PRIVATE_API_ENDPOINT_MISMATCH')
+    if any(ch in token for ch in '\r\n'):
+        raise Invalid('API_TOKEN_INVALID')
+    endpoint = api_endpoint(api_url)
+    identity = active_identity(c)
+    source, interface = identity
+    if route(endpoint.hostname) != interface:
+        raise Invalid('PRIVATE_API_ROUTE_OUTSIDE_NETBIRD')
+    conn = http.client.HTTPConnection(endpoint.hostname, endpoint.port, timeout=8)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(8)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode() + b'\0')
+        sock.bind((source, 0))
+        sock.connect((endpoint.hostname, endpoint.port))
+        conn.sock = sock
+        if (active_identity(c) != identity or route(endpoint.hostname) != interface
+            or sock.getpeername() != (endpoint.hostname, endpoint.port)
+            or sock.getsockname()[0] != source):
+            raise Invalid('PRIVATE_API_CONNECTION_CHANGED')
+        headers = {'Content-Type': 'application/json-rpc'}
+        if token:
+            headers['Authorization'] = 'Bearer ' + token
+        conn.request('POST', endpoint.path, data, headers)
+        response = conn.getresponse()
+        if response.status != 200:
+            raise Invalid('PRIVATE_API_HTTP_STATUS_REJECTED')
+        body = response.read(4 * 1024 * 1024 + 1)
+        if len(body) > 4 * 1024 * 1024:
+            raise Invalid('PRIVATE_API_RESPONSE_TOO_LARGE')
+        return json.loads(body)
+    except Invalid:
+        raise
+    except Exception:
+        raise Invalid('PRIVATE_API_TUNNEL_TRANSPORT_FAILED') from None
+    finally:
+        conn.close()
+        sock.close()
+
+
+def private_probe(api_url, targets):
+    if targets != {('100.107.91.6', 8083)}:
+        raise Invalid('PRIVATE_API_TARGET_MISMATCH')
+    try:
+        result = private_request(api_url, json.dumps(dict(
+            jsonrpc='2.0', method='apiinfo.version', params=[], id=1)).encode())
+        if (not isinstance(result, dict) or result.get('jsonrpc') != '2.0'
+            or type(result.get('id')) is not int or result['id'] != 1
+            or 'error' in result or not isinstance(result.get('result'), str)
+            or not re.fullmatch(r'7\.4(?:\.[0-9]+)*', result['result'])):
+            raise ValueError()
+    except Exception:
+        raise Pending('PRIVATE_API_VERSION_OR_TUNNEL_UNCONFIRMED') from None
 
 
 def https(api_url, targets):
@@ -278,9 +364,11 @@ def check(api, c, peer_ip, interface, targets, route_check=route, api_url=None, 
 
 def require_access(api_url, c=None, *, api=None, identity=None, target_resolver=endpoints,
                    route_check=route, tcp_probe=tcp, https_probe=https, pause=time.sleep, attempts=12,
-                   service_resolver=resolve):
+                   service_resolver=resolve, http_probe=private_probe):
     c = c or context()
     api_endpoint(api_url)
+    if api_url == PRIVATE_API and (c.get('api_url') != api_url or c.get('server') != '100.107.91.6'):
+        raise Invalid('PRIVATE_API_ENDPOINT_MISMATCH')
     if api_url != c.get('api_url', api_url):
         raise Invalid('Zabbix-API-Domain/Pfad weicht vom konfigurierten Zugriffskontext ab.')
     # Scheduled reconciliation must use the same proxy route as registration.
@@ -294,12 +382,7 @@ def require_access(api_url, c=None, *, api=None, identity=None, target_resolver=
             os.environ['https_proxy'] = proxies['all']
     api = api or NetBird(c)
     if identity is None:
-        profile = resolve_profile()
-        if not profile:
-            raise Invalid('Aktives NetBird-Profil fehlt; keine Zabbix-Registrierung.')
-        connected_profile(profile, c['management'])
-        peer_ip = subprocess.check_output(['netbird', 'status', '--ipv4'], stderr=subprocess.DEVNULL, text=True, timeout=5).strip().split('/')[0]
-        identity = peer_ip, profile['interface']
+        identity = active_identity(c)
     ipaddress.IPv4Address(identity[0])
     last = None
     for attempt in range(attempts):
@@ -307,7 +390,10 @@ def require_access(api_url, c=None, *, api=None, identity=None, target_resolver=
             targets = target_resolver(api_url)
             check(api, c, *identity, targets, route_check, api_url, service_resolver)
             tcp_probe(c['server'])
-            https_probe(api_url, targets)
+            if api_url == PRIVATE_API:
+                http_probe(api_url, targets)
+            else:
+                https_probe(api_url, targets)
             # Reconfirm memberships/policy after successful propagation/probe.
             check(api, c, *identity, targets, route_check, api_url, service_resolver)
             return
@@ -322,7 +408,19 @@ def require_access(api_url, c=None, *, api=None, identity=None, target_resolver=
 
 if __name__ == '__main__':
     try:
-        require_access(os.environ.get('NB_ZABBIX_API_URL', 'https://zabbix.openmain-it.de/api_jsonrpc.php'))
+        api_url = os.environ.get('NB_ZABBIX_API_URL', 'https://zabbix.openmain-it.de/api_jsonrpc.php')
+        require_access(api_url)
+        if sys.argv[1:] == ['--private-request']:
+            # Payload on stdin and token in inherited environment, never argv.
+            payload = json.load(sys.stdin)
+            if not isinstance(payload, dict) or payload.get('method') == 'apiinfo.version':
+                raise Invalid('PRIVATE_API_AUTH_REQUEST_INVALID')
+            token = os.environ.get('NB_ZABBIX_API_TOKEN', '')
+            if not token:
+                raise Invalid('API_TOKEN_MISSING')
+            print(json.dumps(private_request(api_url, json.dumps(payload).encode(), token)))
+        elif sys.argv[1:]:
+            raise Invalid('API_ACCESS_ARGUMENT_INVALID')
     except Invalid as error:
         print(str(error) + ' Keine PSK-/Policy-/Identitaetsaenderung durch die Zugriffskontrolle.', file=sys.stderr)
         sys.exit(1)

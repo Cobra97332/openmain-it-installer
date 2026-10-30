@@ -175,6 +175,57 @@ class NetBirdBINATPolicyTests(unittest.TestCase):
         self.assertIn('replace rule ip netbird netbird-rt-fwd handle 52', mixed)
 
 
+class ReadinessProbeTests(unittest.TestCase):
+    def probe(self, rules, set_available=True):
+        with patch.object(acl, 'configuration', return_value=CFG), \
+             patch.object(acl, 'read_chain', return_value=rules), \
+             patch.object(acl, 'nft', side_effect=(lambda *args: b'{}' if set_available else
+                                                   (_ for _ in ()).throw(acl.Refused('set missing')))), \
+             patch.object(acl, 'apply') as apply:
+            try:
+                return acl.probe()
+            finally:
+                apply.assert_not_called()
+
+    def test_established_only_is_not_a_routing_grant(self):
+        established = dict(family='ip', table='netbird', chain='netbird-rt-fwd',
+                           handle=1, expr=[{'match': {'op': 'in',
+                           'left': {'ct': {'key': 'state'}},
+                           'right': ['established', 'related']}}, {'accept': None}])
+        with self.assertRaises(acl.MissingPolicy):
+            self.probe(output(established))
+
+    def test_correct_native_route_and_source_set_are_ready_without_mutation(self):
+        self.assertIsNone(self.probe(output(native_rule())))
+
+    def test_route_without_source_set_is_still_pending(self):
+        with self.assertRaises(acl.MissingPolicy):
+            self.probe(output(native_rule()), set_available=False)
+
+    def test_incompatible_route_format_is_not_treated_as_pending(self):
+        bad = native_rule(extra={'match': {'op': '==', 'left': {
+            'payload': {'protocol': 'ip', 'field': 'protocol'}}, 'right': 6}})
+        with self.assertRaises(acl.Refused) as error:
+            self.probe(output(bad))
+        self.assertNotIsInstance(error.exception, acl.MissingPolicy)
+
+    def test_other_customer_rule_does_not_count(self):
+        wrong = native_rule()
+        wrong['expr'][1]['match']['right']['prefix']['addr'] = '10.30.8.0'
+        with self.assertRaises(acl.MissingPolicy):
+            self.probe(output(wrong))
+
+    def test_refresh_needs_only_new_source_set(self):
+        old = managed_rule(source='@nb-7d0b7d19', handle=51)
+        new = native_rule(source='@nb-ffeeddcc', handle=52)
+        with patch.object(acl, 'configuration', return_value=CFG), \
+             patch.object(acl, 'read_chain', return_value=output(old,new)), \
+             patch.object(acl, 'nft', return_value=b'{}') as nft:
+            acl.probe()
+        nft.assert_called_once_with('-j','list','set','ip','netbird','nb-ffeeddcc')
+
+
+
 class ReconciliationTests(unittest.TestCase):
     def invoke(self, observations, writes, failure=None):
         def write(command):

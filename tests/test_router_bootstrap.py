@@ -38,7 +38,7 @@ class BootstrapTests(Sandbox):
         checker=checker.replace('available=shutil.which',"available=lambda name: name in ('nft','ip')")
         (common/'preflight.py').write_text(checker)
         # PATH contains no jq. Use the same fixture in the Debian 13 container.
-        for name in ('bash','dirname','install','flock','hostname'):
+        for name in ('bash','dirname','install','flock','hostname','locale'):
             (self.bin/name).symlink_to(shutil.which(name))
         (self.bin/'python3').symlink_to(sys.executable)
         self.env['PATH']=str(self.bin)

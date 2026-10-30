@@ -1,0 +1,124 @@
+name: Docker standard NetBird router (candidate)
+on:
+  pull_request:
+    paths: ['docker/router/**', 'tests/docker_router/**', 'tests/test_docker_router.py', 'tests/test_router_zabbix*.py', 'tests/test_router_security.py', '.github/workflows/docker-router.yml', 'netbird-router/common/**', 'zabbix-api-register.sh']
+  push:
+    branches: [feat/docker-standard-router]
+    paths: ['docker/router/**', 'tests/docker_router/**', 'tests/test_docker_router.py', 'tests/test_router_zabbix*.py', 'tests/test_router_security.py', '.github/workflows/docker-router.yml', 'netbird-router/common/**', 'zabbix-api-register.sh']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish tested candidate to GHCR (not production approval)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: docker-router-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  syntax:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          bash -n docker/router/start.sh
+          shellcheck docker/router/start.sh
+          python3 -m compileall -q docker/router tests/docker_router
+          python3 -m unittest discover -s tests -p test_docker_router.py -v
+          docker compose --env-file docker/router/.env.example -f docker/router/compose.yaml config --quiet
+      - name: Existing Debian 13 regressions (unchanged)
+        run: |
+          docker build -f tests/Dockerfile.router -t openmain-router-test:debian13 .
+          docker run --rm --network none -v "$PWD:/src:ro" openmain-router-test:debian13 bash tests/check-router.sh
+  gateway:
+    needs: syntax
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: linux/amd64, runner: ubuntu-24.04}
+          - {platform: linux/arm64, runner: ubuntu-24.04-arm}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build exact architecture and require real packages
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/router/Dockerfile
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: openmain-router:test
+          provenance: false
+          build-args: VCS_REF=${{ github.sha }}
+      - name: Binary start and Debian package architecture
+        env: {TARGET_PLATFORM: '${{ matrix.platform }}'}
+        run: |
+          expected=${TARGET_PLATFORM#linux/}
+          actual=$(docker run --rm --network none --cap-drop ALL --entrypoint dpkg openmain-router:test --print-architecture)
+          test "$actual" = "$expected"
+          docker run --rm --network none --cap-drop ALL --entrypoint netbird openmain-router:test version
+          docker run --rm --network none --cap-drop ALL --entrypoint zabbix_agent2 openmain-router:test -V
+          docker run --rm --network none --cap-drop ALL --entrypoint zabbix_proxy openmain-router:test -V
+          docker run --rm --network none --cap-drop ALL --entrypoint cat openmain-router:test /usr/share/openmain-packages.txt > packages.txt
+      - name: Probe actual Debian13 ARMHF package availability (not ARMv7 support)
+        if: matrix.platform == 'linux/amd64'
+        run: |
+          docker run --rm --cap-drop ALL \
+            -v "$PWD/tests/docker_router/package_probe.py:/probe.py:ro" \
+            --entrypoint python3 openmain-router:test /probe.py > armhf-packages.txt
+          cat armhf-packages.txt  # fixed package/version JSON only; no credentials
+      - name: Private API device-bound socket and route isolation
+        run: python3 tests/docker_router/private_api.py
+      - name: Real stock-controller and nftables gateway gates
+        run: |
+          sudo modprobe tun
+          docker pull netbirdio/netbird-server:0.80.0@sha256:05b3d8d6d056e5062a2965d4d6e5d6d83f09f2bf9133947a8e5972e0e0e7a261
+          python3 tests/docker_router/gateway.py
+      - name: Save the exact tested image, not a later rebuild
+        run: |
+          docker save openmain-router:test -o router-image.tar
+          sha256sum router-image.tar > router-image.tar.sha256
+      - name: Keep sanitized evidence and exact tested candidate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-${{ strategy.job-index }}
+          path: |
+            packages.txt
+            armhf-packages.txt
+            gateway-report.json
+            router-image.tar
+            router-image.tar.sha256
+          retention-days: 7
+          if-no-files-found: error
+  publish:
+    needs: [syntax, gateway]
+    if: github.ref == 'refs/heads/feat/docker-standard-router' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    runs-on: ubuntu-24.04
+    permissions: {contents: read, packages: write}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gateway-*
+          path: tested
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the exact tested images and assemble multiarch index
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/customer-router"
+          for pair in '0 amd64' '1 arm64'; do
+            read -r number arch <<< "$pair"
+            (cd "tested/gateway-$number" && sha256sum --check router-image.tar.sha256)
+            docker load -i "tested/gateway-$number/router-image.tar"
+            docker tag openmain-router:test "$image:candidate-${GITHUB_SHA}-$arch"
+            docker push "$image:candidate-${GITHUB_SHA}-$arch"
+          done
+          docker buildx imagetools create -t "$image:candidate-${GITHUB_SHA}" \
+            "$image:candidate-${GITHUB_SHA}-amd64" "$image:candidate-${GITHUB_SHA}-arm64"

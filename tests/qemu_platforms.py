@@ -40,7 +40,9 @@ def main():
     work.mkdir(mode=0o700,parents=True)
     source=Path('/src')
     names=set((source/'netbird-router/bundle.files').read_text().splitlines())
-    names.update(['build-iso.sh','preseed.cfg','tests/Dockerfile.router','netbird-prometheus/sync-client-targets.py'])
+    names.update(['build-iso.sh','preseed.cfg','tests/Dockerfile.router',
+                  'netbird-prometheus/sync-client-targets.py',
+                  'docker/router/router.py','docker/router/Dockerfile'])
     names.update(str(p.relative_to(source)) for p in (source/'tests').glob('*.py'))
     for name in sorted(names):
         src=source/name;dst=root/'src'/name
@@ -147,7 +149,14 @@ menuentry 'SYNTHETIC probe (not Debian Installer)' {
         output=log.read_text(errors='replace')
         if 'OPENMAIN_QA_PASS' not in output or 'OPENMAIN_QA_FAIL' in output:
             failures.append(mode)
-            print(mode+': FAIL; inspect lab-only log',flush=True)
+            markers=('OPENMAIN_QA_FAIL_LINE_', 'RELEASE BLOCKED:', 'AssertionError:',
+                     'Failed QEMU release gates:', 'FAIL:', 'ERROR:', 'FAILED (',
+                     'Traceback (most recent call last)', 'ModuleNotFoundError:',
+                     'RuntimeError:', 'Ran ')
+            evidence=[line.strip() for line in output.splitlines()
+                      if any(marker in line for marker in markers)]
+            print(mode+': FAIL; '+(' | '.join(evidence[-20:]) if evidence
+                                   else 'inspect lab-only log'),flush=True)
             continue
         print(mode+': PASS ('+('unit lifecycle ONLY' if args.unit_only else 'real Debian 13/QEMU, mocked router services/APIs')+')',flush=True)
     if not args.unit_only:print('ISO result applies ONLY to the synthetic fixture, not official netinstall.',flush=True)

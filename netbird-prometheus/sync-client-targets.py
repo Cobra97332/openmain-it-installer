@@ -159,6 +159,8 @@ def ids_from_rule_side(value):
 def policy_is_correct(policy, monitoring_group_id, metrics_group_id, ports):
     if policy.get("enabled") is not True:
         return False
+    if policy.get("source_posture_checks"):
+        return False
     allowed_ports = set()
     for rule in policy.get("rules") or []:
         if (

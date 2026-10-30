@@ -29,6 +29,10 @@ class Refused(Exception):
     pass
 
 
+class MissingPolicy(Refused):
+    """The expected customer route ACL has not appeared locally yet."""
+
+
 class RevocationFailed(Refused):
     pass
 
@@ -148,7 +152,9 @@ def transaction(rules, cfg):
     chosen = candidates if candidates else [
         (rule.get('handle'), rule['expr'][2]['match']['right'])
         for rule in existing]
-    if not chosen or len(chosen) > MAX_MANAGED_ACLS or len(existing) > MAX_MANAGED_ACLS:
+    if not chosen:
+        raise MissingPolicy('No NetBird route ACL for the virtual customer network')
+    if len(chosen) > MAX_MANAGED_ACLS or len(existing) > MAX_MANAGED_ACLS:
         raise Refused('Unexpected count of NetBird ACLs for BINAT')
     if any(type(handle) is not int or handle <= 0 or not authorized_source(source)
            for handle, source in chosen):
@@ -176,7 +182,7 @@ def transaction(rules, cfg):
     if not any(SOURCE_RE.fullmatch(source) for source in sources):
         if deletes:
             return deletes
-        raise Refused('No NetBird-managed customer source group present')
+        raise MissingPolicy('No NetBird-managed customer source group present')
     virtual = ipaddress.IPv4Network(cfg['virtual'])
     rewritten = ''.join(
         f'replace rule ip netbird netbird-rt-fwd handle {handle} '
@@ -197,6 +203,37 @@ def nft(*args):
 
 def read_chain():
     return json.loads(nft('-j', 'list', 'chain', 'ip', 'netbird', 'netbird-rt-fwd'))
+
+
+def probe():
+    """Read-only readiness check; never creates a permit or runs reconciliation."""
+    cfg = configuration()
+    try:
+        rules = read_chain()
+    except Refused as exc:
+        raise MissingPolicy('NetBird route chain not available yet') from exc
+    command = transaction(rules, cfg)
+    if command and 'replace rule ' not in command:
+        raise MissingPolicy('Customer source-group ACL not available yet')
+    if command:
+        # A refresh may have removed the old set while a stale managed rule
+        # still awaits deletion. Only the replacement generation must exist.
+        sources = set(re.findall(r'ip saddr (@nb-[0-9a-f]{8}) ', command))
+    else:
+        sources = {
+            rule['expr'][2]['match']['right']
+            for entry in rules['nftables']
+            for rule in [entry.get('rule') if isinstance(entry, dict) else None]
+            if isinstance(rule, dict) and managed(rule, cfg)
+            and SOURCE_RE.fullmatch(rule['expr'][2]['match']['right'])
+        }
+    if not sources:
+        raise MissingPolicy('Customer source-group ACL not available yet')
+    for source in sources:
+        try:
+            nft('-j', 'list', 'set', 'ip', 'netbird', source[1:])
+        except Refused as exc:
+            raise MissingPolicy('NetBird source set not available yet') from exc
 
 
 def apply(command):
@@ -276,11 +313,24 @@ def main():
 
 
 if __name__ == '__main__':
-    try:
-        main()
-    except RevocationFailed:
-        print('BINAT/NetBird-ACL: Entzug verwalteter Freigaben nicht bestaetigt; nftables lokal pruefen.', file=sys.stderr)
-        sys.exit(1)
-    except FAILURES:
-        print('BINAT/NetBird-ACL nicht kompatibel oder nicht bereit; keine Policy-Freigabe hinzugefuegt.', file=sys.stderr)
-        sys.exit(1)
+    if sys.argv[1:] == ['--probe']:
+        try:
+            probe()
+        except MissingPolicy:
+            print('BINAT/NetBird-ACL: Routing-Policy lokal noch nicht geladen.', file=sys.stderr)
+            sys.exit(2)
+        except FAILURES:
+            print('BINAT/NetBird-ACL: nftables-Regel oder Konfiguration inkompatibel.', file=sys.stderr)
+            sys.exit(3)
+    elif sys.argv[1:]:
+        print('Unbekannte BINAT-ACL-Option.', file=sys.stderr)
+        sys.exit(3)
+    else:
+        try:
+            main()
+        except RevocationFailed:
+            print('BINAT/NetBird-ACL: Entzug verwalteter Freigaben nicht bestaetigt; nftables lokal pruefen.', file=sys.stderr)
+            sys.exit(1)
+        except FAILURES:
+            print('BINAT/NetBird-ACL nicht kompatibel oder nicht bereit; keine Policy-Freigabe hinzugefuegt.', file=sys.stderr)
+            sys.exit(1)

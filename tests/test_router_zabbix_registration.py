@@ -91,7 +91,9 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(tags=tags),self.assertRaises(Invalid):self.store().verify('host',dict(host,tags=tags),'201')
 
     def test_public_version_method_uses_documented_params_without_authentication(self):
-        with patch.object(zabbix_sync.urllib.request,'urlopen') as transport:
+        with patch.object(zabbix_sync.urllib.request,'build_opener') as build, patch.object(zabbix_sync, 'require_access') as guard:
+            transport = build.return_value.open
+            transport.return_value.__enter__.return_value.status = 200
             transport.return_value.__enter__.return_value.read.return_value=json.dumps(dict(jsonrpc='2.0',id=1,result='7.4.15')).encode()
             api=zabbix_sync.API('https://api.invalid','synthetic-token')
             self.assertEqual(api('apiinfo.version',[]),'7.4.15')
@@ -100,6 +102,7 @@ class ReceiptTests(unittest.TestCase):
             self.assertEqual(json.loads(request.data)['params'],[])
             with self.assertRaises(registration.RPCError):api('apiinfo.version',{})
             self.assertEqual(transport.call_count,1)
+            guard.assert_not_called()
 
     def test_rpc_codes_are_classified_without_echoing_any_server_diagnostics(self):
         for code in (-32602,-32500,-32603,'ab'*32,{},True):
@@ -107,6 +110,8 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(code=code),self.assertRaises(registration.RPCError) as error:registration.rpc_result(response)
             self.assertNotIn('synthetic-token',str(error.exception));self.assertNotIn('ab'*32,str(error.exception))
             if type(code) is int:self.assertIn(str(code),str(error.exception))
-        with patch.object(zabbix_sync.urllib.request,'urlopen') as transport:
+        with patch.object(zabbix_sync.urllib.request,'build_opener') as build, patch.object(zabbix_sync, 'require_access'):
+            transport = build.return_value.open
+            transport.return_value.__enter__.return_value.status = 200
             transport.return_value.__enter__.return_value.read.return_value=json.dumps(dict(jsonrpc='2.0',id=1,error=dict(code=-32602,message='synthetic-token'))).encode()
             with self.assertRaisesRegex(registration.RPCError,'-32602'):zabbix_sync.API('https://api.invalid','synthetic-token')('proxy.get',{})

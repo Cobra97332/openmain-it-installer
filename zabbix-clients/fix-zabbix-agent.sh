@@ -28,15 +28,15 @@ BACKUP="$CFG.bak.$(date +%Y%m%d-%H%M%S)"
 cp -a -- "$CFG" "$BACKUP"
 TMP=$(mktemp /etc/zabbix/zabbix_agent2.conf.XXXXXX)
 trap 'rm -f "$TMP"' EXIT
-python3 - "$CFG" "$TMP" "$ACTIVE" "$HOST" "$CUSTOMER" "$OS" <<'PY'
+python3 - "$CFG" "$TMP" "$ACTIVE" "$HOST" "$CUSTOMER" "$OS" "$PROXY1" "$PROXY2" <<'PY'
 import re,sys
-source,dest,active,host,customer,os=sys.argv[1:]
+source,dest,active,host,customer,os,proxy1,proxy2=sys.argv[1:]
 with open(source,encoding="utf-8") as f: lines=f.readlines()
 # Never silently override existing secure transport settings.
 if any(re.match(r'^\s*(TLSConnect|TLSAccept|TLSPSKFile|TLSCertFile|TLSCAFile)\s*=',s) for s in lines):
     raise SystemExit("Bestehende TLS-Konfiguration: manuelle Pruefung notwendig")
-values={"Server":"127.0.0.1","ServerActive":active,"Hostname":host,
-        "HostMetadata":f"OMLAN;Customer={customer};OS={os}"}
+values={"Server":",".join(["127.0.0.1",proxy1]+([proxy2] if proxy2 else [])),"ServerActive":active,"Hostname":host,
+        "HostMetadata":f"OMLAN;Customer={customer};OS={os}","ListenPort":"10050"}
 seen=set(); out=[]
 for line in lines:
     m=re.match(r'^\s*([A-Za-z][A-Za-z0-9]*)\s*=',line)

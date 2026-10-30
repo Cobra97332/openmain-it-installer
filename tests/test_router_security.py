@@ -269,10 +269,11 @@ setup_zabbix_access
             r=self.run_function('ensure_group',groups,('Bauer-PR30',))
             self.assertNotEqual(r.returncode,0);self.assertFalse((self.root/'writes').exists())
 
-    def test_setup_groups_reuses_all_three_groups_without_losing_inventory(self):
+    def test_setup_groups_assigns_router_groups_and_leaves_admins_group_untouched(self):
         groups=[dict(self.empty_group(),id='company'),dict(self.empty_group(),id='marker',name='Kunde:Bauer-PR30'),
                 dict(self.empty_group(),id='global',name='Kunden',peers=['old-a','old-b','old-c'],peers_count=3,
-                     resources=[dict(id='resource',type='network')],resources_count=1)]
+                     resources=[dict(id='resource',type='network')],resources_count=1),
+                dict(self.empty_group(),id='admins',name='Admins')]
         state=self.root/'groups.json';state.write_text(json.dumps(groups))
         self.executable('group-api',"""#!/usr/bin/env python3
 import json,os,sys
@@ -289,7 +290,7 @@ elif method=='PUT':
  print(json.dumps(g))
 else:sys.exit(97)
 """)
-        body=functions('router-install.sh',['die','valid_group','ensure_group','ensure_peer_in_group','setup_groups'])
+        body=functions('router-install.sh',['die','valid_group','ensure_group','require_existing_group','ensure_peer_in_group','setup_groups'])
         result=self.bash('set -Eeuo pipefail\n'+body+"""
 api(){ group-api "$@"; }
 log(){ :; }
@@ -297,16 +298,153 @@ PEER_ID=new-peer
 GLOBAL_GROUP=Kunden
 CUSTOMER=Bauer-PR30
 CUSTOMER_MARKER_PREFIX=Kunde:
+REMOTE_ACCESS_GROUP=Admins
 setup_groups
 setup_groups
 """)
         self.clean_output(result);self.assertEqual(result.returncode,0,result.stderr)
-        current=json.loads(state.read_text());self.assertEqual(len(current),3)
+        current=json.loads(state.read_text());self.assertEqual(len(current),4)
         for before,after in zip(groups,current):
             self.assertEqual(before['id'],after['id']);self.assertEqual(before['name'],after['name'])
-            self.assertEqual(set(after['peers']),set(before['peers'] or [])|{'new-peer'})
-            self.assertEqual(after['resources'],before['resources'] or [])
+            expected=set(before['peers'] or [])
+            if after['id']!='admins':
+                expected.add('new-peer')
+            self.assertEqual(set(after['peers'] or []),expected)
+            self.assertEqual(after['resources'] or [],before['resources'] or [])
         self.assertEqual(len((self.root/'writes').read_text().splitlines()),3)
+
+    def test_peer_group_assignment_waits_for_api_visibility_and_fails_on_missing_group(self):
+        def peer(groups):
+            return [dict(id='new-peer', groups=[dict(id=gid, name=name) for gid,name in groups])]
+        required=[('global','Kunden'),('company','Bauer-PR30'),('marker','Kunde:Bauer-PR30')]
+        body=functions('router-install.sh',['die','validate_monitoring_assignment'])
+        setup=r'''
+api(){
+  [[ "$1" == GET && "$2" == /peers ]] || exit 97
+  local index
+  index=$(wc -l < "$MOCK_ROOT/reads")
+  printf 'read\n' >> "$MOCK_ROOT/reads"
+  jq -c --argjson index "$index" '.[if $index < length then $index else length-1 end]' "$MOCK_ROOT/peer-responses.json"
+}
+sleep(){ :; }
+log(){ :; }
+PEER_ID=new-peer
+GLOBAL_GROUP=Kunden
+GLOBAL_GROUP_ID=global
+CUSTOMER=Bauer-PR30
+COMPANY_GROUP_ID=company
+CUSTOMER_MARKER_PREFIX=Kunde:
+CUSTOMER_MARKER_GROUP_ID=marker
+ADMIN_GROUP_ID=admins
+METRICS_ENABLED=0
+validate_monitoring_assignment
+'''
+        for responses,expected in (([peer(required[1:]),peer(required)],0),
+                                   ([peer(required[:2])],1),
+                                   ([peer([('global','Other'),*required[1:]])],1)):
+            with self.subTest(responses=responses):
+                (self.root/'reads').write_text('')
+                (self.root/'peer-responses.json').write_text(json.dumps(responses))
+                result=self.bash('set -Eeuo pipefail\n'+body+setup)
+                self.clean_output(result)
+                self.assertEqual(result.returncode,expected,result.stderr)
+                self.assertEqual(len((self.root/'reads').read_text().splitlines()),
+                                 2 if expected==0 else 15)
+                if expected:
+                    self.assertIn('Gruppenzuordnung nicht wirksam',result.stderr)
+
+    def test_router_in_admins_is_rejected_before_network_setup(self):
+        body=functions('router-install.sh',['die','validate_monitoring_assignment'])
+        groups=[dict(id=gid,name=name) for gid,name in
+                [('global','Kunden'),('company','Bauer-PR30'),
+                 ('marker','Kunde:Bauer-PR30'),('admins','Admins')]]
+        (self.root/'peer.json').write_text(json.dumps([dict(id='new-peer',groups=groups)]))
+        result=self.bash('set -Eeuo pipefail\n'+body+r'''
+api(){ cat "$MOCK_ROOT/peer.json"; }
+log(){ :; }
+PEER_ID=new-peer
+GLOBAL_GROUP=Kunden
+GLOBAL_GROUP_ID=global
+CUSTOMER=Bauer-PR30
+COMPANY_GROUP_ID=company
+CUSTOMER_MARKER_PREFIX=Kunde:
+CUSTOMER_MARKER_GROUP_ID=marker
+ADMIN_GROUP_ID=admins
+METRICS_ENABLED=0
+validate_monitoring_assignment
+''')
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('Mitglied von Admins',result.stderr)
+
+    def test_acl_wait_accepts_only_required_policy_and_distinguishes_failures(self):
+        body=functions('router-install.sh',['die','wait_binat_acl'])
+        shell=r'''
+python3(){
+  local index status
+  index=$(wc -l < "$MOCK_ROOT/probe-calls")
+  printf 'probe\n' >> "$MOCK_ROOT/probe-calls"
+  status=$(jq -r --argjson index "$index" '.[if $index < length then $index else length-1 end]' "$MOCK_ROOT/probe-status.json")
+  return "$status"
+}
+systemctl(){
+  printf 'start\n' >> "$MOCK_ROOT/service-calls"
+  return "${MOCK_SERVICE_STATUS:-0}"
+}
+sleep(){ :; }
+wait_binat_acl
+'''
+        for statuses,service_status,expected_calls,needle in (
+            ([2,2,0],0,1,''),
+            ([3],0,0,'inkompatibel'),
+            ([2],0,0,'Routing-Policy'),
+            ([0,0],1,1,'Serviceprotokoll')):
+            with self.subTest(statuses=statuses,service_status=service_status):
+                for name in ('probe-calls','service-calls'):
+                    (self.root/name).write_text('')
+                (self.root/'probe-status.json').write_text(json.dumps(statuses))
+                self.env['MOCK_SERVICE_STATUS']=str(service_status)
+                result=self.bash('set -Eeuo pipefail\n'+body+shell)
+                self.clean_output(result)
+                self.assertEqual(result.returncode,0 if not needle else 1,result.stderr)
+                self.assertEqual(len((self.root/'service-calls').read_text().splitlines()),
+                                 expected_calls)
+                if needle:
+                    self.assertIn(needle,result.stderr)
+                else:
+                    self.assertEqual(len((self.root/'probe-calls').read_text().splitlines()),3)
+
+    def test_locale_bootstrap_generates_de_de_and_preserves_valid_existing_locale(self):
+        body=functions('router-install.sh',
+                       ['die','locale_available','utf8_locale_available','setup_guest_locale'])
+        body=body.replace('/etc/locale.gen','$MOCK_ROOT/locale.gen')
+        self.executable('apt-get','#!/bin/sh\necho apt >> "$MOCK_ROOT/effects"\n')
+        self.executable('locale',r'''#!/bin/sh
+if [ "$1" = -a ]; then cat "$MOCK_ROOT/locales"; exit 0; fi
+if [ "$1" = charmap ]; then
+ case "${LC_ALL:-$LANG}" in C.UTF-8|de_DE.UTF-8|en_US.UTF-8) echo UTF-8;; *) echo ANSI_X3.4-1968;; esac
+ exit 0
+fi
+exit 97
+''')
+        self.executable('locale-gen','#!/bin/sh\necho de_DE.utf8 >> "$MOCK_ROOT/locales"; echo generated >> "$MOCK_ROOT/effects"\n')
+        self.executable('update-locale','#!/bin/sh\necho "$*" >> "$MOCK_ROOT/updates"\n')
+        (self.root/'locale.gen').write_text('# de_DE.UTF-8 UTF-8\n')
+        (self.root/'locales').write_text('C\nC.utf8\nen_US.utf8\n')
+        (self.root/'effects').write_text('')
+        (self.root/'updates').write_text('')
+        result=self.bash('set -Eeuo pipefail\n'+body+'''
+ORIGINAL_LANG=de_DE.UTF-8
+ORIGINAL_LC_ALL=
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+setup_guest_locale
+[[ "$LANG" == de_DE.UTF-8 ]]
+setup_guest_locale
+''')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((self.root/'effects').read_text().splitlines(),
+                         ['apt','generated','apt'])
+        self.assertEqual((self.root/'updates').read_text().splitlines(),
+                         ['LANG=de_DE.UTF-8'])
 
     def test_multiple_json_documents_are_rejected_before_update(self):
         group=self.empty_group()
@@ -357,6 +495,8 @@ sys.exit(int(os.environ.get('MOCK_CURL_EXIT','0')))
         import base64
         import shutil
         fixture=BootstrapTests();fixture.setUp();self.addCleanup(fixture.doCleanups)
+        fixture.script.write_text(fixture.script.read_text().replace(
+            '  setup_guest_locale\n', '  : # locale covered by dedicated test\n'))
         fixture.env['NB_SETUP_KEY']='';fixture.env['MOCK_APT_RESULT']='0'
         common=fixture.runtime.parent
         (common/'preflight.py').write_text((ROOT/'netbird-router/common/preflight.py').read_text()
@@ -434,6 +574,29 @@ connect_netbird
 
 
 class ZabbixAPITests(Sandbox):
+    def test_private_api_registration_routes_every_authenticated_call_through_guard(self):
+        self.env['NB_ZABBIX_API_URL']='http://100.107.91.6:8083/api_jsonrpc.php'
+        helper=Path(self.env['NB_BUNDLE_DIR'])/'netbird-router/common/zabbix_access.py'
+        helper.write_text("""import json,os,subprocess,sys
+from pathlib import Path
+if int(os.environ.get('MOCK_ACCESS_DENIED','0')):sys.exit(1)
+if sys.argv[1:]==['--private-request']:
+ payload=sys.stdin.read()
+ with (Path(os.environ['MOCK_ROOT'])/'guarded-requests').open('a') as log:
+  log.write(json.loads(payload)['method']+'\\n')
+ result=subprocess.run(['curl','--data',payload],capture_output=True,text=True)
+ sys.stdout.write(result.stdout);sys.exit(result.returncode)
+""")
+        first=self.run_api();self.assertEqual(first.returncode,0,first.stderr)
+        before=self.psk.read_bytes()
+        second=self.run_api();self.assertEqual(second.returncode,0,second.stderr)
+        methods=(self.root/'guarded-requests').read_text().splitlines()
+        self.assertIn('proxy.get',methods);self.assertIn('proxygroup.get',methods)
+        self.assertEqual(methods.count('proxy.create'),1)
+        self.assertEqual(methods.count('proxygroup.create'),1)
+        self.assertEqual(len(json.loads(self.state.read_text())['proxies']),1)
+        self.assertEqual(self.psk.read_bytes(),before)
+
     def setUp(self):
         super().setUp()
         bundle=self.root/'bundle';helper=bundle/'netbird-router/common/zabbix_access.py'
@@ -508,30 +671,6 @@ print(json.dumps({'jsonrpc':'2.0','id':1,'result':result}))
                 store.confirm('proxy',proxy,'201')
         proxy.update(kwargs)
         self.state.write_text(json.dumps({'proxies':[proxy], 'groups':[{'proxy_groupid':'201','name':'customer','min_online':'1','failover_delay':'1m'}], 'writes':[]}))
-
-    def test_private_api_registration_routes_every_authenticated_call_through_guard(self):
-        self.env['NB_ZABBIX_API_URL']='http://100.107.91.6:8083/api_jsonrpc.php'
-        helper=Path(self.env['NB_BUNDLE_DIR'])/'netbird-router/common/zabbix_access.py'
-        helper.write_text("""import json,os,subprocess,sys
-from pathlib import Path
-if int(os.environ.get('MOCK_ACCESS_DENIED','0')):sys.exit(1)
-if sys.argv[1:]==['--private-request']:
- payload=sys.stdin.read()
- with (Path(os.environ['MOCK_ROOT'])/'guarded-requests').open('a') as log:
-  log.write(json.loads(payload)['method']+'\\n')
- # Synthetic transport behind the guard; real Linux binding is tested separately.
- result=subprocess.run(['curl','--data',payload],capture_output=True,text=True)
- sys.stdout.write(result.stdout);sys.exit(result.returncode)
-""")
-        first=self.run_api();self.assertEqual(first.returncode,0,first.stderr)
-        before=self.psk.read_bytes()
-        second=self.run_api();self.assertEqual(second.returncode,0,second.stderr)
-        methods=(self.root/'guarded-requests').read_text().splitlines()
-        self.assertIn('proxy.get',methods);self.assertIn('proxygroup.get',methods)
-        self.assertEqual(methods.count('proxy.create'),1)
-        self.assertEqual(methods.count('proxygroup.create'),1)
-        self.assertEqual(len(json.loads(self.state.read_text())['proxies']),1)
-        self.assertEqual(self.psk.read_bytes(),before)
 
     def test_access_denied_preserves_psk_pending_and_status_without_any_api_call(self):
         self.existing();self.pending.write_text('pending');self.psk.chmod(0o600)
@@ -861,7 +1000,8 @@ class PrometheusSyncTests(unittest.TestCase):
         policy = NetBirdTests.policy()
         before = copy.deepcopy(policy)
         with patch.object(self.module, 'api_request') as api:
-            self.assertFalse(self.module.ensure_policy('', TOKEN, [policy], 'metrics', 'monitor', 'metrics', [9191,9192]))
+            with self.assertRaises(RuntimeError):
+                self.module.ensure_policy('', TOKEN, [policy], 'metrics', 'monitor', 'metrics', [9191,9192])
             self.assertEqual(policy, before)
             policy['enabled'] = False
             with self.assertRaises(RuntimeError):

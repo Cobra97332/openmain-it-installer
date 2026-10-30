@@ -246,16 +246,24 @@ s.sendall(b'OM-MONITOR');assert s.recv(100)==b'OM-MONITOR'
     for lan in ('a','b'):
         for proto in ('tcp','udp'):
             wait_for(lambda: probe('peer',lan,proto)); probe('probe',lan,proto,False)
+    probe('primary-a','b','tcp',False)
+    probe('primary-b','a','tcp',False)
     RESULTS['native_policy_and_prefix_nat']=True
     control('c.mutate({"operation":"restrict_a"}); print("PORT_POLICY_CHANGED")')
     wait_for(lambda: probe('peer','a','udp',False)); probe('peer','a','tcp')
     RESULTS['native_port_policy']=True
     control('c.mutate({"operation":"restore_a"}); print("PORT_POLICY_RESTORED")')
     wait_for(lambda: probe('peer','a','udp'))
-    # Force different source permissions across equal real LANs.
-    control('c.mutate({"operation":"split_sources"}); print("B_POLICY_SPLIT")')
-    wait_for(lambda: probe('peer','b','tcp',False)); wait_for(lambda: probe('probe','b','tcp'))
-    probe('probe','a','tcp',False); probe('peer','a','tcp')
+    # A non-admin stays denied to both customers; changing the Admin source
+    # transfers access without granting a customer peer a source policy.
+    control('c.mutate({"operation":"admin_swap"}); print("ADMIN_SOURCE_CHANGED")')
+    for lan in ('a','b'):
+        wait_for(lambda lan=lan: probe('peer',lan,'tcp',False))
+        wait_for(lambda lan=lan: probe('probe',lan,'tcp'))
+    control('c.mutate({"operation":"membership","allow":True}); print("ADMIN_SOURCE_RESTORED")')
+    for lan in ('a','b'):
+        wait_for(lambda lan=lan: probe('peer',lan,'tcp'))
+        wait_for(lambda lan=lan: probe('probe',lan,'tcp',False))
     RESULTS['tenant_separation']=True
     # Keep a replied UDP tuple open across the policy change. A fresh socket
     # alone does not prove revocation of an established conntrack entry.

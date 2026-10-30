@@ -1,13 +1,15 @@
 # syntax=docker/dockerfile:1
-ARG NETBIRD_IMAGE=netbirdio/netbird:0.81.3@sha256:f8a4ea01da9f2351d5c9436209ee9caf35dd118fc9c1fc2ce7859f0c6e44781c
+ARG NETBIRD_IMAGE=netbirdio/netbird:0.82.0@sha256:eca5b274c635bfbb04ec6724a0712d1146190dd450eea199eeb83916fdd94965
 FROM ${NETBIRD_IMAGE} AS netbird
 FROM debian:13-slim
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 ARG TARGETARCH
 ARG TARGETVARIANT
 ARG ZABBIX_VERSION=7.4
 # arm/v7 is deliberately rejected until all packages AND gateway tests exist.
 RUN case "$TARGETARCH/$TARGETVARIANT" in amd64/|arm64/|arm64/v8) ;; *) exit 64;; esac
 RUN --mount=type=secret,id=ca,required=false \
+    test "$(locale charmap)" = UTF-8 || exit 66; \
     if test -f /run/secrets/ca; then printf 'Acquire::https::CaInfo "/run/secrets/ca";\n' >/etc/apt/apt.conf.d/99build-ca; fi; \
     printf '#!/bin/sh\nexit 101\n' >/usr/sbin/policy-rc.d && chmod 0755 /usr/sbin/policy-rc.d; \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -27,7 +29,7 @@ RUN --mount=type=secret,id=ca,required=false \
     && rm -rf /var/lib/apt/lists/* && rm -f /etc/apt/apt.conf.d/99build-ca /usr/sbin/policy-rc.d
 COPY --from=netbird /usr/local/bin/netbird /usr/local/bin/netbird
 # No native patches, lab client images, fault injectors or systemd installer.
-COPY netbird-router/common/runtime.py netbird-router/common/network.py netbird-router/common/preflight.py netbird-router/common/zabbix_access.py netbird-router/common/zabbix_registration.py netbird-router/common/zabbix_sync.py /opt/openmain/netbird-router/common/
+COPY netbird-router/common/runtime.py netbird-router/common/network.py netbird-router/common/preflight.py netbird-router/common/binat_acl.py netbird-router/common/zabbix_access.py netbird-router/common/zabbix_registration.py netbird-router/common/zabbix_sync.py /opt/openmain/netbird-router/common/
 COPY zabbix-api-register.sh /opt/openmain/zabbix-api-register.sh
 COPY docker/router/start.sh docker/router/router.py /opt/openmain/
 RUN chmod 0755 /opt/openmain/start.sh && mkdir -p /run/zabbix \

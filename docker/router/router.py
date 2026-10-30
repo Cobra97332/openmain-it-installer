@@ -22,7 +22,8 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, '/opt/openmain/netbird-router/common')
 from runtime import Invalid, atomic, nft_config
-from network import API, reconcile, rows, one
+from network import API, reconcile, rows, one, ids, policy_access
+from binat_acl import SOURCE_RE, native, _match, _prefix
 from preflight import resolve_profile, connected_profile
 from zabbix_access import group_members, NoRedirect, api_endpoint, PRIVATE_API
 
@@ -207,7 +208,7 @@ def secret(name, optional=False):
     return value
 
 
-def member(api, name, peer, allow_write=True, expected=None):
+def member(api, name, peer, allow_write=True, expected=None, add_peer=True):
     # Same preservation/read-before-write/readback contract as router-install.sh.
     current = one(api('GET', '/groups'), 'name', name)
     if current is None:
@@ -222,7 +223,7 @@ def member(api, name, peer, allow_write=True, expected=None):
         raise Invalid('GROUP_BINDING_CHANGED')
     current = api('GET', '/groups/' + gid)
     peers = group_members(current, gid)
-    if peer not in peers:
+    if add_peer and peer not in peers:
         if not allow_write:
             raise Invalid('GROUP_MEMBERSHIP_REVOKED_NO_REGRANT')
         before = api('GET', '/groups/' + gid)
@@ -240,6 +241,43 @@ def member(api, name, peer, allow_write=True, expected=None):
                 (r['id'], r['type']) for r in after['resources'] or []}:
             raise Invalid('GROUP_RESOURCES_NOT_PRESERVED')
     return gid
+
+
+def verified_peer_groups(api, peer, groups, admin_group):
+    for attempt in range(15):
+        peers = [p for p in rows(api('GET', '/peers')) if p.get('id') == peer]
+        if len(peers) != 1:
+            raise Invalid('NETBIRD_PEER_AMBIGUOUS')
+        observed = ids(peers[0].get('groups', []))
+        if admin_group in observed:
+            raise Invalid('ROUTER_IN_ADMINS_GROUP')
+        if set(groups.values()) <= set(observed):
+            return
+        if attempt < 14:
+            time.sleep(2)
+    raise Invalid('GROUP_MEMBERSHIP_NOT_VISIBLE')
+
+
+def wait_native_route_acl(virtual):
+    for attempt in range(24):
+        try:
+            rules = json.loads(command('nft', '-j', 'list', 'chain', 'ip', 'netbird', 'netbird-rt-fwd'))
+        except (Invalid, ValueError):
+            rules = {}
+        entries = rules.get('nftables', []) if isinstance(rules, dict) else []
+        if isinstance(entries, list):
+            candidates = [entry['rule'] for entry in entries if isinstance(entry, dict)
+                          and isinstance(entry.get('rule'), dict)]
+            sources = [native(rule, {'virtual': virtual}) for rule in candidates]
+            if any(SOURCE_RE.fullmatch(source) for source in sources if source):
+                return
+            if not any(sources) and any(any(_match(expr, 'daddr', _prefix(virtual)) for expr in
+                       (rule.get('expr') if isinstance(rule.get('expr'), list) else []))
+                   for rule in candidates):
+                raise Invalid('NETBIRD_ROUTE_ACL_INCOMPATIBLE')
+        if attempt < 23:
+            time.sleep(5)
+    raise Invalid('NETBIRD_ROUTE_ACL_NOT_READY')
 
 
 def spawn(args, log, user=None):
@@ -311,36 +349,41 @@ def managed_configs(contents, owner):
     intent.unlink()
 
 
-def mapping_binding(api, e, peer, group, routes):
+def mapping_binding(api, e, peer, customer_group, global_group, admin_group, routes):
     receipt = PRIVATE / 'network.json'
+    result = reconcile(api, e['CUSTOMER'], e['ROUTER_ROLE'], e['LAN_NETWORK_CIDR'],
+                       peer, customer_group, global_group, admin_group, routes, e['VIRTUAL_NETWORK'])
     if not receipt.exists():
-        result = reconcile(api, e['CUSTOMER'], e['ROUTER_ROLE'], e['LAN_NETWORK_CIDR'],
-                           peer, group, routes, e['VIRTUAL_NETWORK'])
         atomic(receipt, json.dumps(result))
         return result
-    result = json.loads(receipt.read_text())
-    if any(not re.fullmatch(r'[A-Za-z0-9_-]+', result[k]) for k in ('network','resource','router')):
+    previous = json.loads(receipt.read_text())
+    if any(not re.fullmatch(r'[A-Za-z0-9_-]+', previous[k]) for k in ('network','resource','router')):
         raise Invalid('NETWORK_RECEIPT_INVALID')
-    base = '/networks/' + result['network']
-    resource = [r for r in rows(api('GET', base+'/resources')) if r['id']==result['resource']]
-    router = [r for r in rows(api('GET', base+'/routers')) if r['id']==result['router']]
-    from network import ids
-    metric = {'primary':100,'backup':200}[e['ROUTER_ROLE']]
-    if (len(resource)!=1 or resource[0].get('enabled') is not True
-        or resource[0].get('address')!=e['VIRTUAL_NETWORK'] or group not in ids(resource[0].get('groups'))
-        or len(router)!=1 or any(router[0].get(k)!=v for k,v in
-            dict(peer=peer,metric=metric,masquerade=False,enabled=True).items())):
+    if previous != result:
         raise Invalid('NETWORK_ASSIGNMENT_CHANGED_NO_OVERWRITE')
-    # Centrally tightened/removed policies remain authoritative on restart.
-    # Do not recreate defaults or reinterpret their authorization rules here.
     return result
+
+
+def monitoring_names(e):
+    role = e['ROUTER_ROLE'].title()
+    old_proxy = 'proxy-' + e['CUSTOMER'].lower() + '-' + e['ROUTER_ROLE']
+    new_proxy = e['CUSTOMER'] + '-Proxy-' + role
+    intent = PRIVATE / 'psk-intent'
+    proxy = intent.read_text() if intent.exists() else new_proxy
+    if proxy not in (old_proxy, new_proxy):
+        raise Invalid('PSK_IDENTITY_CONFLICT')
+    host = ('router-' + e['CUSTOMER'].lower() + '-' + e['ROUTER_ROLE']
+            if proxy == old_proxy else e['CUSTOMER'] + '-Router-' + role)
+    return proxy, host
 
 
 def monitoring(e, peer_ip):
     from zabbix_sync import API as ZAPI, register_host, context
     z = pwd.getpwnam('zabbix')
-    proxy = 'proxy-' + e['CUSTOMER'].lower() + '-' + e['ROUTER_ROLE']
+    proxy, host = monitoring_names(e)
     psk_file = CONFIG / 'router.psk'
+    if psk_file.exists() and not (PRIVATE / 'psk-intent').exists():
+        raise Invalid('PSK_IDENTITY_UNBOUND')
     intent = PRIVATE / 'psk-intent'
     if not psk_file.exists():
         if intent.exists() and (intent.read_text() != proxy or any(p.exists() for p in (
@@ -358,7 +401,7 @@ def monitoring(e, peer_ip):
     # Reuse the checked 7.4 proxy-group/TLS registration unchanged.
     command('bash', '/opt/openmain/zabbix-api-register.sh', e['CUSTOMER'],
             e['ROUTER_ROLE'], proxy, e['LAN_IP'], identity, str(psk_file))
-    c = dict(customer=e['CUSTOMER'], host='router-' + e['CUSTOMER'].lower() + '-' + e['ROUTER_ROLE'],
+    c = dict(customer=e['CUSTOMER'], role=e['ROUTER_ROLE'], host=host,
              proxy=proxy, identity=identity, psk_file=str(psk_file),
              receipt_file=os.environ['NB_ZABBIX_RECEIPT_FILE'], url=e['NB_ZABBIX_API_URL'],
              network=e['LAN_NETWORK_CIDR'], access=context())
@@ -495,17 +538,28 @@ def gateway(e):
         raise Invalid('GROUP_CONTEXT_CHANGED')
     initial = known is None and not (PRIVATE / 'network.json').exists()
     groups = {name:member(api, name, pid, allow_write=initial,
-                         expected=known[name] if known is not None else None)
+                         expected=known[name] if known is not None else None, add_peer=False)
               for name in group_names}
+    admin = one(api('GET', '/groups'), 'name', 'Admins')
+    if not admin or not isinstance(admin.get('id'), str) or not admin['id']:
+        raise Invalid('ADMINS_GROUP_MISSING')
+    receipt = PRIVATE / 'network.json'
+    resource_id = json.loads(receipt.read_text()).get('resource', '') if receipt.exists() else ''
+    policy_access(api, groups[e['CUSTOMER']], groups['Kunden'], admin['id'],
+                  [groups['Kunden'], groups[e['CUSTOMER']]], resource_id)
+    for name in group_names:
+        member(api, name, pid, allow_write=initial, expected=groups[name])
+    verified_peer_groups(api, pid, groups, admin['id'])
     atomic(group_file, json.dumps(groups))
     customer_group = groups[e['CUSTOMER']]
     # LAN/transit are legitimate local routes; only the NAT destination's real
     # LAN is excluded from allocation collision checks, as in the VM mapping.
     routes = json.loads(command('ip', '-j', '-4', 'route'))
     routes = [r for r in routes if r.get('dst') not in (e['VIRTUAL_NETWORK'], e['LAN_NETWORK_CIDR'])]
-    result = mapping_binding(api, e, pid, customer_group, routes)
+    result = mapping_binding(api, e, pid, customer_group, groups['Kunden'], admin['id'], routes)
     if result['virtual'] != e['VIRTUAL_NETWORK']:
         raise Invalid('VIRTUAL_MAPPING_CONFLICT')
+    wait_native_route_acl(e['VIRTUAL_NETWORK'])
     monitoring(e, peer_ip)
     atomic(ready, str(os.getpid()))
     while all(p.poll() is None for p in CHILDREN) and nat_ready(e):

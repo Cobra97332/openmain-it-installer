@@ -7,18 +7,21 @@ Wiederverwendung
 - common/runtime.py:nft_config unverändert: Prefix-DNAT für 100.64.0.0/10,
   hostanteilgleiche Übersetzung, ausschließlich auf DNAT-Verkehr begrenztes
   Masquerade. Standard: 10.30.1.x -> 192.168.178.x, Antworten über Conntrack.
-- common/network.py: bestehende Kundenressource, Gruppenpolicy und
+- common/network.py: bestehende Kundenressource in Kunden- und Kundengruppe,
+  ausschließlich die vorhandene einseitige Policy Admin → Kunden und
   Primary-/Backup-Router mit Metriken 100/200, masquerade=false.
 - zabbix-api-register.sh, zabbix_registration.py und register_host():
   Proxy-Gruppe, Zabbix 7.4 TLS-PSK, private Schreibnachweise, Host-/Agent-Abgleich.
   Nach erfolgreicher Gruppeneinrichtung prüft ein Neustart Mitgliedschaften
   nur lesend; entzogene Rechte werden nicht automatisch wieder vergeben.
   Kundennamen dürfen keine gemeinsam genutzten Zugriffsgruppen bezeichnen.
-  Nach erfolgreicher Ressourcenzuordnung bestätigt der Adapter gespeicherte
-  Ressourcen-/Router-IDs rein lesend. Manuell eingeschränkte oder entfernte
-  zentrale Policies werden beim Neustart nicht durch Defaults ersetzt.
-Die systemd-/APT-Installer laufen NICHT beim Containerstart. Kein binat_acl.py,
-kein eigener NetBird-Build, keine Testinjektoren im Runtime-Image.
+  Nach erfolgreicher Ressourcenzuordnung gleicht der Adapter dieselbe
+  Zuordnung erneut ab und vergleicht die gespeicherten IDs. Manuell
+  eingeschränkte oder entfernte zentrale Policies werden nicht ersetzt.
+Die systemd-/APT-Installer laufen NICHT beim Containerstart. Aus binat_acl.py
+wird nur der native ACL-Parser zum lesenden Readiness-Check verwendet; der
+Legacy-Reconciler wird nie gestartet. Kein eigener NetBird-Build und keine
+Testinjektoren im Runtime-Image.
 
 Entscheidende Netzwerktopologie
   VPN -> gateway (NetBird-ACL sieht 10.30.1.x)
@@ -236,12 +239,13 @@ Historischer Netzwerk-Nachweis ef2ab99b7d9eca2712e1860604b8d02c69060918:
   nftables-Kernelladen bestanden. Kompletter lokaler Build: HTTP403 am
   Zabbix-Repository (Cloud-Egress); weiterer lokaler Netzwerkversuch durch
   vollen Docker-VFS-Testdatenträger blockiert. Nur eigene Testobjekte bereinigt.
-- NetBird 0.81.3 ist in Dockerfile, Compose und Beispielkonfiguration auf
-  den Multiarch-Digest sha256:f8a4ea01da9f2351d5c9436209ee9caf35dd118fc9c1fc2ce7859f0c6e44781c
-  festgelegt. AMD64 und ARM64 bestanden den echten Standard-Controller- und
-  Gateway-Pakettest mit diesem Client, auch nach Entzug einer bereits benutzten
-  UDP-Verbindung. Ein sofortiger Entzug beliebiger etablierter Sessions wird
-  damit nicht behauptet.
+- Der neue Kandidat verwendet NetBird 0.82.0 mit dem festen Multiarch-Digest
+  sha256:eca5b274c635bfbb04ec6724a0712d1146190dd450eea199eeb83916fdd94965
+  (AMD64 sha256:ea2982e68e6d4782e1e20adbefe1556f9c6a751c455b9be11850e809554b4d92,
+  ARM64 sha256:745a46234495340d8eb2e8d8046b0fc67007e3d82183770de04cf095a6c92b98).
+  Die Kompatibilität mit dem isolierten 0.80.0-Controller wird in der neuen
+  AMD64-/ARM64-Gateway-CI geprüft; ein grüner früherer Lauf mit 0.81.3
+  ersetzt diesen Nachweis nicht.
 - Die Legacy-Kernel-CI bleibt an sechs P1-Gegenbeispielen rot. Nach Korrektur
   des isolierten QEMU-Fixtures bestehen im VM-Gast 243 Python-Tests; die VM
   erreicht dann denselben Kernelblocker. Synthetische BIOS- und UEFI-Boots

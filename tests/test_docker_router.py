@@ -21,6 +21,16 @@ ENV = dict(CUSTOMER='lab', ROUTER_ROLE='primary', NB_MANAGEMENT_URL='https://con
 
 
 class ContainerTests(unittest.TestCase):
+    def test_fresh_monitoring_names_and_existing_identity_are_stable(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d, patch.object(r,'PRIVATE',Path(d)):
+            self.assertEqual(r.monitoring_names(ENV),('lab-Proxy-Primary','lab-Router-Primary'))
+            (Path(d)/'psk-intent').write_text('proxy-lab-primary')
+            self.assertEqual(r.monitoring_names(ENV),('proxy-lab-primary','router-lab-primary'))
+            (Path(d)/'psk-intent').write_text('another-customer')
+            with self.assertRaises(r.Invalid): r.monitoring_names(ENV)
+
     def test_configuration_and_backup(self):
         self.assertEqual(r.configuration(ENV), ENV)
         self.assertEqual(r.configuration(dict(ENV, ROUTER_ROLE='backup'))['ROUTER_ROLE'], 'backup')
@@ -64,6 +74,15 @@ class ContainerTests(unittest.TestCase):
         self.assertEqual({x['id'] for x in state['peers']}, {'old','new'})
         self.assertEqual(state['resources'][0]['id'], 'resource1')
 
+    def test_group_probe_does_not_add_peer(self):
+        state=dict(id='g1',name='lab',peers=[],peers_count=0,resources=[],resources_count=0)
+        calls=[]
+        def api(method,path,data=None):
+            calls.append(method)
+            return [state] if path=='/groups' else state
+        self.assertEqual(r.member(api,'lab','new',add_peer=False),'g1')
+        self.assertEqual(calls,['GET','GET'])
+
     def test_incomplete_group_no_write(self):
         for bad in (None, 'invalid', [1]):
             calls=[]
@@ -82,23 +101,28 @@ class ContainerTests(unittest.TestCase):
 
 
 class RestartPolicyTests(unittest.TestCase):
-    def test_resume_never_recreates_central_policy(self):
+    def test_resume_rechecks_central_policy_without_creating_customer_policy(self):
         import tempfile
         from unittest.mock import patch
+        from test_router_platforms import NetBirdMock
+        from network import reconcile
         with tempfile.TemporaryDirectory() as d:
             directory=Path(d)
-            (directory/'network.json').write_text(json.dumps(dict(network='network1',resource='resource1',router='router1',virtual='10.30.1.0/24')))
-            calls=[]
-            def api(method,path,data=None):
-                calls.append((method,path))
-                if path.endswith('/resources'):
-                    return [dict(id='resource1',address='10.30.1.0/24',groups=['g1'],enabled=True)]
-                if path.endswith('/routers'):
-                    return [dict(id='router1',peer='peer1',metric=100,enabled=True,masquerade=False)]
-                raise AssertionError('unexpected policy call')
+            api=NetBirdMock()
+            api.data['/policies']=[dict(id='central',name='Admin \u2192 Kunden',enabled=True,
+                rules=[dict(enabled=True,action='accept',protocol='all',bidirectional=False,
+                            sources=['admins'],destinations=['global'],ports=[])])]
+            result=reconcile(api,'lab','primary',ENV['LAN_NETWORK_CIDR'],'peer1',
+                             'customer','global','admins',[],ENV['VIRTUAL_NETWORK'])
+            (directory/'network.json').write_text(json.dumps(result))
+            api.writes.clear()
             with patch.object(r,'PRIVATE',directory):
-                r.mapping_binding(api, ENV, 'peer1','g1',[])
-            self.assertTrue(all(method=='GET' and '/policies' not in path for method,path in calls))
+                self.assertEqual(r.mapping_binding(api, ENV, 'peer1','customer','global','admins',[]),result)
+                self.assertEqual(api.writes,[])
+                api.data['/policies']=[]
+                with self.assertRaises(r.Invalid):
+                    r.mapping_binding(api, ENV, 'peer1','customer','global','admins',[])
+            self.assertFalse(any(path=='/policies' for _,path,_ in api.writes))
 
 
 class IdentityVolumeTests(unittest.TestCase):
@@ -156,6 +180,33 @@ class RedirectTests(unittest.TestCase):
 
 
 class CentralAuthorityTests(unittest.TestCase):
+    def test_peer_memberships_require_api_visibility_and_exclude_admins(self):
+        from unittest.mock import patch
+        expected={'Kunden':'global','lab':'customer'}
+        responses=[[dict(id='router',groups=['customer'])],
+                   [dict(id='router',groups=['customer','global'])]]
+        with patch.object(r,'time') as clock:
+            r.verified_peer_groups(lambda *args: responses.pop(0), 'router', expected, 'admins')
+            self.assertEqual(clock.sleep.call_count,1)
+        with self.assertRaisesRegex(r.Invalid,'ROUTER_IN_ADMINS_GROUP'):
+            r.verified_peer_groups(lambda *args: [dict(id='router',groups=['customer','global','admins'])],
+                                   'router', expected, 'admins')
+
+    def test_native_acl_wait_requires_netbird_source_set(self):
+        from unittest.mock import patch
+        prefix={'prefix':{'addr':'10.30.1.0','len':24}}
+        def rule(source):
+            return {'nftables':[{'rule':{'expr':[
+                {'match':{'op':'==','left':{'payload':{'protocol':'ip','field':'saddr'}},'right':source}},
+                {'match':{'op':'==','left':{'payload':{'protocol':'ip','field':'daddr'}},'right':prefix}},
+                {'counter':{'packets':0,'bytes':0}}, {'accept':None}]}}]}
+        with patch.object(r,'command',return_value=json.dumps(rule('@nb-12345678'))):
+            r.wait_native_route_acl('10.30.1.0/24')
+        with patch.object(r,'command',return_value=json.dumps(rule('100.64.0.10'))), \
+             patch.object(r.time,'sleep'):
+            with self.assertRaisesRegex(r.Invalid,'NOT_READY'):
+                r.wait_native_route_acl('10.30.1.0/24')
+
     def test_customer_cannot_be_shared_access_group(self):
         for name in ('Kunden','Zabbix-Kunden-Proxies'):
             with self.assertRaisesRegex(r.Invalid,'GROUP_COLLISION'):

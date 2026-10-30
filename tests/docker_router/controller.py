@@ -131,9 +131,10 @@ def bootstrap():
 def group(name, peers=None):
     return api('/api/groups', 'POST', {'name': name, 'peers': peers or []})['id']
 
-def policy(name, src, dst, protocol='all', action='accept', ports=None):
+def policy(name, src, dst, protocol='all', action='accept', ports=None, bidirectional=None):
     rule = {'name': name, 'enabled': True, 'action': action, 'protocol': protocol,
-            'bidirectional': protocol in ('all', 'icmp'), 'sources': [src], 'destinations': [dst]}
+            'bidirectional': protocol in ('all', 'icmp') if bidirectional is None else bidirectional,
+            'sources': [src], 'destinations': [dst]}
     if ports:
         rule['ports'] = [str(p) for p in ports]
     return api('/api/policies', 'POST', {'name': name, 'enabled': True, 'rules': [rule]})['id']
@@ -171,18 +172,21 @@ def configure():
         return names if len(peers) == len(names) == len(NAMES) and set(names) == set(NAMES) and all(p.get('connected') for p in peers) else None
     peers = wait(connected)
     ids = {n: p['id'] for n,p in peers.items()}
-    dest, policies = {}, {}
+    dest = {}
+    admins = group('Admins', [ids['peer']])
+    global_group = group('Kunden', [ids[role+'-'+lan] for lan in ('a','b') for role in ('primary','backup')])
+    central = policy('Admin \u2192 Kunden', admins, global_group, bidirectional=False)
     def shared_api(method,path,data=None):
         return api('/api'+path,method,data)
     for lan,virtual in (('a','10.30.1.0/24'),('b','10.30.2.0/24')):
-        members = [ids['primary-'+lan],ids['backup-'+lan],ids['peer']]
+        members = [ids['primary-'+lan],ids['backup-'+lan]]
         dest[lan] = group('lab-customer-'+lan,members)
         for role in ('primary','backup'):
-            reconcile(shared_api,'lab-'+lan,role,'192.168.178.0/24',ids[role+'-'+lan],dest[lan],[],virtual)
-        found = [p for p in api('/api/policies') if p['name']=='OpenMain customer lab-'+lan]
-        if len(found)!=1: raise RuntimeError('lab_policy_not_unique')
-        policies[lan]=found[0]['id']
-    write('/lab/objects',json.dumps(dict(peers=ids,dest=dest,policies=policies)))
+            reconcile(shared_api,'lab-'+lan,role,'192.168.178.0/24',ids[role+'-'+lan],
+                      dest[lan],global_group,admins,[],virtual)
+    if any(p.get('name','').startswith('OpenMain customer ') for p in api('/api/policies')):
+        raise RuntimeError('unexpected_customer_peer_policy')
+    write('/lab/objects',json.dumps(dict(peers=ids,dest=dest,admins=admins,global_group=global_group,central=central)))
     return {'actual_installer_network_resources':True,'controller_kernel_ack':False}
 
 
@@ -191,14 +195,12 @@ def mutate(req):
     from zabbix_access import group_members
     state=json.loads(Path('/lab/objects').read_text())
     op=req['operation']
-    if op in ('membership','split_sources'):
-        lan='b' if op=='split_sources' else 'a'
-        gid=state['dest'][lan]
+    if op in ('membership','admin_swap'):
+        gid=state['admins']
         before=api('/api/groups/'+gid)
         existing=group_members(before,gid)
-        desired={state['peers']['primary-'+lan],state['peers']['backup-'+lan]}
-        if op=='split_sources': desired.add(state['peers']['probe'])
-        elif req['allow']: desired.add(state['peers']['peer'])
+        desired={state['peers']['probe']} if op=='admin_swap' else (
+            {state['peers']['peer']} if req['allow'] else set())
         resources=before['resources'] or []
         api('/api/groups/'+gid,'PUT',dict(name=before['name'],peers=sorted(desired),
             resources=[dict(id=x['id'],type=x['type']) for x in resources]))
@@ -207,11 +209,11 @@ def mutate(req):
             raise RuntimeError('lab_group_preservation_failed')
     elif op in ('restrict_a','restore_a'):
         rule=dict(name='lab-rule',enabled=True,action='accept',
-            protocol='tcp' if op=='restrict_a' else 'all',bidirectional=op!='restrict_a',
-            sources=[state['dest']['a']],destinations=[state['dest']['a']])
+            protocol='tcp' if op=='restrict_a' else 'all',bidirectional=False,
+            sources=[state['admins']],destinations=[state['global_group']])
         if op=='restrict_a': rule['ports']=['8080']
-        api('/api/policies/'+state['policies']['a'],'PUT',dict(
-            name='OpenMain customer lab-a',enabled=True,rules=[rule]))
+        api('/api/policies/'+state['central'],'PUT',dict(
+            name='Admin \u2192 Kunden',enabled=True,rules=[rule]))
     else:
         raise RuntimeError('lab_unknown_mutation')
     return {'controller_changed':True,'controller_kernel_ack':False}

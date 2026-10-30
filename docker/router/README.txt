@@ -246,6 +246,10 @@ Historischer Netzwerk-Nachweis ef2ab99b7d9eca2712e1860604b8d02c69060918:
   Der isolierte Controller-/Gatewaytest mit NetBird 0.82.0 bestand auf
   AMD64 und ARM64 für Commit 6e1a9f765eaef5367dd9dac20a7cac17b1f0e330:
   https://github.com/Cobra97332/openmain-it-installer/actions/runs/41029176801
+  Erster veröffentlichter 0.82.0-Candidate: candidate-a2d6da41c8425dbb5ab2a5e90e923c10055ae0c5
+  Index sha256:96d67cb6085c62dec64b1ae90c0a9efcae569b204972c9dbd7ff93d336e05ec8;
+  AMD64 sha256:af9221083d79e6fc5b647c87b1a3c583fd1e9bb3fda0c49103fa16c783df65a9;
+  ARM64 sha256:f8f3ddb8bb9ba5820649f26fffcd0f76e04bd63258865fa10bb474e85c31be1f.
   Ein veröffentlichter Candidate benötigt eigene grüne Gates für seinen Commit.
 - Die Legacy-Kernel-CI bleibt an sechs P1-Gegenbeispielen rot. Nach Korrektur
   des isolierten QEMU-Fixtures bestehen im VM-Gast 243 Python-Tests; die VM

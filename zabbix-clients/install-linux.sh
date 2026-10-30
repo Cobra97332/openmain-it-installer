@@ -54,7 +54,8 @@ cat > "$TMP" <<EOF
 LogType=file
 LogFile=/var/log/zabbix/zabbix_agent2.log
 PidFile=/run/zabbix/zabbix_agent2.pid
-Server=
+Server=127.0.0.1,$P1${P2:+,$P2}
+ListenPort=10050
 ServerActive=$ACTIVE
 Hostname=$HOST
 HostMetadata=OMLAN;Customer=$CUSTOMER;OS=$OS

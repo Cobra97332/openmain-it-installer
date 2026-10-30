@@ -51,7 +51,7 @@ if ($old -match '(?mi)^\s*(Include|TLSConnect|TLSAccept|TLSPSKFile|TLSCertFile)\
 $backup="$config.bak.$(Get-Date -Format yyyyMMddHHmmss)"
 Copy-Item -LiteralPath $config -Destination $backup
 $dir=Split-Path $config -Parent
-$lines=@('LogType=file',('LogFile='+ (Join-Path $dir 'zabbix_agent2.log')),'Server=',('ServerActive='+$active),('Hostname='+$Hostname),('HostMetadata=OMLAN;Customer='+$Customer+';OS=Windows'),'RefreshActiveChecks=120','Timeout=10')
+$lines=@('LogType=file',('LogFile='+ (Join-Path $dir 'zabbix_agent2.log')),('Server=127.0.0.1,' + (($Proxy1,$Proxy2 | Where-Object { $_ }) -join ',')),'ListenPort=10050',('ServerActive='+$active),('Hostname='+$Hostname),('HostMetadata=OMLAN;Customer='+$Customer+';OS=Windows'),'RefreshActiveChecks=120','Timeout=10')
 $temp=Join-Path $dir 'zabbix_agent2.openmain.new'
 [IO.File]::WriteAllLines($temp,[string[]]$lines,(New-Object System.Text.UTF8Encoding($false)))
 try {

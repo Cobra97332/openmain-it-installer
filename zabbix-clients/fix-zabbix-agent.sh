@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-CUSTOMER="${1:-}"; PROXY1="${2:-}"; PROXY2="${3:-}"
+CUSTOMER="${1:-}"; PROXY1="${2:-}"; PROXY2="${3:-}"; HOST_OVERRIDE="${4:-}"
 die(){ echo "FEHLER: $*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "Root erforderlich"
 [[ "$CUSTOMER" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "Kunde: Buchstaben, Zahlen, . _ - (max. 64)"
@@ -18,7 +18,8 @@ PY
 CFG=/etc/zabbix/zabbix_agent2.conf
 [[ -f "$CFG" ]] || die "Agent-Konfiguration fehlt: $CFG"
 ACTIVE="$PROXY1:10051"; [[ -z "$PROXY2" ]] || ACTIVE+=";$PROXY2:10051"
-HOST="$(hostname -s)"
+HOST="${HOST_OVERRIDE:-$(hostname -s)}"
+[[ "$HOST" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || die "Ungueltiger Zabbix-Hostname"
 OS=Linux; [[ -f /etc/pve/.version ]] && OS=Proxmox
 echo "Kunde: $CUSTOMER | Host: $HOST | Agent-Ziele: $ACTIVE"
 read -r -p "Sind dies lokale Zabbix-Proxys (nicht der zentrale Server)? [ja/NEIN] " ANSWER

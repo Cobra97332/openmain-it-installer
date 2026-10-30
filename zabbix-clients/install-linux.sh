@@ -1,73 +1,85 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-die(){ echo "FEHLER: $*" >&2; exit 1; }
-CUSTOMER='' P1='' P2='' HOST='' REPLACE=0
+OM_CUSTOMER='' OM_P1='' OM_P2='' OM_HOST=''
 while (($#)); do
- case "$1" in
- --customer) CUSTOMER="${2:?}"; shift 2;;
- --proxy1) P1="${2:?}"; shift 2;;
- --proxy2) P2="${2:?}"; shift 2;;
- --hostname) HOST="${2:?}"; shift 2;;
- --replace) REPLACE=1; shift;;
- *) die "Option unbekannt: $1";;
- esac
+  (($# >= 2)) || { echo "Parameterwert fehlt: $1" >&2; exit 1; }
+  case "$1" in
+    --customer) OM_CUSTOMER="$2";;
+    --proxy1) OM_P1="$2";;
+    --proxy2) OM_P2="$2";;
+    --hostname) OM_HOST="$2";;
+    *) echo "Unbekannter Parameter: $1" >&2; exit 1;;
+  esac
+  shift 2
 done
-((EUID==0)) || die "Als root starten"
-[[ "$CUSTOMER" =~ ^[a-zA-Z0-9._-]{1,64}$ && -n "$P1" ]] || die "Benutzung: --customer Bauer --proxy1 IP [--proxy2 IP] [--replace]"
-[[ -z "$P2" || "$P1" != "$P2" ]] || die "Doppelte Proxy-Adresse"
-. /etc/os-release
-[[ "$ID" == debian || "$ID" == ubuntu || " ${ID_LIKE:-} " == *" debian "* ]] || die "Nur Debian/Ubuntu/Proxmox"
-command -v python3 >/dev/null || die "python3 fehlt"
-python3 - "$P1" "$P2" <<'PY' || die "Nur RFC1918-IPv4 erlaubt"
-import sys,ipaddress
-for s in sys.argv[1:]:
- if s and not ipaddress.IPv4Address(s).is_private: raise ValueError(s)
- if s and not (ipaddress.IPv4Address(s) in ipaddress.IPv4Network("10.0.0.0/8") or ipaddress.IPv4Address(s) in ipaddress.IPv4Network("172.16.0.0/12") or ipaddress.IPv4Address(s) in ipaddress.IPv4Network("192.168.0.0/16")): raise ValueError(s)
+[[ "$EUID" -eq 0 ]] || { echo "Root erforderlich" >&2; exit 1; }
+[[ -n "$OM_CUSTOMER" && -n "$OM_P1" ]] || { echo "--customer und --proxy1 erforderlich" >&2; exit 1; }
+if ! command -v python3 >/dev/null 2>&1; then
+  apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3 || exit 1
+fi
+if ! command -v zabbix_agent2 >/dev/null 2>&1; then
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y zabbix-agent2 python3 || { echo "APT-Paket zabbix-agent2 nicht verfuegbar" >&2; exit 1; }
+fi
+set -- "$OM_CUSTOMER" "$OM_P1" "$OM_P2" "$OM_HOST"
+# Weiter mit bestehender Konfigurationsroutine.
+CUSTOMER="${1:-}"; PROXY1="${2:-}"; PROXY2="${3:-}"; HOST_OVERRIDE="${4:-}"
+die(){ echo "FEHLER: $*" >&2; exit 1; }
+[[ $EUID -eq 0 ]] || die "Root erforderlich"
+[[ "$CUSTOMER" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "Kunde: Buchstaben, Zahlen, . _ - (max. 64)"
+[[ -n "$PROXY1" && "$PROXY1" != "$PROXY2" ]] || die "Proxy-Adresse fehlt oder doppelt"
+command -v python3 >/dev/null && command -v zabbix_agent2 >/dev/null || die "Python3 und Zabbix Agent 2 erforderlich"
+python3 - "$PROXY1" "$PROXY2" <<'PY'
+import ipaddress,sys
+nets=[ipaddress.ip_network(n) for n in ('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16')]
+for addr in sys.argv[1:]:
+    if addr:
+        try: ip=ipaddress.IPv4Address(addr)
+        except ValueError: raise SystemExit("Ungueltige IPv4: "+addr)
+        if not any(ip in net for net in nets): raise SystemExit("Keine RFC1918 LAN-IPv4: "+addr)
 PY
-HOST="${HOST:-$(hostname -s)}"
-[[ "$HOST" =~ ^[a-zA-Z0-9._-]{1,128}$ ]] || die "Hostname ungueltig"
-ACTIVE="$P1:10051"; [[ -z "$P2" ]] || ACTIVE+=";$P2:10051"
 CFG=/etc/zabbix/zabbix_agent2.conf
-[[ ! -e "$CFG" || "$REPLACE" == 1 ]] || die "Bestehende Konfiguration: nur mit --replace (nach Pruefung)"
-for ip in "$P1" "$P2"; do
- [[ -n "$ip" ]] || continue
- if timeout 3 bash -c 'echo > /dev/tcp/$1/10051' _ "$ip" 2>/dev/null; then REACH=1; fi
-done
-[[ "${REACH:-0}" == 1 ]] || die "Keine Proxy-Verbindung auf TCP/10051"
-if [[ ! -x /usr/sbin/zabbix_agent2 && ! -x /usr/bin/zabbix_agent2 ]]; then
- apt-get update
- DEBIAN_FRONTEND=noninteractive apt-get install -y zabbix-agent2 || die "Zabbix-Paket nicht verfuegbar: offizielles Zabbix-7.4-Repository einrichten"
-fi
-mkdir -p /etc/zabbix
-if [[ -d /etc/zabbix/zabbix_agent2.d ]] && find /etc/zabbix/zabbix_agent2.d -name '*.conf' -type f | grep -q .; then
- die "Zusatzkonfiguration vorhanden: zuerst manuell pruefen"
-fi
-if [[ -f "$CFG" ]] && grep -Eiq '^[[:space:]]*(TLSConnect|TLSAccept|TLSPSKFile|TLSCertFile|Include)[[:space:]]*=' "$CFG"; then
- die "TLS- oder Include-Konfiguration vorhanden: keine automatische Ueberschreibung"
-fi
-BACKUP=''
-if [[ -f "$CFG" ]]; then BACKUP="$CFG.bak.$(date +%Y%m%d%H%M%S)"; cp -a "$CFG" "$BACKUP"; fi
-TMP=$(mktemp /etc/zabbix/agent2.XXXXXX)
+[[ -f "$CFG" ]] || die "Agent-Konfiguration fehlt: $CFG"
+ACTIVE="$PROXY1:10051"; [[ -z "$PROXY2" ]] || ACTIVE+=";$PROXY2:10051"
+HOST="${HOST_OVERRIDE:-$(hostname -s)}"
+[[ "$HOST" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || die "Ungueltiger Zabbix-Hostname"
+OS=Linux; [[ -f /etc/pve/.version ]] && OS=Proxmox
+echo "Kunde: $CUSTOMER | Host: $HOST | Agent-Ziele: $ACTIVE"
+read -r -p "Sind dies lokale Zabbix-Proxys (nicht der zentrale Server)? [ja/NEIN] " ANSWER
+[[ "$ANSWER" == ja ]] || die "Abgebrochen"
+BACKUP="$CFG.bak.$(date +%Y%m%d-%H%M%S)"
+cp -a -- "$CFG" "$BACKUP"
+TMP=$(mktemp /etc/zabbix/zabbix_agent2.conf.XXXXXX)
 trap 'rm -f "$TMP"' EXIT
-OS=Linux; [[ ! -e /etc/pve/.version ]] || OS=Proxmox
-cat > "$TMP" <<EOF
-LogType=file
-LogFile=/var/log/zabbix/zabbix_agent2.log
-PidFile=/run/zabbix/zabbix_agent2.pid
-Server=127.0.0.1,$P1${P2:+,$P2}
-ListenPort=10050
-ServerActive=$ACTIVE
-Hostname=$HOST
-HostMetadata=OMLAN;Customer=$CUSTOMER;OS=$OS
-RefreshActiveChecks=120
-Timeout=10
-EOF
-chmod 644 "$TMP"
+python3 - "$CFG" "$TMP" "$ACTIVE" "$HOST" "$CUSTOMER" "$OS" "$PROXY1" "$PROXY2" <<'PY'
+import re,sys
+source,dest,active,host,customer,os,proxy1,proxy2=sys.argv[1:]
+with open(source,encoding="utf-8") as f: lines=f.readlines()
+# Never silently override existing secure transport settings.
+if any(re.match(r'^\s*(TLSConnect|TLSAccept|TLSPSKFile|TLSCertFile|TLSCAFile)\s*=',s) for s in lines):
+    raise SystemExit("Bestehende TLS-Konfiguration: manuelle Pruefung notwendig")
+values={"Server":",".join(["127.0.0.1",proxy1]+([proxy2] if proxy2 else [])),"ServerActive":active,"Hostname":host,
+        "HostMetadata":f"OMLAN;Customer={customer};OS={os}","ListenPort":"10050"}
+seen=set(); out=[]
+for line in lines:
+    m=re.match(r'^\s*([A-Za-z][A-Za-z0-9]*)\s*=',line)
+    key=m.group(1) if m else None
+    if key in values:
+        if key not in seen: out.append(f"{key}={values[key]}\n"); seen.add(key)
+    else: out.append(line)
+for key,val in values.items():
+    if key not in seen: out.append(f"{key}={val}\n")
+with open(dest,"w",encoding="utf-8") as f: f.writelines(out)
+PY
+chmod --reference="$CFG" "$TMP"
+chown --reference="$CFG" "$TMP"
 zabbix_agent2 -T -c "$TMP" >/dev/null || die "Konfiguration ungueltig"
-mv "$TMP" "$CFG"
-if ! systemctl enable --now zabbix-agent2 || ! systemctl restart zabbix-agent2 || ! systemctl is-active --quiet zabbix-agent2; then
- [[ -z "$BACKUP" ]] || { cp -a "$BACKUP" "$CFG"; systemctl restart zabbix-agent2 || true; }
- die "Agent startet nicht"
+cp -a -- "$TMP" "$CFG"
+if ! systemctl restart zabbix-agent2 || ! systemctl is-active --quiet zabbix-agent2; then
+    cp -a -- "$BACKUP" "$CFG"
+    systemctl restart zabbix-agent2 || true
+    die "Agent-Neustart fehlgeschlagen; Backup wiederhergestellt: $BACKUP"
 fi
-echo "OK: $HOST; $CUSTOMER; $ACTIVE"
-echo "Serverseitige Zabbix-Autoregistrierungsaktion muss eingerichtet sein."
+echo "OK - Backup: $BACKUP"
+grep -E '^(Server|ServerActive|Hostname|HostMetadata)=' "$CFG"
+echo "Zabbix-Autoregistrierung muss serverseitig konfiguriert sein."

@@ -14,14 +14,15 @@ while (($#)); do
 done
 [[ "$EUID" -eq 0 ]] || { echo "Root erforderlich" >&2; exit 1; }
 [[ -n "$OM_CUSTOMER" && -n "$OM_P1" ]] || { echo "--customer und --proxy1 erforderlich" >&2; exit 1; }
+if ! command -v python3 >/dev/null 2>&1; then
+  apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3 || exit 1
+fi
 if ! command -v zabbix_agent2 >/dev/null 2>&1; then
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y zabbix-agent2 python3 || { echo "APT-Paket zabbix-agent2 nicht verfuegbar" >&2; exit 1; }
 fi
 set -- "$OM_CUSTOMER" "$OM_P1" "$OM_P2" "$OM_HOST"
 # Weiter mit bestehender Konfigurationsroutine.
-#!/usr/bin/env bash
-set -Eeuo pipefail
 CUSTOMER="${1:-}"; PROXY1="${2:-}"; PROXY2="${3:-}"; HOST_OVERRIDE="${4:-}"
 die(){ echo "FEHLER: $*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "Root erforderlich"

@@ -18,6 +18,13 @@ done
 
 topology=single
 partner_ip=""
+if [[ -z "$GROUP_IPS" ]]; then
+  [[ "$ROLE" != backup ]] || { echo 'Backup benötigt die beiden bekannten Router-LAN-IPs' >&2; exit 1; }
+  if [[ -f /etc/zabbix/zabbix_agent2.conf ]] && grep -Eq '^ServerActive=[^#]*;' /etc/zabbix/zabbix_agent2.conf; then
+    echo 'Zabbix-Agent-Konfiguration zeigt ein Routerpaar; beide LAN-IPs sind erforderlich' >&2
+    exit 1
+  fi
+fi
 if [[ -n "$GROUP_IPS" ]]; then
   IFS=, read -r -a addresses <<<"$GROUP_IPS"
   [[ ${#addresses[@]} -eq 2 ]] || { echo 'Genau zwei Router-LAN-IPs erforderlich' >&2; exit 1; }

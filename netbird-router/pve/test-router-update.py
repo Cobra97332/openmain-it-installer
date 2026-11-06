@@ -136,6 +136,10 @@ class UpdateTests(unittest.TestCase):
             # The CI user is unprivileged; root can overwrite the 0440 sudoers file.
             (self.root / "sudoers" / "openmain-router-update-health").chmod(0o644)
         self.assertEqual(len(list((self.root / "systemd").glob("*.timer"))), 1)
+        state.write_text(json.dumps({"role": "backup"}))
+        result = subprocess.run(["bash", str(script), "--role", "backup"], env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Backup benötigt", result.stderr)
 
 
 if __name__ == "__main__":

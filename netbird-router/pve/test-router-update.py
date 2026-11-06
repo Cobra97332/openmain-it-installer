@@ -33,7 +33,7 @@ class UpdateTests(unittest.TestCase):
             "apt-get": 'echo "apt:$*" >> "$CALLS"; [[ " $* " != *" ${APT_FAIL:-never-match} "* ]]',
             "systemctl": 'echo "systemctl:$*" >> "$CALLS"',
             "date": 'if [[ "$*" == *"+%u"* ]]; then echo "${DAY:-7}"; else echo "${HOUR:-04}"; fi',
-            "zabbix_get": 'if [[ "$*" == *"openmain.router.role"* ]]; then echo "${PARTNER_ROLE:-backup}"; else echo "${PARTNER_READY:-1}"; fi',
+            "zabbix_get": 'if [[ "$*" == *"openmain.router.role"* ]]; then echo "${PARTNER_ROLE:-backup}"; else echo "${PARTNER_READY-1}"; fi',
         }.items():
             path = self.bin / name
             path.write_text("#!/usr/bin/env bash\n" + body + "\n")
@@ -133,6 +133,8 @@ class UpdateTests(unittest.TestCase):
             if snapshot is not None:
                 self.assertEqual(snapshot, current)
             snapshot = current
+            # The CI user is unprivileged; root can overwrite the 0440 sudoers file.
+            (self.root / "sudoers" / "openmain-router-update-health").chmod(0o644)
         self.assertEqual(len(list((self.root / "systemd").glob("*.timer"))), 1)
 
 

@@ -25,6 +25,7 @@ MONITORING_GROUP="${NB_MONITORING_GROUP:-Monitoring}"
 PROMETHEUS_NETBIRD_IP="${NB_PROMETHEUS_NETBIRD_IP:-100.107.91.6}"
 METRICS_POLICY_NAME="${NB_METRICS_POLICY_NAME:-OpenMain Prometheus -> NetBird Client Metrics}"
 METRICS_HELPER_URL="${NB_METRICS_HELPER_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-prometheus/enable-client-metrics.sh}"
+UPDATE_BASE_URL="${NB_ROUTER_UPDATE_BASE_URL:-https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/main/netbird-router/pve}"
 LAN_IF_OVERRIDE="${NB_LAN_INTERFACE:-}"
 SSH_PUBLIC_KEY="${NB_SSH_PUBLIC_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJc8VZvZ7o/8emKoGC7UXPiOMP8PSxch6P2rUGNio8Vi Stefan}"
 GLOBAL_GROUP="Kunden"
@@ -639,6 +640,21 @@ setup_zabbix(){
     --server "$ZABBIX_SERVER" --hostname "$HOSTNAME_LOCAL"
 }
 
+setup_updates(){
+  local tmp name
+  tmp=$(mktemp -d)
+  for name in install-router-updates.sh router-update.sh router-update-health.sh router-update-zabbix-query.py; do
+    if ! curl -fsSL "$UPDATE_BASE_URL/$name" -o "$tmp/$name"; then
+      rm -rf "$tmp"
+      die "Update-Helfer $name konnte nicht geladen werden."
+    fi
+  done
+  chmod 700 "$tmp"/*.sh
+  "$tmp/install-router-updates.sh" --role "$ROLE" \
+    --agent-group-ips "${NB_ZABBIX_AGENT_GROUP_IPS:-}" || { rm -rf "$tmp"; die 'Update-Timer konnte nicht installiert werden.'; }
+  rm -rf "$tmp"
+}
+
 save_state(){
   install -d -m 0700 "$(dirname "$STATE_FILE")"
   jq -nc     --arg customer "$CUSTOMER"     --arg role "$ROLE"     --arg lan "$LAN_NET"     --arg virtual "$VIRTUAL_NET"     --arg peer "$PEER_ID"     --arg network "$NETWORK_ID"     --arg resource "$RESOURCE_ID"     --arg router "$ROUTER_ID"     --arg metrics_target "${METRICS_TARGET:-}"     --arg metrics_group "$METRICS_GROUP"     --arg metrics_detail_port "$METRICS_DETAIL_PORT"     --argjson metric "$ROUTER_METRIC"     --argjson metrics_enabled "$METRICS_ENABLED"     '{
@@ -675,6 +691,7 @@ main(){
   write_nft
   save_state
   setup_zabbix
+  setup_updates
   log "Fertig: $CUSTOMER / $ROLE / Metric $ROUTER_METRIC / $VIRTUAL_NET -> $LAN_NET"
   if [[ "$ZABBIX_ENABLED" == 1 ]]; then
     log "Zabbix Proxy aktiv -> $ZABBIX_SERVER"

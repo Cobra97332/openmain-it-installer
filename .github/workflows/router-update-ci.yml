@@ -1,0 +1,66 @@
+name: Router update CI
+on:
+  push:
+  pull_request:
+jobs:
+  update-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: bash -n router-install.sh netbird-router/pve/install-router-updates.sh netbird-router/pve/router-update.sh netbird-router/pve/router-update-health.sh
+      - name: Update and timer behavior
+        run: |
+          python3 netbird-router/pve/test-router-update.py -v
+          python3 netbird-router/pve/test-router-update-query.py -v
+  debian13-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Debian 13 APT, calendar and isolated update tests
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -w /src debian:trixie bash -euxo pipefail -c '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y python3 jq systemd
+            systemd-analyze calendar "Sun *-*-* 04:00:00 Europe/Berlin"
+            systemd-analyze calendar "Sun *-*-* 05:00:00 Europe/Berlin"
+            bash -n router-install.sh netbird-router/pve/install-router-updates.sh netbird-router/pve/router-update.sh netbird-router/pve/router-update-health.sh
+            python3 netbird-router/pve/test-router-update.py -v
+            python3 netbird-router/pve/test-router-update-query.py -v
+            apt-get -o DPkg::Lock::Timeout=1800 -o Dpkg::Options::=--force-confold upgrade -y
+          '
+  retrofit-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Disposable Debian 13 retrofit and rollback
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -w /src debian:trixie bash -euxo pipefail -c '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y python3 jq systemd sudo iproute2
+            bash netbird-router/updates/test-retrofit.sh f2c869eb6df823a856740c449a3717e06837c2a9
+            apt-get install -y curl ca-certificates
+            curl -fsSLo /tmp/zabbix-release.deb "https://repo.zabbix.com/zabbix/8.0/release/debian/pool/main/z/zabbix-release/zabbix-release_latest_8.0+debian13_all.deb"
+            dpkg -i /tmp/zabbix-release.deb
+            apt-get update
+            rm -f /etc/zabbix/zabbix_agent2.conf
+            apt-get install -y zabbix-agent2
+            dpkg-query -W -f="\${Version}" zabbix-agent2 | grep -E "(^|:)8[.]0[.]"
+            printf "LogType=console\nServer=127.0.0.1\nListenIP=127.0.0.1\nHostname=retrofit-ci\nUserParameter=openmain.router.role,echo primary\n" >/tmp/retrofit-zabbix-agent2.conf
+            zabbix_agent2 -T -c /tmp/retrofit-zabbix-agent2.conf
+            su -s /bin/sh zabbix -c "zabbix_agent2 -f -c /tmp/retrofit-zabbix-agent2.conf" >/tmp/retrofit-zabbix-agent2.log 2>&1 &
+            for attempt in 1 2 3 4 5; do
+              if python3 netbird-router/pve/router-update-zabbix-query.py 127.0.0.1 openmain.router.role | grep -qx primary; then break; fi
+              sleep 1
+            done
+            python3 netbird-router/pve/router-update-zabbix-query.py 127.0.0.1 openmain.router.role | grep -qx primary
+            echo "Zabbix 8.0 passive router query PASS"
+          '

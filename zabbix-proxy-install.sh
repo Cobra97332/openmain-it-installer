@@ -30,7 +30,7 @@ EOF
 
 
 ZABBIX_SERVER="${ZABBIX_SERVER:-100.107.91.6}"
-ZABBIX_VERSION="${ZABBIX_VERSION:-7.4}"
+ZABBIX_VERSION="${ZABBIX_VERSION:-8.0}"
 CUSTOMER="${CUSTOMER:-}"
 ROLE="${ROLE:-primary}"
 HOSTNAME_LOCAL="${HOSTNAME_LOCAL:-$(hostname -s)}"
@@ -53,8 +53,24 @@ done
 
 [[ $EUID -eq 0 ]] || die "Bitte als root ausführen."
 
-ensure_openmain_root_ssh
 [[ "$ROLE" == primary || "$ROLE" == backup ]] || die "--role muss primary oder backup sein."
+
+# This installer configures new proxies only. Re-running it must not upgrade
+# packages, replace the PSK, or rewrite an existing proxy/agent configuration.
+if dpkg-query -W -f='${Status}' zabbix-proxy-sqlite3 2>/dev/null | grep -qx 'install ok installed'; then
+  [[ -s /etc/zabbix/zabbix_proxy.conf && -s /etc/zabbix/zabbix_proxy.psk ]] \
+    || die "Zabbix Proxy ist bereits installiert, aber die Konfiguration ist unvollstaendig. Manuell pruefen; keine Aenderung."
+  log "Vorhandener Zabbix Proxy bleibt unveraendert; kein Paket-Upgrade und keine neue Registrierung."
+  exit 0
+fi
+for existing in /etc/zabbix/zabbix_proxy.conf /etc/zabbix/zabbix_proxy.psk \
+                /etc/zabbix/zabbix_agent2.conf /var/lib/zabbix/zabbix_proxy.db \
+                /var/lib/netbird-kundenrouter/zabbix-proxy.env; do
+  [[ ! -e "$existing" && ! -L "$existing" ]] \
+    || die "Vorhandene Zabbix-Daten unter $existing; keine automatische Neuinstallation."
+done
+
+ensure_openmain_root_ssh
 [[ -n "$CUSTOMER" ]] || read -r -p "Firmenname/Kunde: " CUSTOMER
 
 slug=$(printf '%s' "$CUSTOMER" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || printf '%s' "$CUSTOMER")
@@ -111,6 +127,12 @@ rm -f "$tmp"
 
 apt-get update -y
 DEBIAN_FRONTEND=noninteractive apt-get install -y zabbix-proxy-sqlite3 zabbix-agent2 openssl
+for package in zabbix-proxy-sqlite3 zabbix-agent2; do
+  installed_version=$(dpkg-query -W -f='${Version}' "$package") \
+    || die "Zabbix-Paket $package fehlt nach APT."
+  [[ "${installed_version#*:}" == "$ZABBIX_VERSION".* ]] \
+    || die "Zabbix-Paket $package hat Version $installed_version statt $ZABBIX_VERSION.x."
+done
 
 install -d -o zabbix -g zabbix -m 0750 /var/lib/zabbix
 install -d -o root -g zabbix -m 0750 /etc/zabbix

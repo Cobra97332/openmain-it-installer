@@ -20,7 +20,10 @@ apt-get "${apt_opts[@]}" upgrade -y || { log 'apt-get upgrade fehlgeschlagen; ke
 
 expected_hour=04
 [[ "$ROLE" == backup ]] && expected_hour=05
-if [[ "$(TZ=Europe/Berlin date +%u)" != 7 || "$(TZ=Europe/Berlin date +%H)" != "$expected_hour" ]]; then
+reboot_window_open(){
+  [[ "$(TZ=Europe/Berlin date +%u%H)" == "7$expected_hour" ]]
+}
+if ! reboot_window_open; then
   log 'Nachgeholter oder überlanger Lauf außerhalb des Berliner Wartungsfensters; Neustart ausgesetzt.'
   exit 0
 fi
@@ -41,6 +44,11 @@ if [[ "$TOPOLOGY" == pair ]]; then
   log "Partner $PARTNER_LAN_IP ist als $partner_role mit NetBird, BINAT und LAN-Probe betriebsbereit."
 elif [[ "$TOPOLOGY" != single ]]; then
   log 'Topologie unbekannt; Neustart ausgesetzt.'
+  exit 0
+fi
+
+if ! reboot_window_open; then
+  log 'Berliner Wartungsfenster nach der Partnerpruefung abgelaufen; Paketupdate abgeschlossen, Neustart ausgesetzt.'
   exit 0
 fi
 

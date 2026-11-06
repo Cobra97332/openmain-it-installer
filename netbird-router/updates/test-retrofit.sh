@@ -47,10 +47,31 @@ python3 netbird-router/updates/retrofit.py --install --ref "$ref" --single >/dev
 [[ "$(find /etc/systemd/system -maxdepth 1 -name 'openmain-router-update.timer' | wc -l)" -eq 1 ]]
 after=$(sha256sum /var/lib/netbird-kundenrouter/state.json /etc/nftables.d/netbird-kundenrouter.nft /etc/netbird/config.json /etc/zabbix/zabbix_agent2.conf)
 [[ "$before" == "$after" ]]
+
+# Simulate a running update holding the exact lock used by router-update.sh.
+installed=$(sha256sum /usr/local/sbin/openmain-router-update /etc/systemd/system/openmain-router-update.timer)
+backups=$(find /var/backups/openmain-router-updates -mindepth 1 -maxdepth 1 -type d | wc -l)
+exec 8>/run/lock/openmain-router-update.lock
+flock -n 8
+if python3 netbird-router/updates/retrofit.py --rollback "$first" 8>&- 2>"$mock/locked-rollback.log"; then
+  echo 'Rollback waehrend Update unerwartet erfolgreich' >&2; exit 1
+fi
+grep -q 'keine Aenderungen vorgenommen' "$mock/locked-rollback.log"
+if python3 netbird-router/updates/retrofit.py --install --ref "$ref" --single 8>&- 2>"$mock/locked-install.log"; then
+  echo 'Parallele Nachruestung unerwartet erfolgreich' >&2; exit 1
+fi
+grep -q 'keine Aenderungen vorgenommen' "$mock/locked-install.log"
+[[ "$installed" == "$(sha256sum /usr/local/sbin/openmain-router-update /etc/systemd/system/openmain-router-update.timer)" ]]
+[[ "$backups" -eq "$(find /var/backups/openmain-router-updates -mindepth 1 -maxdepth 1 -type d | wc -l)" ]]
+flock -u 8
+exec 8>&-
+
 python3 netbird-router/updates/retrofit.py --rollback "$first"
 [[ ! -e /etc/systemd/system/openmain-router-update.timer ]]
 [[ ! -e /usr/local/sbin/openmain-router-update ]]
 [[ "$before" == "$(sha256sum /var/lib/netbird-kundenrouter/state.json /etc/nftables.d/netbird-kundenrouter.nft /etc/netbird/config.json /etc/zabbix/zabbix_agent2.conf)" ]]
+python3 netbird-router/updates/retrofit.py --rollback "$first"
+[[ ! -e /etc/systemd/system/openmain-router-update.timer ]]
 
 # Paired backup: existing agent addresses determine the partner; no credentials change.
 printf '{"role":"backup","lan":"192.0.2.0/24","virtual":"10.30.2.0/24"}\n' >/var/lib/netbird-kundenrouter/state.json

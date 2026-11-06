@@ -20,6 +20,7 @@ class UpdateTests(unittest.TestCase):
         self.config = self.root / "config"
         self.marker = self.root / "reboot-required"
         self.log = self.root / "calls"
+        self.date_calls = self.root / "date-calls"
         self.lock = self.root / "lock"
         script = SOURCE.read_text().replace(
             "/etc/openmain-router-update.conf", str(self.config)
@@ -34,14 +35,14 @@ class UpdateTests(unittest.TestCase):
         for name, body in {
             "apt-get": 'echo "apt:$*" >> "$CALLS"; [[ " $* " != *" ${APT_FAIL:-never-match} "* ]]',
             "systemctl": 'echo "systemctl:$*" >> "$CALLS"',
-            "date": 'if [[ "$*" == *"+%u"* ]]; then echo "${DAY:-7}"; else echo "${HOUR:-04}"; fi',
+            "date": 'n=$(cat "$DATE_CALLS" 2>/dev/null || echo 0); echo $((n + 1)) > "$DATE_CALLS"; if [[ "$n" == 0 ]]; then echo "${DATE_FIRST:-${DAY:-7}${HOUR:-04}}"; else echo "${DATE_SECOND:-${DAY:-7}${HOUR:-04}}"; fi',
             "zabbix_get": 'if [[ "$*" == *"openmain.router.role"* ]]; then echo "${PARTNER_ROLE:-backup}"; else echo "${PARTNER_READY-1}"; fi',
         }.items():
             path = self.bin / name
             path.write_text("#!/usr/bin/env bash\n" + body + "\n")
             path.chmod(0o755)
         self.env = os.environ.copy()
-        self.env.update(PATH=str(self.bin) + os.pathsep + self.env["PATH"], CALLS=str(self.log))
+        self.env.update(PATH=str(self.bin) + os.pathsep + self.env["PATH"], CALLS=str(self.log), DATE_CALLS=str(self.date_calls))
 
     def run_update(self, role="primary", topology="single", marker=True, **env):
         self.config.write_text(f"ROLE={role}\nTOPOLOGY={topology}\nPARTNER_LAN_IP=192.0.2.2\n")
@@ -92,6 +93,26 @@ class UpdateTests(unittest.TestCase):
     def test_catchup(self):
         _, calls = self.run_update(DAY="1")
         self.assertIn("apt:", calls)
+        self.assertNotIn("reboot", calls)
+
+    def test_late_timer_run_updates_without_reboot(self):
+        result, calls = self.run_update(HOUR="06")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("upgrade -y", calls)
+        self.assertNotIn("reboot", calls)
+
+    def test_window_expires_during_partner_checks(self):
+        result, calls = self.run_update(topology="pair", DATE_FIRST="704", DATE_SECOND="705")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("upgrade -y", calls)
+        self.assertNotIn("reboot", calls)
+        self.assertIn("Wartungsfenster nach der Partnerpruefung abgelaufen", result.stdout)
+        self.assertEqual(self.date_calls.read_text().strip(), "2")
+
+    def test_single_window_expires_before_reboot(self):
+        result, calls = self.run_update(DATE_FIRST="704", DATE_SECOND="705")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("upgrade -y", calls)
         self.assertNotIn("reboot", calls)
 
     def test_backup_requires_primary(self):

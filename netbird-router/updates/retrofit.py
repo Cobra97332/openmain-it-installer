@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Install or roll back only the OpenMain router update component."""
 import argparse
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import ipaddress
 import json
@@ -18,7 +20,7 @@ from datetime import datetime, timezone
 REPOSITORY = "Cobra97332/openmain-it-installer"
 HELPERS = {
     "install-router-updates.sh": "c55896501a70ca245f420718b4cd7dcd5f653b3def989e452ec69428cadb1bcc",
-    "router-update.sh": "4563f9b9ae8f881c39b3b9fbf1671b139926be9aa601380eaa7298b7399c6791",
+    "router-update.sh": "674fec245285c7af4d7176ed294931acbff094e47a86c44b806cbcef996cb62b",
     "router-update-health.sh": "5983f6281c8ffbd766ee3d793ba13a96c6508d1753e8dcca0ee26c2bd8721c50",
     "router-update-zabbix-query.py": "b74051122d4d712149d7110ffb856818a06982ea4b7d2520bd576203be3273e2",
 }
@@ -42,10 +44,25 @@ PRESERVED = (
     "/etc/zabbix/zabbix_proxy.psk",
 )
 BACKUPS = Path("/var/backups/openmain-router-updates")
+UPDATE_LOCK = Path("/run/lock/openmain-router-update.lock")
 
 
 def fail(message):
     raise RuntimeError(message)
+
+
+@contextmanager
+def update_lock():
+    UPDATE_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with UPDATE_LOCK.open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fail("Update-Dienst oder Nachruestung laeuft; keine Aenderungen vorgenommen")
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def command(*args, check=True):
@@ -232,9 +249,11 @@ def main():
     if args.install:
         if not args.ref:
             fail("--ref fehlt")
-        install(args.ref, args.single)
+        with update_lock():
+            install(args.ref, args.single)
     else:
-        rollback(args.rollback)
+        with update_lock():
+            rollback(args.rollback)
 
 
 if __name__ == "__main__":

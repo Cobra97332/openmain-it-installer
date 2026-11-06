@@ -249,6 +249,8 @@ class UpdateTests(unittest.TestCase):
         self.assertIn("RandomizedDelaySec=0", timer)
         self.assertIn("AccuracySec=1us", timer)
         self.assertIn("AUTO_REBOOT=false", self.config.read_text())
+        # The CI user is unprivileged; root can overwrite the 0440 sudoers file.
+        (self.root / "sudoers" / "openmain-router-update-health").chmod(0o644)
         result = subprocess.run(
             ["bash", str(script), "--role", "backup", "--agent-group-ips", "192.0.2.1,192.0.2.2", "--auto-reboot"],
             env=self.env, capture_output=True, text=True,

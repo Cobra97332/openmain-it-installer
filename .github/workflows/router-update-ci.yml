@@ -46,7 +46,7 @@ jobs:
             export DEBIAN_FRONTEND=noninteractive
             apt-get update
             apt-get install -y python3 jq systemd sudo iproute2
-            bash netbird-router/updates/test-retrofit.sh f17e4669c4c8994dbb8077d4b02690b814833bb4
+            bash netbird-router/updates/test-retrofit.sh f2c869eb6df823a856740c449a3717e06837c2a9
             apt-get install -y curl ca-certificates
             curl -fsSLo /tmp/zabbix-release.deb "https://repo.zabbix.com/zabbix/8.0/release/debian/pool/main/z/zabbix-release/zabbix-release_latest_8.0+debian13_all.deb"
             dpkg -i /tmp/zabbix-release.deb

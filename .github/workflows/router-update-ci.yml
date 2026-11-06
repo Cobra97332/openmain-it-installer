@@ -11,3 +11,20 @@ jobs:
         run: bash -n router-install.sh netbird-router/pve/install-router-updates.sh netbird-router/pve/router-update.sh netbird-router/pve/router-update-health.sh
       - name: Update and timer behavior
         run: python3 netbird-router/pve/test-router-update.py -v
+  debian13-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Debian 13 APT, calendar and isolated update tests
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -w /src debian:trixie bash -euxo pipefail -c '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y python3 jq systemd
+            systemd-analyze calendar "Sun *-*-* 04:00:00 Europe/Berlin"
+            systemd-analyze calendar "Sun *-*-* 05:00:00 Europe/Berlin"
+            bash -n router-install.sh netbird-router/pve/install-router-updates.sh netbird-router/pve/router-update.sh netbird-router/pve/router-update-health.sh
+            python3 netbird-router/pve/test-router-update.py -v
+            apt-get -o DPkg::Lock::Timeout=1800 -o Dpkg::Options::=--force-confold upgrade -y
+          '

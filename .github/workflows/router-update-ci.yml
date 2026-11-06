@@ -1,0 +1,13 @@
+name: Router update CI
+on:
+  push:
+  pull_request:
+jobs:
+  update-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: bash -n router-install.sh netbird-router/pve/install-router-updates.sh netbird-router/pve/router-update.sh netbird-router/pve/router-update-health.sh
+      - name: Update and timer behavior
+        run: python3 netbird-router/pve/test-router-update.py -v

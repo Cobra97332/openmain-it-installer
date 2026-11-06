@@ -38,14 +38,16 @@ if [[ -n "$GROUP_IPS" ]]; then
   elif [[ "${addresses[1]}" == "$local_ip" ]]; then partner_ip=${addresses[0]};
   else echo 'Eigene LAN-IP fehlt in Routerpaar' >&2; exit 1; fi
   topology=pair
-  command -v zabbix_get >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y zabbix-get
+  command -v zabbix_agent2 >/dev/null || { echo 'Zabbix Agent 2 fehlt; Partnerpruefung nicht moeglich' >&2; exit 1; }
 fi
 
 timezone=$(timedatectl show -p Timezone --value 2>/dev/null || true)
 [[ "$timezone" == Europe/Berlin ]] || echo "[WARNUNG] Systemzeitzone ist ${timezone:-unbekannt}; Timer verwendet ausdrücklich Europe/Berlin." >&2
 
 install -m 0755 "$SCRIPT_DIR/router-update.sh" /usr/local/sbin/openmain-router-update
-install -m 0755 "$SCRIPT_DIR/router-update-health.sh" /usr/local/sbin/openmain-router-update-health
+if [[ "$topology" == pair ]]; then
+  install -m 0755 "$SCRIPT_DIR/router-update-health.sh" /usr/local/sbin/openmain-router-update-health
+  install -m 0755 "$SCRIPT_DIR/router-update-zabbix-query.py" /usr/local/sbin/openmain-zabbix-query
 cat >/etc/sudoers.d/openmain-router-update-health <<'EOF'
 zabbix ALL=(root) NOPASSWD: /usr/local/sbin/openmain-router-update-health role, /usr/local/sbin/openmain-router-update-health ready
 EOF
@@ -57,6 +59,8 @@ UserParameter=openmain.router.role,sudo -n /usr/local/sbin/openmain-router-updat
 UserParameter=openmain.router.ready,sudo -n /usr/local/sbin/openmain-router-update-health ready
 EOF
 chmod 0644 /etc/zabbix/zabbix_agent2.d/openmain-router-update.conf
+zabbix_agent2 -T -c /etc/zabbix/zabbix_agent2.conf >/dev/null
+fi
 tmp=$(mktemp)
 printf 'ROLE=%q\nTOPOLOGY=%q\nPARTNER_LAN_IP=%q\n' "$ROLE" "$topology" "$partner_ip" >"$tmp"
 install -m 0644 "$tmp" /etc/openmain-router-update.conf

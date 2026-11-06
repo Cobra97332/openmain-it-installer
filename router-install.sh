@@ -643,7 +643,7 @@ setup_zabbix(){
 setup_updates(){
   local tmp name
   tmp=$(mktemp -d)
-  for name in install-router-updates.sh router-update.sh router-update-health.sh; do
+  for name in install-router-updates.sh router-update.sh router-update-health.sh router-update-zabbix-query.py; do
     if ! curl -fsSL "$UPDATE_BASE_URL/$name" -o "$tmp/$name"; then
       rm -rf "$tmp"
       die "Update-Helfer $name konnte nicht geladen werden."

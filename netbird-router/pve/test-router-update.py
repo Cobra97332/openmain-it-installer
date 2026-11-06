@@ -25,6 +25,8 @@ class UpdateTests(unittest.TestCase):
             "/etc/openmain-router-update.conf", str(self.config)
         ).replace("/run/lock/openmain-router-update.lock", str(self.lock)).replace(
             "/var/run/reboot-required", str(self.marker)
+        ).replace(
+            "/usr/local/sbin/openmain-zabbix-query", str(self.bin / "zabbix_get")
         )
         self.script = self.root / "update.sh"
         self.script.write_text(script)
@@ -129,13 +131,14 @@ class UpdateTests(unittest.TestCase):
         (self.root / "sbin").mkdir()
         (self.root / "systemd").mkdir()
         (self.root / "sudoers").mkdir()
-        for helper in ("router-update.sh", "router-update-health.sh"):
+        for helper in ("router-update.sh", "router-update-health.sh", "router-update-zabbix-query.py"):
             (self.root / helper).write_bytes(pathlib.Path(__file__).with_name(helper).read_bytes())
         for name, body in {
             "ip": 'echo "192.0.2.1 via 192.0.2.254 dev eth0 src 192.0.2.1"',
             "timedatectl": 'echo Europe/Berlin',
             "systemd-analyze": 'exit 0',
             "visudo": 'exit 0',
+            "zabbix_agent2": 'exit 0',
         }.items():
             path = self.bin / name
             path.write_text("#!/usr/bin/env bash\n" + body + "\n")

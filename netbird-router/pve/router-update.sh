@@ -26,14 +26,14 @@ if [[ "$(TZ=Europe/Berlin date +%u)" != 7 || "$(TZ=Europe/Berlin date +%H)" != "
 fi
 
 if [[ "$TOPOLOGY" == pair ]]; then
-  if [[ -z "${PARTNER_LAN_IP:-}" ]] || ! command -v zabbix_get >/dev/null; then
-    log 'Partneradresse oder zabbix_get fehlt; Neustart ausgesetzt.'
+  if [[ -z "${PARTNER_LAN_IP:-}" ]] || [[ ! -x /usr/local/sbin/openmain-zabbix-query ]]; then
+    log 'Partneradresse oder Zabbix-Pruefer fehlt; Neustart ausgesetzt.'
     exit 0
   fi
   partner_role=backup
   [[ "$ROLE" == backup ]] && partner_role=primary
-  observed_role=$(zabbix_get -s "$PARTNER_LAN_IP" -p 10050 -t 5 -k openmain.router.role 2>/dev/null || true)
-  ready=$(zabbix_get -s "$PARTNER_LAN_IP" -p 10050 -t 5 -k openmain.router.ready 2>/dev/null || true)
+  observed_role=$(/usr/local/sbin/openmain-zabbix-query "$PARTNER_LAN_IP" openmain.router.role 2>/dev/null || true)
+  ready=$(/usr/local/sbin/openmain-zabbix-query "$PARTNER_LAN_IP" openmain.router.ready 2>/dev/null || true)
   if [[ "$observed_role" != "$partner_role" || "$ready" != 1 ]]; then
     log "Partner $PARTNER_LAN_IP nicht als betriebsbereiter $partner_role verifiziert; Neustart ausgesetzt."
     exit 0

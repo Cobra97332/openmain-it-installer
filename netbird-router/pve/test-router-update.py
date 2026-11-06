@@ -44,8 +44,8 @@ class UpdateTests(unittest.TestCase):
         self.env = os.environ.copy()
         self.env.update(PATH=str(self.bin) + os.pathsep + self.env["PATH"], CALLS=str(self.log), DATE_CALLS=str(self.date_calls))
 
-    def run_update(self, role="primary", topology="single", marker=True, **env):
-        self.config.write_text(f"ROLE={role}\nTOPOLOGY={topology}\nPARTNER_LAN_IP=192.0.2.2\n")
+    def run_update(self, role="primary", topology="single", marker=True, auto_reboot="true", **env):
+        self.config.write_text(f"ROLE={role}\nTOPOLOGY={topology}\nPARTNER_LAN_IP=192.0.2.2\nAUTO_REBOOT={auto_reboot}\n")
         if marker:
             self.marker.touch()
         self.env.update(env)
@@ -66,6 +66,20 @@ class UpdateTests(unittest.TestCase):
     def test_no_reboot_marker(self):
         _, calls = self.run_update(marker=False)
         self.assertNotIn("reboot", calls)
+
+    def test_auto_reboot_disabled_still_updates(self):
+        result, calls = self.run_update(auto_reboot="false")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("apt:", calls)
+        self.assertIn("upgrade -y", calls)
+        self.assertNotIn("systemctl:reboot", calls)
+        self.assertIn("AUTO_REBOOT=false", result.stdout)
+
+    def test_missing_auto_reboot_setting_fails_closed(self):
+        result, calls = self.run_update(auto_reboot="")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("upgrade -y", calls)
+        self.assertNotIn("systemctl:reboot", calls)
 
     def test_partner_ready(self):
         _, calls = self.run_update(topology="pair")
@@ -131,6 +145,35 @@ class UpdateTests(unittest.TestCase):
         _, calls = self.run_update(role="backup", HOUR="04")
         self.assertNotIn("reboot", calls)
 
+    def test_partner_health_accepts_existing_binat_table_names(self):
+        state = self.root / "state.json"
+        state.write_text(json.dumps({"role": "primary", "virtual": "10.30.3.0/24", "lan": "192.168.40.0/24"}))
+        forwarding = self.root / "ip_forward"
+        forwarding.write_text("1\n")
+        self.config.write_text("ROLE=primary\n")
+        script = pathlib.Path(__file__).with_name("router-update-health.sh").read_text()
+        script = script.replace("/etc/openmain-router-update.conf", str(self.config))
+        script = script.replace("/var/lib/netbird-kundenrouter/state.json", str(state))
+        script = script.replace("/proc/sys/net/ipv4/ip_forward", str(forwarding))
+        health = self.root / "health.sh"
+        health.write_text(script)
+        for name, body in {
+            "netbird": 'printf "Management: Connected\\nSignal: Connected\\n"',
+            "jq": 'if [[ " $* " == *" .virtual "* ]]; then echo 10.30.3.0/24; else echo 192.168.40.0/24; fi',
+            "nft": 'if [[ "$4" == "${BINAT_TABLE}" ]]; then printf "10.30.3.0/24 192.168.40.0/24 dnat ip prefix\\n"; else exit 1; fi',
+            "ip": 'echo "default via 192.0.2.254 dev eth0"',
+            "ping": 'exit 0',
+        }.items():
+            path = self.bin / name
+            path.write_text("#!/usr/bin/env bash\n" + body + "\n")
+            path.chmod(0o755)
+        for table in ("openmain_binat", "mein_binat"):
+            result = subprocess.run(["bash", str(health), "ready"], env={**self.env, "BINAT_TABLE": table}, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "1")
+        result = subprocess.run(["bash", str(health), "ready"], env={**self.env, "BINAT_TABLE": "missing"}, capture_output=True, text=True)
+        self.assertEqual(result.stdout.strip(), "0")
+
     def test_install_twice_keeps_one_timer(self):
         source = pathlib.Path(__file__).with_name("install-router-updates.sh").read_text()
         state = self.root / "state.json"
@@ -183,6 +226,14 @@ class UpdateTests(unittest.TestCase):
         self.assertIn("Persistent=true", timer)
         self.assertIn("RandomizedDelaySec=0", timer)
         self.assertIn("AccuracySec=1us", timer)
+        self.assertIn("AUTO_REBOOT=true", self.config.read_text())
+        for options in (("--no-auto-reboot",), ()):
+            result = subprocess.run(
+                ["bash", str(script), "--role", "primary", *options],
+                env=self.env, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("AUTO_REBOOT=false", self.config.read_text())
         state.write_text(json.dumps({"role": "backup"}))
         result = subprocess.run(["bash", str(script), "--role", "backup"], env=self.env, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
@@ -197,6 +248,13 @@ class UpdateTests(unittest.TestCase):
         self.assertIn("Persistent=true", timer)
         self.assertIn("RandomizedDelaySec=0", timer)
         self.assertIn("AccuracySec=1us", timer)
+        self.assertIn("AUTO_REBOOT=false", self.config.read_text())
+        result = subprocess.run(
+            ["bash", str(script), "--role", "backup", "--agent-group-ips", "192.0.2.1,192.0.2.2", "--auto-reboot"],
+            env=self.env, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("AUTO_REBOOT=true", self.config.read_text())
 
 
 if __name__ == "__main__":

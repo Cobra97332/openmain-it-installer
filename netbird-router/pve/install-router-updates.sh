@@ -3,11 +3,14 @@ set -Eeuo pipefail
 
 ROLE=""
 GROUP_IPS=""
+REBOOT_CHOICE=""
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --role) ROLE="$2"; shift 2 ;;
     --agent-group-ips) GROUP_IPS="$2"; shift 2 ;;
+    --no-auto-reboot) REBOOT_CHOICE=false; shift ;;
+    --auto-reboot) REBOOT_CHOICE=true; shift ;;
     *) echo "Unbekannte Option: $1" >&2; exit 1 ;;
   esac
 done
@@ -41,6 +44,11 @@ if [[ -n "$GROUP_IPS" ]]; then
   command -v zabbix_agent2 >/dev/null || { echo 'Zabbix Agent 2 fehlt; Partnerpruefung nicht moeglich' >&2; exit 1; }
 fi
 
+if [[ -z "$REBOOT_CHOICE" && -f /etc/openmain-router-update.conf ]]; then
+  REBOOT_CHOICE=$(sed -n 's/^AUTO_REBOOT=\(true\|false\)$/\1/p' /etc/openmain-router-update.conf | head -n1)
+fi
+AUTO_REBOOT=${REBOOT_CHOICE:-true}
+
 timezone=$(timedatectl show -p Timezone --value 2>/dev/null || true)
 [[ "$timezone" == Europe/Berlin ]] || echo "[WARNUNG] Systemzeitzone ist ${timezone:-unbekannt}; Timer verwendet ausdrücklich Europe/Berlin." >&2
 
@@ -62,7 +70,7 @@ chmod 0644 /etc/zabbix/zabbix_agent2.d/openmain-router-update.conf
 zabbix_agent2 -T -c /etc/zabbix/zabbix_agent2.conf >/dev/null
 fi
 tmp=$(mktemp)
-printf 'ROLE=%q\nTOPOLOGY=%q\nPARTNER_LAN_IP=%q\n' "$ROLE" "$topology" "$partner_ip" >"$tmp"
+printf 'ROLE=%q\nTOPOLOGY=%q\nPARTNER_LAN_IP=%q\nAUTO_REBOOT=%q\n' "$ROLE" "$topology" "$partner_ip" "$AUTO_REBOOT" >"$tmp"
 install -m 0644 "$tmp" /etc/openmain-router-update.conf
 rm -f "$tmp"
 
@@ -97,7 +105,7 @@ EOF
 systemd-analyze verify /etc/systemd/system/openmain-router-update.service /etc/systemd/system/openmain-router-update.timer
 systemctl daemon-reload
 systemctl enable --now openmain-router-update.timer
-if systemctl is-active --quiet zabbix-agent2.service; then
+if [[ "$topology" == pair ]] && systemctl is-active --quiet zabbix-agent2.service; then
   systemctl restart zabbix-agent2.service
 elif [[ "$topology" == pair ]]; then
   echo '[WARNUNG] Zabbix Agent 2 ist nicht aktiv; Partnerpruefung wird fehlschlagen und Neustarts aussetzen.' >&2

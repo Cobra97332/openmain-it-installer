@@ -19,9 +19,9 @@ from datetime import datetime, timezone
 
 REPOSITORY = "Cobra97332/openmain-it-installer"
 HELPERS = {
-    "install-router-updates.sh": "c55896501a70ca245f420718b4cd7dcd5f653b3def989e452ec69428cadb1bcc",
-    "router-update.sh": "674fec245285c7af4d7176ed294931acbff094e47a86c44b806cbcef996cb62b",
-    "router-update-health.sh": "5983f6281c8ffbd766ee3d793ba13a96c6508d1753e8dcca0ee26c2bd8721c50",
+    "install-router-updates.sh": "f3451b363d007f9d14126e485f79367da3d5728abd6d8024433a3686e653db9e",
+    "router-update.sh": "0eb230cb6938947fc6019bce137880191c67fe024ebd72492065ad2aa94e5909",
+    "router-update-health.sh": "cdf6c77bfc9f0460013a65d85ec4d002b5bc542233dceb41ba2e2ce979c6c133",
     "router-update-zabbix-query.py": "b74051122d4d712149d7110ffb856818a06982ea4b7d2520bd576203be3273e2",
 }
 TARGETS = (
@@ -96,7 +96,8 @@ def platform_check():
     state = json.loads(state_path.read_text())
     if state.get("role") not in ("primary", "backup") or not state.get("lan") or not state.get("virtual"):
         fail("Rolle oder BINAT-Zuordnung im Routerzustand unklar")
-    command("nft", "list", "table", "ip", "mein_binat")
+    if all(command("nft", "list", "table", "ip", table, check=False).returncode for table in ("openmain_binat", "mein_binat")):
+        fail("Keine bestehende BINAT-Tabelle ip openmain_binat oder ip mein_binat gefunden")
     virt = command("systemd-detect-virt", check=False).stdout.strip() or "bare-metal"
     model = Path("/proc/device-tree/model")
     if model.is_file() and b"Raspberry Pi" in model.read_bytes() and arch != "arm64":
@@ -204,7 +205,7 @@ def download(ref, directory):
         os.chmod(path, 0o700)
 
 
-def install(ref, single):
+def install(ref, single, auto_reboot=None):
     state, arch, virt = platform_check()
     addresses = detect_pair(state["role"], single)
     with tempfile.TemporaryDirectory(prefix="openmain-update-") as temp:
@@ -212,6 +213,8 @@ def install(ref, single):
         backup, manifest = snapshot()
         try:
             args = ["bash", str(Path(temp) / "install-router-updates.sh"), "--role", state["role"]]
+            if auto_reboot is not None:
+                args.append("--auto-reboot" if auto_reboot else "--no-auto-reboot")
             if addresses:
                 args += ["--agent-group-ips", addresses]
             result = command(*args, check=False)
@@ -243,15 +246,21 @@ def main():
     action.add_argument("--rollback", metavar="SICHERUNGS-ID")
     parser.add_argument("--ref", help="vollständiger Commit-SHA für die Update-Helfer")
     parser.add_argument("--single", action="store_true", help="Primary ist nachweislich ein Einzelrouter")
+    reboot = parser.add_mutually_exclusive_group()
+    reboot.add_argument("--no-auto-reboot", action="store_true", help="Automatische Neustarts dauerhaft deaktivieren")
+    reboot.add_argument("--auto-reboot", action="store_true", help="Automatische Neustarts bewusst freigeben")
     args = parser.parse_args()
     if os.geteuid() != 0:
         fail("Root-Rechte erforderlich")
     if args.install:
         if not args.ref:
             fail("--ref fehlt")
+        auto_reboot = False if args.no_auto_reboot else True if args.auto_reboot else None
         with update_lock():
-            install(args.ref, args.single)
+            install(args.ref, args.single, auto_reboot)
     else:
+        if args.no_auto_reboot or args.auto_reboot or args.single or args.ref:
+            fail("Installationsoptionen sind beim Rollback unzulässig")
         with update_lock():
             rollback(args.rollback)
 

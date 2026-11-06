@@ -17,7 +17,7 @@ grep -Eq '^Management:[[:space:]]+Connected' <<<"$status" || fail
 grep -Eq '^Signal:[[:space:]]+Connected' <<<"$status" || fail
 virtual=$(jq -er '.virtual' /var/lib/netbird-kundenrouter/state.json 2>/dev/null) || fail
 lan=$(jq -er '.lan' /var/lib/netbird-kundenrouter/state.json 2>/dev/null) || fail
-rules=$(nft list table ip mein_binat 2>/dev/null) || fail
+rules=$(nft list table ip openmain_binat 2>/dev/null) || rules=$(nft list table ip mein_binat 2>/dev/null) || fail
 grep -Fq "$virtual" <<<"$rules" || fail
 grep -Fq "$lan" <<<"$rules" || fail
 grep -Fq 'dnat ip prefix' <<<"$rules" || fail

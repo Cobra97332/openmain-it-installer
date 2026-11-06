@@ -17,6 +17,10 @@ apt-get "${apt_opts[@]}" update || { log 'apt-get update fehlgeschlagen; kein Ne
 log 'Starte apt-get upgrade -y.'
 apt-get "${apt_opts[@]}" upgrade -y || { log 'apt-get upgrade fehlgeschlagen; kein Neustart.'; exit 1; }
 [[ -e /var/run/reboot-required ]] || { log 'Kein Neustart erforderlich.'; exit 0; }
+if [[ "${AUTO_REBOOT:-false}" != true ]]; then
+  log 'AUTO_REBOOT=false; Paketupdate abgeschlossen, automatischer Neustart ausgesetzt.'
+  exit 0
+fi
 
 expected_hour=04
 [[ "$ROLE" == backup ]] && expected_hour=05

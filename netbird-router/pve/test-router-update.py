@@ -81,6 +81,12 @@ class UpdateTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("reboot", calls)
 
+    def test_apt_update_failure(self):
+        result, calls = self.run_update(APT_FAIL="update")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("upgrade -y", calls)
+        self.assertNotIn("reboot", calls)
+
     def test_catchup(self):
         _, calls = self.run_update(DAY="1")
         self.assertIn("apt:", calls)
@@ -88,6 +94,18 @@ class UpdateTests(unittest.TestCase):
 
     def test_backup_requires_primary(self):
         _, calls = self.run_update(role="backup", topology="pair", HOUR="05", PARTNER_ROLE="backup")
+        self.assertNotIn("reboot", calls)
+
+    def test_primary_outage_does_not_reboot_backup(self):
+        _, calls = self.run_update(role="backup", topology="pair", HOUR="05", PARTNER_ROLE="primary", PARTNER_READY="0")
+        self.assertIn("upgrade -y", calls)
+        self.assertNotIn("reboot", calls)
+
+    def test_roles_do_not_reboot_in_same_hour(self):
+        _, calls = self.run_update(role="primary", HOUR="05")
+        self.assertNotIn("reboot", calls)
+        self.log.unlink()
+        _, calls = self.run_update(role="backup", HOUR="04")
         self.assertNotIn("reboot", calls)
 
     def test_install_twice_keeps_one_timer(self):
@@ -136,10 +154,23 @@ class UpdateTests(unittest.TestCase):
             # The CI user is unprivileged; root can overwrite the 0440 sudoers file.
             (self.root / "sudoers" / "openmain-router-update-health").chmod(0o644)
         self.assertEqual(len(list((self.root / "systemd").glob("*.timer"))), 1)
+        timer = (self.root / "systemd" / "openmain-router-update.timer").read_text()
+        self.assertIn("OnCalendar=Sun *-*-* 04:00:00 Europe/Berlin", timer)
+        self.assertIn("Persistent=true", timer)
+        self.assertIn("RandomizedDelaySec=0", timer)
         state.write_text(json.dumps({"role": "backup"}))
         result = subprocess.run(["bash", str(script), "--role", "backup"], env=self.env, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Backup benötigt", result.stderr)
+        result = subprocess.run(
+            ["bash", str(script), "--role", "backup", "--agent-group-ips", "192.0.2.1,192.0.2.2"],
+            env=self.env, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        timer = (self.root / "systemd" / "openmain-router-update.timer").read_text()
+        self.assertIn("OnCalendar=Sun *-*-* 05:00:00 Europe/Berlin", timer)
+        self.assertIn("Persistent=true", timer)
+        self.assertIn("RandomizedDelaySec=0", timer)
 
 
 if __name__ == "__main__":

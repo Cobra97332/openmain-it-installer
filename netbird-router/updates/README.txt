@@ -44,10 +44,12 @@ Wenn später ein Backup-Router betriebsbereit ist, müssen zunächst beide
 Router-LAN-Adressen in der vorhandenen `ServerActive`-Paarzuordnung stehen und
 die Partnerprüfung einschließlich NetBird, BINAT und Kunden-LAN erfolgreich
 sein. Danach die Nachrüstung ohne `--single` auf Primary und Backup erneut
-ausführen; ohne explizite Reboot-Freigabe bleibt `AUTO_REBOOT=false` erhalten.
-Erst nach isoliertem Failover- und Neustarttest kann `--auto-reboot` bei einer
-erneuten Nachrüstung bewusst gesetzt werden. Die Timer bleiben Primary 04:00
-und Backup 05:00 Uhr Europe/Berlin. Die Nachrüstung registriert keinen zweiten
+ausführen. Auf dem bestehenden Primary bleibt `AUTO_REBOOT=false` ohne neue
+Option erhalten; bei der ersten Nachrüstung des Backup-Routers muss
+`--no-auto-reboot` ausdrücklich gesetzt werden. Erst nach isoliertem Failover-
+und Neustarttest kann `--auto-reboot` auf beiden Routern bei einer erneuten
+Nachrüstung bewusst gesetzt werden. Die Timer bleiben Primary 04:00 und
+Backup 05:00 Uhr Europe/Berlin. Die Nachrüstung registriert keinen zweiten
 NetBird-Client und verändert keine vorhandenen BINAT- oder Zabbix-Identitäten.
 
 Der Installer legt vor Änderungen eine Root-geschützte Sicherung unter

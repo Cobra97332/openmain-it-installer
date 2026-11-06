@@ -158,6 +158,7 @@ class UpdateTests(unittest.TestCase):
         self.assertIn("OnCalendar=Sun *-*-* 04:00:00 Europe/Berlin", timer)
         self.assertIn("Persistent=true", timer)
         self.assertIn("RandomizedDelaySec=0", timer)
+        self.assertIn("AccuracySec=1us", timer)
         state.write_text(json.dumps({"role": "backup"}))
         result = subprocess.run(["bash", str(script), "--role", "backup"], env=self.env, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
@@ -171,6 +172,7 @@ class UpdateTests(unittest.TestCase):
         self.assertIn("OnCalendar=Sun *-*-* 05:00:00 Europe/Berlin", timer)
         self.assertIn("Persistent=true", timer)
         self.assertIn("RandomizedDelaySec=0", timer)
+        self.assertIn("AccuracySec=1us", timer)
 
 
 if __name__ == "__main__":

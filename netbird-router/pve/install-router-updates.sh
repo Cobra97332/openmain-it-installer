@@ -84,6 +84,7 @@ Description=OpenMain router Sunday update ($ROLE)
 OnCalendar=Sun *-*-* $hour:00:00 Europe/Berlin
 Persistent=true
 RandomizedDelaySec=0
+AccuracySec=1us
 Unit=openmain-router-update.service
 
 [Install]

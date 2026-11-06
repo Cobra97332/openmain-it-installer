@@ -51,6 +51,7 @@ jobs:
             curl -fsSLo /tmp/zabbix-release.deb "https://repo.zabbix.com/zabbix/8.0/release/debian/pool/main/z/zabbix-release/zabbix-release_latest_8.0+debian13_all.deb"
             dpkg -i /tmp/zabbix-release.deb
             apt-get update
+            rm -f /etc/zabbix/zabbix_agent2.conf
             apt-get install -y zabbix-agent2
             dpkg-query -W -f="\${Version}" zabbix-agent2 | grep -E "(^|:)8[.]0[.]"
             printf "LogType=console\nServer=127.0.0.1\nListenIP=127.0.0.1\nHostname=retrofit-ci\nUserParameter=openmain.router.role,echo primary\n" >/tmp/retrofit-zabbix-agent2.conf

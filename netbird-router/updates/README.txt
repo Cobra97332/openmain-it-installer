@@ -13,7 +13,7 @@ des Nachrüst-Installers festgelegt. Die vier nachgeladenen Hilfsdateien werden
 vom Installer zusätzlich gegen ihre festgelegten SHA256-Werte geprüft:
 
 ```bash
-bash -c 'set -euo pipefail; f=$(mktemp); trap "rm -f \"$f\"" EXIT; curl -fsSLo "$f" https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/b9c43545844dadd9bf53c0d2db5fa33e1caf4283/netbird-router/updates/retrofit.py; echo "46dc03debc5760342f0a73897b7fd148d61e6ab2d38c1b57842456184d3bb513  $f" | sha256sum -c -; sudo python3 "$f" --install --ref b9c43545844dadd9bf53c0d2db5fa33e1caf4283'
+bash -c 'set -euo pipefail; f=$(mktemp); trap "rm -f \"$f\"" EXIT; curl -fsSLo "$f" https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/f17e4669c4c8994dbb8077d4b02690b814833bb4/netbird-router/updates/retrofit.py; echo "44ae8cec37f2a56f442cc18355cd7f0103f82641af9c5b2d59f3b55447eb2ab9  $f" | sha256sum -c -; sudo python3 "$f" --install --ref f17e4669c4c8994dbb8077d4b02690b814833bb4'
 ```
 
 Ein einzelner Primary-Router ohne Backup benötigt denselben Befehl mit
@@ -30,7 +30,7 @@ Update-Dateien samt Timerzustand und Kopien der Router-Konfiguration. Für
 Rollback die im Installer-Ausgang angezeigte Sicherungs-ID verwenden:
 
 ```bash
-bash -c 'set -euo pipefail; f=$(mktemp); trap "rm -f \"$f\"" EXIT; curl -fsSLo "$f" https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/b9c43545844dadd9bf53c0d2db5fa33e1caf4283/netbird-router/updates/retrofit.py; echo "46dc03debc5760342f0a73897b7fd148d61e6ab2d38c1b57842456184d3bb513  $f" | sha256sum -c -; sudo python3 "$f" --rollback SICHERUNGS-ID'
+bash -c 'set -euo pipefail; f=$(mktemp); trap "rm -f \"$f\"" EXIT; curl -fsSLo "$f" https://raw.githubusercontent.com/Cobra97332/openmain-it-installer/f17e4669c4c8994dbb8077d4b02690b814833bb4/netbird-router/updates/retrofit.py; echo "44ae8cec37f2a56f442cc18355cd7f0103f82641af9c5b2d59f3b55447eb2ab9  $f" | sha256sum -c -; sudo python3 "$f" --rollback SICHERUNGS-ID'
 ```
 
 Rollback stellt die Update-Dateien und den Timerzustand wieder her. Bereits

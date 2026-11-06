@@ -10,7 +10,9 @@ jobs:
       - name: Bash syntax
         run: bash -n router-install.sh netbird-router/pve/install-router-updates.sh netbird-router/pve/router-update.sh netbird-router/pve/router-update-health.sh
       - name: Update and timer behavior
-        run: python3 netbird-router/pve/test-router-update.py -v
+        run: |
+          python3 netbird-router/pve/test-router-update.py -v
+          python3 netbird-router/pve/test-router-update-query.py -v
   debian13-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -26,5 +28,23 @@ jobs:
             systemd-analyze calendar "Sun *-*-* 05:00:00 Europe/Berlin"
             bash -n router-install.sh netbird-router/pve/install-router-updates.sh netbird-router/pve/router-update.sh netbird-router/pve/router-update-health.sh
             python3 netbird-router/pve/test-router-update.py -v
+            python3 netbird-router/pve/test-router-update-query.py -v
             apt-get -o DPkg::Lock::Timeout=1800 -o Dpkg::Options::=--force-confold upgrade -y
+          '
+  retrofit-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Disposable Debian 13 retrofit and rollback
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -w /src debian:trixie bash -euxo pipefail -c '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y python3 jq systemd sudo iproute2
+            bash netbird-router/updates/test-retrofit.sh b9c43545844dadd9bf53c0d2db5fa33e1caf4283
           '
